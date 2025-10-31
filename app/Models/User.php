@@ -61,12 +61,13 @@ class User extends Authenticatable
             ->implode('');
     }
 
-    public function sucursal()
-    {
-        return $this->belongsTo(Sucursal::class);
-    }
     public function creador()
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+    
+    public function bodegas()
+    {
+        return $this->belongsToMany(\App\Models\Bodega::class, 'bodega_user')->withTimestamps();
     }
 }
