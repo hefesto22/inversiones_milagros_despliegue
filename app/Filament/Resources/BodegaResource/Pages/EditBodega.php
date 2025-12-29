@@ -3,17 +3,16 @@
 namespace App\Filament\Resources\BodegaResource\Pages;
 
 use App\Filament\Resources\BodegaResource;
-use Filament\Actions;
 use Filament\Resources\Pages\EditRecord;
+use Illuminate\Support\Facades\Auth;
 
 class EditBodega extends EditRecord
 {
     protected static string $resource = BodegaResource::class;
 
-    protected function getHeaderActions(): array
+    protected function mutateFormDataBeforeSave(array $data): array
     {
-        return [
-            Actions\DeleteAction::make(),
-        ];
+        $data['updated_by'] = Auth::id();
+        return $data;
     }
 }

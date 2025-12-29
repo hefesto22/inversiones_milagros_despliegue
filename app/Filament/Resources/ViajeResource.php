@@ -3,292 +3,335 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\ViajeResource\Pages;
+use App\Filament\Resources\ViajeResource\RelationManagers;
 use App\Models\Viaje;
-use App\Models\Producto;
+use App\Models\User;
+use App\Models\Camion;
 use Filament\Forms;
 use Filament\Forms\Form;
+use Filament\Forms\Set;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
-use Filament\Notifications\Notification;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 class ViajeResource extends Resource
 {
     protected static ?string $model = Viaje::class;
-    protected static ?string $navigationIcon = 'heroicon-o-truck';
+
+    protected static ?string $navigationIcon = 'heroicon-o-map';
+
     protected static ?string $navigationGroup = 'Logística';
-    protected static ?string $navigationLabel = 'Viajes';
+
+    protected static ?int $navigationSort = 2;
+
     protected static ?string $modelLabel = 'Viaje';
+
     protected static ?string $pluralModelLabel = 'Viajes';
-    protected static ?int $navigationSort = 50;
+
+    /**
+     * Verificar si el usuario actual es Super Admin o Jefe
+     */
+    protected static function esSuperAdminOJefe(): bool
+    {
+        $currentUser = Auth::user();
+
+        if (!$currentUser) {
+            return false;
+        }
+
+        return DB::table('model_has_roles')
+            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
+            ->where('model_has_roles.model_type', '=', get_class($currentUser))
+            ->where('model_has_roles.model_id', '=', $currentUser->id)
+            ->whereIn('roles.name', ['Super Admin', 'Jefe'])
+            ->exists();
+    }
+
+    /**
+     * Obtener la bodega del usuario actual (directa o desde bodega_user)
+     */
+    protected static function getBodegaUsuario(): ?int
+    {
+        $currentUser = Auth::user();
+
+        if (!$currentUser) {
+            return null;
+        }
+
+        if ($currentUser->bodega_id) {
+            return $currentUser->bodega_id;
+        }
+
+        $bodegaAsignada = DB::table('bodega_user')
+            ->where('user_id', $currentUser->id)
+            ->where('activo', true)
+            ->value('bodega_id');
+
+        return $bodegaAsignada;
+    }
+
+    public static function getEloquentQuery(): Builder
+    {
+        $query = parent::getEloquentQuery()->with(['camion', 'chofer', 'bodegaOrigen']);
+        $currentUser = Auth::user();
+
+        if (!$currentUser) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        // Super Admin y Jefe ven todos los viajes
+        if (static::esSuperAdminOJefe()) {
+            return $query;
+        }
+
+        // Otros usuarios solo ven viajes de su bodega
+        $bodegaId = static::getBodegaUsuario();
+
+        if ($bodegaId) {
+            return $query->where('bodega_origen_id', $bodegaId);
+        }
+
+        return $query->whereRaw('1 = 0');
+    }
 
     public static function form(Form $form): Form
     {
-        return $form->schema([
-            Forms\Components\Section::make('Información General')
-                ->schema([
-                    Forms\Components\Select::make('camion_id')
-                        ->label('Camión')
-                        ->relationship('camion', 'placa')
-                        ->searchable()
-                        ->preload()
-                        ->required()
-                        ->columnSpan(1),
+        $puedeSeleccionarBodega = static::esSuperAdminOJefe();
+        $bodegaUsuario = static::getBodegaUsuario();
 
-                    Forms\Components\Select::make('chofer_user_id')
-                        ->label('Chofer')
-                        ->relationship('chofer', 'name')
-                        ->searchable()
-                        ->preload()
-                        ->required()
-                        ->columnSpan(1),
+        return $form
+            ->schema([
+                Forms\Components\Section::make('Información del Viaje')
+                    ->schema([
+                        Forms\Components\Grid::make(3)
+                            ->schema([
+                                Forms\Components\Select::make('camion_id')
+                                    ->label('Camión')
+                                    ->options(function () use ($bodegaUsuario, $puedeSeleccionarBodega) {
+                                        $query = Camion::where('activo', true)
+                                            ->whereDoesntHave('viajes', function ($q) {
+                                                $q->whereNotIn('estado', [
+                                                    Viaje::ESTADO_CERRADO,
+                                                    Viaje::ESTADO_CANCELADO
+                                                ]);
+                                            });
 
-                    Forms\Components\Select::make('bodega_origen_id')
-                        ->label('Bodega de Origen')
-                        ->relationship('bodegaOrigen', 'nombre')
-                        ->searchable()
-                        ->preload()
-                        ->required()
-                        ->columnSpan(1),
+                                        // Si no es Super Admin/Jefe, filtrar por su bodega
+                                        if (!$puedeSeleccionarBodega && $bodegaUsuario) {
+                                            $query->where('bodega_id', $bodegaUsuario);
+                                        }
 
-                    Forms\Components\Select::make('estado')
-                        ->label('Estado')
-                        ->options([
-                            'en_preparacion' => 'En Preparación',
-                            'en_ruta' => 'En Ruta',
-                            'cerrado' => 'Cerrado',
-                        ])
-                        ->default('en_preparacion')
-                        ->required()
-                        ->disabled(fn ($record) => $record?->estaCerrado())
-                        ->columnSpan(1),
+                                        return $query->pluck('placa', 'id');
+                                    })
+                                    ->required()
+                                    ->searchable()
+                                    ->live()
+                                    ->afterStateUpdated(function ($state, Set $set) {
+                                        if ($state) {
+                                            $camion = Camion::find($state);
+                                            $chofer = $camion?->getChoferActual();
+                                            if ($chofer) {
+                                                $set('chofer_id', $chofer->id);
+                                            }
+                                        }
+                                    })
+                                    ->helperText('Solo camiones disponibles'),
 
-                    Forms\Components\DateTimePicker::make('fecha_salida')
-                        ->label('Fecha de Salida')
-                        ->default(now())
-                        ->required()
-                        ->native(false)
-                        ->seconds(false)
-                        ->columnSpan(1),
+                                Forms\Components\Select::make('chofer_id')
+                                    ->label('Chofer')
+                                    ->options(function () {
+                                        return User::whereHas('roles', function ($q) {
+                                            $q->where('name', 'Chofer');
+                                        })->pluck('name', 'id');
+                                    })
+                                    ->required()
+                                    ->searchable()
+                                    ->helperText('Usuario con rol de chofer'),
 
-                    Forms\Components\DateTimePicker::make('fecha_regreso')
-                        ->label('Fecha de Regreso')
-                        ->native(false)
-                        ->seconds(false)
-                        ->visible(fn ($record) => $record && $record->estaCerrado())
-                        ->columnSpan(1),
+                                Forms\Components\Select::make('bodega_origen_id')
+                                    ->label('Bodega Origen')
+                                    ->relationship('bodegaOrigen', 'nombre', fn($query) => $query->where('activo', true))
+                                    ->required()
+                                    ->searchable()
+                                    ->preload()
+                                    ->afterStateHydrated(function (Set $set, $state, $record) use ($bodegaUsuario) {
+                                        if (is_null($state) && is_null($record) && $bodegaUsuario) {
+                                            $set('bodega_origen_id', $bodegaUsuario);
+                                        }
+                                    })
+                                    ->disabled(!$puedeSeleccionarBodega)
+                                    ->dehydrated(true),
 
-                    Forms\Components\Textarea::make('nota')
-                        ->label('Notas')
-                        ->rows(2)
-                        ->maxLength(1000)
-                        ->columnSpan(2),
-                ])
-                ->columns(2),
+                                Forms\Components\DateTimePicker::make('fecha_salida')
+                                    ->label('Fecha de Salida')
+                                    ->native(false)
+                                    ->seconds(false),
 
-            Forms\Components\Section::make('Carga del Viaje')
-                ->schema([
-                    Forms\Components\Repeater::make('cargas')
-                        ->relationship()
-                        ->schema([
-                            Forms\Components\Select::make('producto_id')
-                                ->label('Producto')
-                                ->relationship('producto', 'nombre')
-                                ->searchable()
-                                ->preload()
-                                ->required()
-                                ->reactive()
-                                ->afterStateUpdated(function ($state, callable $set) {
-                                    $set('unidad_id_presentacion', null);
-                                    $set('factor_a_base', null);
-                                })
-                                ->columnSpan(2),
+                                Forms\Components\DateTimePicker::make('fecha_regreso')
+                                    ->label('Fecha de Regreso')
+                                    ->native(false)
+                                    ->seconds(false)
+                                    ->visible(fn($record) => $record && in_array($record->estado, [
+                                        Viaje::ESTADO_REGRESANDO,
+                                        Viaje::ESTADO_DESCARGANDO,
+                                        Viaje::ESTADO_LIQUIDANDO,
+                                        Viaje::ESTADO_CERRADO
+                                    ])),
 
-                            Forms\Components\Select::make('unidad_id_presentacion')
-                                ->label('Presentación')
-                                ->options(function (callable $get) {
-                                    $productoId = $get('producto_id');
-                                    if (!$productoId) {
-                                        return [];
-                                    }
+                                Forms\Components\Select::make('estado')
+                                    ->options([
+                                        Viaje::ESTADO_PLANIFICADO => 'Planificado',
+                                        Viaje::ESTADO_CARGANDO => 'Cargando',
+                                        Viaje::ESTADO_EN_RUTA => 'En Ruta',
+                                        Viaje::ESTADO_REGRESANDO => 'Regresando',
+                                        Viaje::ESTADO_DESCARGANDO => 'Descargando',
+                                        Viaje::ESTADO_LIQUIDANDO => 'Liquidando',
+                                        Viaje::ESTADO_CERRADO => 'Cerrado',
+                                        Viaje::ESTADO_CANCELADO => 'Cancelado',
+                                    ])
+                                    ->default(Viaje::ESTADO_PLANIFICADO)
+                                    ->disabled()
+                                    ->dehydrated()
+                                    ->native(false),
 
-                                    $producto = Producto::find($productoId);
-                                    if (!$producto) {
-                                        return [];
-                                    }
+                                Forms\Components\TextInput::make('numero_viaje')
+                                    ->label('No. Viaje')
+                                    ->disabled()
+                                    ->dehydrated(false)
+                                    ->placeholder('Se genera automáticamente'),
+                            ]),
 
-                                    return $producto->presentaciones()
-                                        ->where('activo', true)
-                                        ->with('unidad')
-                                        ->get()
-                                        ->pluck('unidad.nombre', 'unidad_id');
-                                })
-                                ->searchable()
-                                ->required()
-                                ->reactive()
-                                ->afterStateUpdated(function ($state, callable $get, callable $set) {
-                                    $productoId = $get('producto_id');
-                                    if (!$productoId || !$state) {
-                                        return;
-                                    }
+                        Forms\Components\Textarea::make('observaciones')
+                            ->maxLength(500)
+                            ->rows(2)
+                            ->columnSpanFull()
+                            ->placeholder('Observaciones del viaje'),
+                    ]),
 
-                                    $producto = Producto::find($productoId);
-                                    $presentacion = $producto->presentaciones()
-                                        ->where('unidad_id', $state)
-                                        ->first();
+                Forms\Components\Section::make('Kilometraje')
+                    ->schema([
+                        Forms\Components\Grid::make(2)
+                            ->schema([
+                                Forms\Components\TextInput::make('km_salida')
+                                    ->label('Km Salida')
+                                    ->numeric()
+                                    ->minValue(0),
 
-                                    if ($presentacion) {
-                                        $set('factor_a_base', $presentacion->factor_a_base);
-                                    }
-                                })
-                                ->columnSpan(2),
+                                Forms\Components\TextInput::make('km_regreso')
+                                    ->label('Km Regreso')
+                                    ->numeric()
+                                    ->minValue(0)
+                                    ->visible(fn($record) => $record && $record->estado !== Viaje::ESTADO_PLANIFICADO),
+                            ]),
+                    ])
+                    ->collapsible()
+                    ->collapsed(),
 
-                            Forms\Components\TextInput::make('cantidad_presentacion')
-                                ->label('Cantidad')
-                                ->numeric()
-                                ->rules(['decimal:0,3'])
-                                ->required()
-                                ->minValue(0.001)
-                                ->step(0.001)
-                                ->reactive()
-                                ->afterStateUpdated(fn ($state, callable $get, callable $set) =>
-                                    static::calcularCantidadBase($get, $set)
-                                )
-                                ->columnSpan(1),
+                Forms\Components\Section::make('Efectivo')
+                    ->schema([
+                        Forms\Components\Grid::make(4)
+                            ->schema([
+                                Forms\Components\TextInput::make('efectivo_inicial')
+                                    ->label('Efectivo Inicial')
+                                    ->numeric()
+                                    ->prefix('L')
+                                    ->default(0)
+                                    ->helperText('Para cambio'),
 
-                            Forms\Components\TextInput::make('factor_a_base')
-                                ->label('Factor')
-                                ->numeric()
-                                ->disabled()
-                                ->dehydrated()
-                                ->helperText('Factor de conversión a unidad base')
-                                ->columnSpan(1),
+                                Forms\Components\TextInput::make('efectivo_esperado')
+                                    ->label('Efectivo Esperado')
+                                    ->numeric()
+                                    ->prefix('L')
+                                    ->disabled()
+                                    ->dehydrated(false),
 
-                            Forms\Components\TextInput::make('cantidad_base')
-                                ->label('Cantidad Base')
-                                ->numeric()
-                                ->disabled()
-                                ->dehydrated()
-                                ->helperText('Total en unidad base')
-                                ->columnSpan(2),
-                        ])
-                        ->columns(6)
-                        ->defaultItems(1)
-                        ->addActionLabel('Agregar producto')
-                        ->deleteAction(
-                            fn ($action) => $action->requiresConfirmation()
-                        )
-                        ->reorderable(false)
-                        ->collapsible()
-                        ->itemLabel(fn (array $state): ?string =>
-                            isset($state['producto_id'])
-                                ? Producto::find($state['producto_id'])?->nombre
-                                : 'Nuevo producto'
-                        )
-                        ->disabled(fn ($record) => $record && !$record->estaEnPreparacion()),
-                ])
-                ->collapsible()
-                ->collapsed(false)
-                ->visible(fn ($record) => !$record || $record->estaEnPreparacion()),
+                                Forms\Components\TextInput::make('efectivo_entregado')
+                                    ->label('Efectivo Entregado')
+                                    ->numeric()
+                                    ->prefix('L')
+                                    ->visible(fn($record) => $record && in_array($record->estado, [
+                                        Viaje::ESTADO_LIQUIDANDO,
+                                        Viaje::ESTADO_CERRADO
+                                    ])),
 
-            Forms\Components\Section::make('Mermas del Viaje')
-                ->schema([
-                    Forms\Components\Repeater::make('mermas')
-                        ->relationship()
-                        ->schema([
-                            Forms\Components\Select::make('producto_id')
-                                ->label('Producto')
-                                ->relationship('producto', 'nombre')
-                                ->searchable()
-                                ->preload()
-                                ->required()
-                                ->columnSpan(2),
+                                Forms\Components\TextInput::make('diferencia_efectivo')
+                                    ->label('Diferencia')
+                                    ->numeric()
+                                    ->prefix('L')
+                                    ->disabled()
+                                    ->dehydrated(false),
+                            ]),
+                    ])
+                    ->collapsible()
+                    ->collapsed()
+                    ->visible(fn($record) => $record !== null),
 
-                            Forms\Components\TextInput::make('cantidad_base')
-                                ->label('Cantidad (Unidad Base)')
-                                ->numeric()
-                                ->rules(['decimal:0,3'])
-                                ->required()
-                                ->minValue(0.001)
-                                ->step(0.001)
-                                ->helperText('Cantidad de merma en unidad base del producto')
-                                ->columnSpan(1),
+                Forms\Components\Section::make('Totales del Viaje')
+                    ->schema([
+                        Forms\Components\Grid::make(3)
+                            ->schema([
+                                Forms\Components\TextInput::make('total_cargado_costo')
+                                    ->label('Costo Cargado')
+                                    ->numeric()
+                                    ->prefix('L')
+                                    ->disabled(),
 
-                            Forms\Components\TextInput::make('motivo')
-                                ->label('Motivo')
-                                ->maxLength(255)
-                                ->placeholder('Ej: Rotura, Vencimiento, etc.')
-                                ->columnSpan(3),
-                        ])
-                        ->columns(6)
-                        ->defaultItems(0)
-                        ->addActionLabel('Registrar merma')
-                        ->deleteAction(
-                            fn ($action) => $action->requiresConfirmation()
-                        )
-                        ->reorderable(false)
-                        ->collapsible()
-                        ->itemLabel(fn (array $state): ?string =>
-                            isset($state['producto_id'])
-                                ? Producto::find($state['producto_id'])?->nombre . ' - ' . ($state['motivo'] ?? 'Sin motivo')
-                                : 'Nueva merma'
-                        )
-                        ->disabled(fn ($record) => $record && $record->estaCerrado()),
-                ])
-                ->collapsible()
-                ->collapsed(true)
-                ->visible(fn ($record) => $record && $record->estaEnRuta()),
+                                Forms\Components\TextInput::make('total_vendido')
+                                    ->label('Total Vendido')
+                                    ->numeric()
+                                    ->prefix('L')
+                                    ->disabled(),
 
-            Forms\Components\Section::make('Liquidación de Comisiones')
-                ->schema([
-                    Forms\Components\Placeholder::make('cartones_30')
-                        ->label('Cartones 30 Vendidos')
-                        ->content(fn ($record) => $record->liquidacionComision
-                            ? number_format($record->liquidacionComision->cartones_30_vendidos, 2)
-                            : '—'
-                        ),
+                                Forms\Components\TextInput::make('total_merma_costo')
+                                    ->label('Costo Mermas')
+                                    ->numeric()
+                                    ->prefix('L')
+                                    ->disabled(),
 
-                    Forms\Components\Placeholder::make('cartones_15')
-                        ->label('Cartones 15 Vendidos')
-                        ->content(fn ($record) => $record->liquidacionComision
-                            ? number_format($record->liquidacionComision->cartones_15_vendidos, 2)
-                            : '—'
-                        ),
+                                Forms\Components\TextInput::make('comision_ganada')
+                                    ->label('Comisión Ganada')
+                                    ->numeric()
+                                    ->prefix('L')
+                                    ->disabled(),
 
-                    Forms\Components\Placeholder::make('total_comision')
-                        ->label('Total Comisión')
-                        ->content(fn ($record) => $record->liquidacionComision
-                            ? 'L ' . number_format($record->liquidacionComision->total_comision, 2)
-                            : '—'
-                        )
-                        ->extraAttributes(['class' => 'text-lg font-bold text-success-600']),
-                ])
-                ->columns(3)
-                ->visible(fn ($record) => $record && $record->estaCerrado() && $record->liquidacionComision),
-        ]);
+                                Forms\Components\TextInput::make('cobros_devoluciones')
+                                    ->label('Cobros')
+                                    ->numeric()
+                                    ->prefix('L')
+                                    ->disabled(),
+
+                                Forms\Components\TextInput::make('neto_chofer')
+                                    ->label('Neto Chofer')
+                                    ->numeric()
+                                    ->prefix('L')
+                                    ->disabled(),
+                            ]),
+                    ])
+                    ->visible(fn($record) => $record && $record->estado === Viaje::ESTADO_CERRADO)
+                    ->collapsible(),
+            ]);
     }
 
     public static function table(Table $table): Table
     {
         return $table
             ->columns([
-                Tables\Columns\TextColumn::make('id')
-                    ->label('#')
+                Tables\Columns\TextColumn::make('numero_viaje')
+                    ->label('No. Viaje')
+                    ->searchable()
                     ->sortable()
-                    ->searchable(),
-
-                Tables\Columns\TextColumn::make('fecha_salida')
-                    ->label('Fecha Salida')
-                    ->dateTime('d/m/Y H:i')
-                    ->sortable()
-                    ->searchable(),
+                    ->weight('bold')
+                    ->copyable(),
 
                 Tables\Columns\TextColumn::make('camion.placa')
                     ->label('Camión')
                     ->searchable()
                     ->sortable()
-                    ->weight('medium'),
+                    ->badge()
+                    ->color('info'),
 
                 Tables\Columns\TextColumn::make('chofer.name')
                     ->label('Chofer')
@@ -296,205 +339,288 @@ class ViajeResource extends Resource
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('bodegaOrigen.nombre')
-                    ->label('Bodega Origen')
-                    ->searchable()
+                    ->label('Bodega')
+                    ->badge()
+                    ->color('gray')
                     ->toggleable(),
 
-                Tables\Columns\TextColumn::make('estado')
-                    ->label('Estado')
-                    ->colors([
-                        'warning' => 'en_preparacion',
-                        'primary' => 'en_ruta',
-                        'success' => 'cerrado',
-                    ])
-                    ->icons([
-                        'heroicon-o-clock' => 'en_preparacion',
-                        'heroicon-o-truck' => 'en_ruta',
-                        'heroicon-o-check-circle' => 'cerrado',
-                    ])
-                    ->formatStateUsing(fn (string $state): string => match($state) {
-                        'en_preparacion' => 'En Preparación',
-                        'en_ruta' => 'En Ruta',
-                        'cerrado' => 'Cerrado',
-                        default => ucfirst($state)
-                    }),
-
-                Tables\Columns\TextColumn::make('cargas_count')
-                    ->label('Productos')
-                    ->counts('cargas')
-                    ->badge()
-                    ->color('gray'),
-
-                Tables\Columns\TextColumn::make('mermas_count')
-                    ->label('Mermas')
-                    ->counts('mermas')
-                    ->badge()
-                    ->color('warning')
-                    ->visible(fn ($record) => $record && $record->mermas_count > 0),
-
-                Tables\Columns\TextColumn::make('liquidacionComision.total_comision')
-                    ->label('Comisión')
-                    ->money('HNL')
-                    ->color('success')
-                    ->toggleable()
-                    ->placeholder('—'),
+                Tables\Columns\TextColumn::make('fecha_salida')
+                    ->label('Salida')
+                    ->dateTime('d/m/Y H:i')
+                    ->sortable()
+                    ->placeholder('Sin iniciar'),
 
                 Tables\Columns\TextColumn::make('fecha_regreso')
                     ->label('Regreso')
                     ->dateTime('d/m/Y H:i')
+                    ->placeholder('En curso')
                     ->sortable()
-                    ->toggleable()
-                    ->placeholder('—'),
+                    ->toggleable(),
 
-                Tables\Columns\TextColumn::make('duracion_horas')
-                    ->label('Duración')
-                    ->getStateUsing(fn ($record) => $record->duracion_horas
-                        ? number_format($record->duracion_horas, 1) . ' hrs'
-                        : '—'
-                    )
-                    ->toggleable(isToggledHiddenByDefault: true),
-
-                Tables\Columns\TextColumn::make('user.name')
-                    ->label('Creado por')
-                    ->toggleable(isToggledHiddenByDefault: true)
+                Tables\Columns\TextColumn::make('estado')
+                    ->badge()
+                    ->formatStateUsing(fn($state) => match ($state) {
+                        Viaje::ESTADO_PLANIFICADO => 'Planificado',
+                        Viaje::ESTADO_CARGANDO => 'Cargando',
+                        Viaje::ESTADO_EN_RUTA => 'En Ruta',
+                        Viaje::ESTADO_REGRESANDO => 'Regresando',
+                        Viaje::ESTADO_DESCARGANDO => 'Descargando',
+                        Viaje::ESTADO_LIQUIDANDO => 'Liquidando',
+                        Viaje::ESTADO_CERRADO => 'Cerrado',
+                        Viaje::ESTADO_CANCELADO => 'Cancelado',
+                        default => $state,
+                    })
+                    ->color(fn($state) => match ($state) {
+                        Viaje::ESTADO_PLANIFICADO => 'gray',
+                        Viaje::ESTADO_CARGANDO => 'info',
+                        Viaje::ESTADO_EN_RUTA => 'warning',
+                        Viaje::ESTADO_REGRESANDO => 'primary',
+                        Viaje::ESTADO_DESCARGANDO => 'info',
+                        Viaje::ESTADO_LIQUIDANDO => 'warning',
+                        Viaje::ESTADO_CERRADO => 'success',
+                        Viaje::ESTADO_CANCELADO => 'danger',
+                        default => 'gray',
+                    })
+                    ->icon(fn($state) => match ($state) {
+                        Viaje::ESTADO_PLANIFICADO => 'heroicon-o-clipboard-document-list',
+                        Viaje::ESTADO_CARGANDO => 'heroicon-o-archive-box-arrow-down',
+                        Viaje::ESTADO_EN_RUTA => 'heroicon-o-truck',
+                        Viaje::ESTADO_REGRESANDO => 'heroicon-o-arrow-uturn-left',
+                        Viaje::ESTADO_DESCARGANDO => 'heroicon-o-archive-box-x-mark',
+                        Viaje::ESTADO_LIQUIDANDO => 'heroicon-o-calculator',
+                        Viaje::ESTADO_CERRADO => 'heroicon-o-check-circle',
+                        Viaje::ESTADO_CANCELADO => 'heroicon-o-x-circle',
+                        default => null,
+                    })
                     ->sortable(),
 
+                Tables\Columns\TextColumn::make('total_vendido')
+                    ->label('Vendido')
+                    ->money('HNL')
+                    ->sortable()
+                    ->toggleable(),
+
+                Tables\Columns\TextColumn::make('cargas_count')
+                    ->label('Items')
+                    ->counts('cargas')
+                    ->badge()
+                    ->color('primary')
+                    ->toggleable(),
+
+                Tables\Columns\TextColumn::make('ventas_count')
+                    ->label('Ventas')
+                    ->counts('ventas')
+                    ->badge()
+                    ->color('success')
+                    ->toggleable(),
+
                 Tables\Columns\TextColumn::make('created_at')
-                    ->label('Registrado')
+                    ->label('Creado')
                     ->dateTime('d/m/Y H:i')
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
-            ->defaultSort('fecha_salida', 'desc')
             ->filters([
+                Tables\Filters\SelectFilter::make('estado')
+                    ->options([
+                        Viaje::ESTADO_PLANIFICADO => 'Planificado',
+                        Viaje::ESTADO_CARGANDO => 'Cargando',
+                        Viaje::ESTADO_EN_RUTA => 'En Ruta',
+                        Viaje::ESTADO_REGRESANDO => 'Regresando',
+                        Viaje::ESTADO_DESCARGANDO => 'Descargando',
+                        Viaje::ESTADO_LIQUIDANDO => 'Liquidando',
+                        Viaje::ESTADO_CERRADO => 'Cerrado',
+                        Viaje::ESTADO_CANCELADO => 'Cancelado',
+                    ]),
+
+                // Filtro de bodega solo visible para Super Admin y Jefe
+                Tables\Filters\SelectFilter::make('bodega_origen_id')
+                    ->label('Bodega')
+                    ->relationship('bodegaOrigen', 'nombre')
+                    ->searchable()
+                    ->preload()
+                    ->visible(fn () => static::esSuperAdminOJefe()),
+
+                Tables\Filters\SelectFilter::make('chofer_id')
+                    ->label('Chofer')
+                    ->relationship('chofer', 'name')
+                    ->searchable()
+                    ->preload(),
+
                 Tables\Filters\SelectFilter::make('camion_id')
                     ->label('Camión')
                     ->relationship('camion', 'placa')
                     ->searchable()
                     ->preload(),
 
-                Tables\Filters\SelectFilter::make('chofer_user_id')
-                    ->label('Chofer')
-                    ->relationship('chofer', 'name')
-                    ->searchable()
-                    ->preload(),
-
-                Tables\Filters\SelectFilter::make('bodega_origen_id')
-                    ->label('Bodega Origen')
-                    ->relationship('bodegaOrigen', 'nombre')
-                    ->searchable()
-                    ->preload(),
-
-                Tables\Filters\SelectFilter::make('estado')
-                    ->label('Estado')
-                    ->options([
-                        'en_preparacion' => 'En Preparación',
-                        'en_ruta' => 'En Ruta',
-                        'cerrado' => 'Cerrado',
-                    ])
-                    ->native(false),
-
                 Tables\Filters\Filter::make('fecha_salida')
                     ->form([
-                        Forms\Components\DatePicker::make('desde')
-                            ->label('Desde'),
-                        Forms\Components\DatePicker::make('hasta')
-                            ->label('Hasta'),
+                        Forms\Components\DatePicker::make('desde')->native(false),
+                        Forms\Components\DatePicker::make('hasta')->native(false),
                     ])
                     ->query(function (Builder $query, array $data): Builder {
                         return $query
-                            ->when(
-                                $data['desde'] ?? null,
-                                fn (Builder $query, $date): Builder => $query->whereDate('fecha_salida', '>=', $date),
-                            )
-                            ->when(
-                                $data['hasta'] ?? null,
-                                fn (Builder $query, $date): Builder => $query->whereDate('fecha_salida', '<=', $date),
-                            );
-                    })
-                    ->indicateUsing(function (array $data): array {
-                        $indicators = [];
-                        if ($data['desde'] ?? null) {
-                            $indicators[] = 'Desde: ' . \Carbon\Carbon::parse($data['desde'])->format('d/m/Y');
-                        }
-                        if ($data['hasta'] ?? null) {
-                            $indicators[] = 'Hasta: ' . \Carbon\Carbon::parse($data['hasta'])->format('d/m/Y');
-                        }
-                        return $indicators;
+                            ->when($data['desde'], fn($q, $date) => $q->whereDate('fecha_salida', '>=', $date))
+                            ->when($data['hasta'], fn($q, $date) => $q->whereDate('fecha_salida', '<=', $date));
                     }),
             ])
             ->actions([
-                Tables\Actions\Action::make('iniciar')
-                    ->label('Iniciar Viaje')
-                    ->icon('heroicon-o-play')
+                Tables\Actions\ViewAction::make(),
+                Tables\Actions\EditAction::make()
+                    ->visible(fn($record) => !in_array($record->estado, [Viaje::ESTADO_CERRADO, Viaje::ESTADO_CANCELADO])),
+
+                // Acción: Iniciar Carga
+                Tables\Actions\Action::make('iniciar_carga')
+                    ->label('Iniciar Carga')
+                    ->icon('heroicon-o-archive-box-arrow-down')
+                    ->color('info')
+                    ->requiresConfirmation()
+                    ->modalDescription('El viaje pasará a estado "Cargando".')
+                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_PLANIFICADO)
+                    ->action(function ($record) {
+                        $record->iniciarCarga();
+                        \Filament\Notifications\Notification::make()
+                            ->title('Carga iniciada')
+                            ->body('Ahora puede agregar productos al viaje.')
+                            ->success()
+                            ->send();
+                    }),
+
+                // Acción: Iniciar Ruta
+                Tables\Actions\Action::make('iniciar_ruta')
+                    ->label('Iniciar Ruta')
+                    ->icon('heroicon-o-truck')
+                    ->color('warning')
+                    ->requiresConfirmation()
+                    ->modalDescription('El viaje saldrá a ruta. Asegúrese de haber cargado todos los productos.')
+                    ->visible(fn($record) => in_array($record->estado, [Viaje::ESTADO_PLANIFICADO, Viaje::ESTADO_CARGANDO]))
+                    ->action(function ($record) {
+                        if ($record->cargas()->count() === 0) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('Error')
+                                ->body('No puede iniciar ruta sin cargar productos.')
+                                ->danger()
+                                ->send();
+                            return;
+                        }
+                        $record->iniciarRuta();
+                        \Filament\Notifications\Notification::make()
+                            ->title('Viaje en ruta')
+                            ->body('El camión está ahora en ruta.')
+                            ->success()
+                            ->send();
+                    }),
+
+                // Acción: Iniciar Regreso
+                Tables\Actions\Action::make('iniciar_regreso')
+                    ->label('Regresar')
+                    ->icon('heroicon-o-arrow-uturn-left')
                     ->color('primary')
                     ->requiresConfirmation()
-                    ->modalHeading('Iniciar Viaje')
-                    ->modalDescription('¿Estás seguro? Se generarán movimientos de inventario (salida) y el viaje pasará a estado "En Ruta".')
-                    ->modalSubmitActionLabel('Sí, iniciar')
-                    ->action(function (Viaje $record) {
-                        try {
-                            if ($record->iniciar()) {
-                                Notification::make()
-                                    ->success()
-                                    ->title('Viaje iniciado')
-                                    ->body('El viaje está ahora en ruta. Se generaron las salidas de inventario.')
-                                    ->send();
-                            }
-                        } catch (\Exception $e) {
-                            Notification::make()
-                                ->danger()
-                                ->title('Error')
-                                ->body($e->getMessage())
-                                ->send();
-                        }
-                    })
-                    ->visible(fn (Viaje $record) => $record->estaEnPreparacion()),
+                    ->modalDescription('El viaje cambiará a estado "Regresando".')
+                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_EN_RUTA)
+                    ->action(function ($record) {
+                        $record->iniciarRegreso();
+                        \Filament\Notifications\Notification::make()
+                            ->title('Viaje regresando')
+                            ->success()
+                            ->send();
+                    }),
 
+                // Acción: Iniciar Descarga
+                Tables\Actions\Action::make('iniciar_descarga')
+                    ->label('Descargar')
+                    ->icon('heroicon-o-archive-box-x-mark')
+                    ->color('info')
+                    ->requiresConfirmation()
+                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_REGRESANDO)
+                    ->action(function ($record) {
+                        $record->iniciarDescarga();
+                        \Filament\Notifications\Notification::make()
+                            ->title('Descarga iniciada')
+                            ->success()
+                            ->send();
+                    }),
+
+                // Acción: Liquidar
+                Tables\Actions\Action::make('liquidar')
+                    ->label('Liquidar')
+                    ->icon('heroicon-o-calculator')
+                    ->color('warning')
+                    ->requiresConfirmation()
+                    ->modalDescription('Se revisarán cobros y comisiones del chofer.')
+                    ->visible(fn($record) => in_array($record->estado, [Viaje::ESTADO_REGRESANDO, Viaje::ESTADO_DESCARGANDO]))
+                    ->action(function ($record) {
+                        $record->iniciarLiquidacion();
+                        \Filament\Notifications\Notification::make()
+                            ->title('Liquidación iniciada')
+                            ->success()
+                            ->send();
+                    }),
+
+                // Acción: Cerrar Viaje
                 Tables\Actions\Action::make('cerrar')
                     ->label('Cerrar Viaje')
                     ->icon('heroicon-o-check-circle')
                     ->color('success')
                     ->requiresConfirmation()
-                    ->modalHeading('Cerrar Viaje')
-                    ->modalDescription('¿Estás seguro? Se registrarán las mermas y se calcularán las comisiones del chofer.')
-                    ->modalSubmitActionLabel('Sí, cerrar')
-                    ->action(function (Viaje $record) {
+                    ->modalDescription('Se calcularán los totales finales y se cerrará el viaje.')
+                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_LIQUIDANDO)
+                    ->action(function ($record) {
                         try {
-                            if ($record->cerrar()) {
-                                Notification::make()
-                                    ->success()
-                                    ->title('Viaje cerrado')
-                                    ->body('El viaje ha sido cerrado. Se registraron mermas y comisiones.')
-                                    ->send();
-                            }
+                            $record->cerrar();
+                            \Filament\Notifications\Notification::make()
+                                ->title('Viaje cerrado')
+                                ->body('Se han calculado todos los totales.')
+                                ->success()
+                                ->send();
                         } catch (\Exception $e) {
-                            Notification::make()
-                                ->danger()
-                                ->title('Error')
+                            \Filament\Notifications\Notification::make()
+                                ->title('Error al cerrar')
                                 ->body($e->getMessage())
+                                ->danger()
                                 ->send();
                         }
-                    })
-                    ->visible(fn (Viaje $record) => $record->estaEnRuta()),
+                    }),
 
-                Tables\Actions\ViewAction::make(),
-
-                Tables\Actions\EditAction::make()
-                    ->visible(fn (Viaje $record) => !$record->estaCerrado()),
+                // Acción: Cancelar
+                Tables\Actions\Action::make('cancelar')
+                    ->label('Cancelar')
+                    ->icon('heroicon-o-x-circle')
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->form([
+                        Forms\Components\Textarea::make('motivo')
+                            ->label('Motivo de cancelación')
+                            ->required(),
+                    ])
+                    ->visible(fn($record) => !in_array($record->estado, [Viaje::ESTADO_CERRADO, Viaje::ESTADO_CANCELADO]))
+                    ->action(function ($record, array $data) {
+                        $record->cancelar($data['motivo']);
+                        \Filament\Notifications\Notification::make()
+                            ->title('Viaje cancelado')
+                            ->warning()
+                            ->send();
+                    }),
 
                 Tables\Actions\DeleteAction::make()
-                    ->visible(fn (Viaje $record) => $record->estaEnPreparacion()),
+                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_PLANIFICADO),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make()
-                        ->requiresConfirmation(),
+                    Tables\Actions\DeleteBulkAction::make(),
                 ]),
             ])
-            ->emptyStateHeading('Sin viajes registrados')
-            ->emptyStateDescription('Comienza registrando el primer viaje de distribución.')
-            ->emptyStateIcon('heroicon-o-truck');
+            ->defaultSort('created_at', 'desc');
+    }
+
+    public static function getRelations(): array
+    {
+        return [
+            RelationManagers\CargasRelationManager::class,
+            RelationManagers\MermasRelationManager::class,
+            RelationManagers\VentasRelationManager::class,
+        ];
     }
 
     public static function getPages(): array
@@ -502,39 +628,38 @@ class ViajeResource extends Resource
         return [
             'index' => Pages\ListViajes::route('/'),
             'create' => Pages\CreateViaje::route('/create'),
+            'view' => Pages\ViewViaje::route('/{record}'),
             'edit' => Pages\EditViaje::route('/{record}/edit'),
-            // 'view' key removed due to missing class Pages\ViewViaje
         ];
     }
 
-    /**
-     * Calcular cantidad base
-     */
-    protected static function calcularCantidadBase(callable $get, callable $set): void
-    {
-        $cantidad = (float) $get('cantidad_presentacion');
-        $factor = (float) $get('factor_a_base') ?? 1;
-
-        $cantidadBase = $cantidad * $factor;
-
-        $set('cantidad_base', number_format($cantidadBase, 3, '.', ''));
-    }
-
-    /**
-     * Navegación con badge
-     */
     public static function getNavigationBadge(): ?string
     {
-        $enPreparacion = static::getModel()::where('estado', 'en_preparacion')->count();
-        $enRuta = static::getModel()::where('estado', 'en_ruta')->count();
+        $currentUser = Auth::user();
 
-        $total = $enPreparacion + $enRuta;
-        return $total > 0 ? (string) $total : null;
+        if (!$currentUser) {
+            return null;
+        }
+
+        $query = static::getModel()::whereNotIn('estado', [
+            Viaje::ESTADO_CERRADO,
+            Viaje::ESTADO_CANCELADO
+        ]);
+
+        // Si no es Super Admin o Jefe, filtrar por su bodega
+        if (!static::esSuperAdminOJefe()) {
+            $bodegaId = static::getBodegaUsuario();
+            if ($bodegaId) {
+                $query->where('bodega_origen_id', $bodegaId);
+            }
+        }
+
+        $activos = $query->count();
+        return $activos ?: null;
     }
 
     public static function getNavigationBadgeColor(): ?string
     {
-        $enRuta = static::getModel()::where('estado', 'en_ruta')->count();
-        return $enRuta > 0 ? 'primary' : 'warning';
+        return 'warning';
     }
 }

@@ -6,346 +6,158 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Auth;
 
 class Venta extends Model
 {
     use HasFactory;
 
+    protected $table = 'ventas';
+
     protected $fillable = [
         'cliente_id',
         'bodega_id',
-        'fecha',
+        'numero_venta',
         'tipo_pago',
-        'plazo_dias',
-        'tasa_interes_mensual',
         'subtotal',
-        'impuesto',
+        'total_isv',
+        'descuento',
         'total',
+        'monto_pagado',
         'saldo_pendiente',
+        'fecha_vencimiento',
         'estado',
-        'numero_factura',
+        'estado_pago',
         'nota',
-        'user_id',
-        'confirmada_por',
-        'confirmada_at',
+        'created_by',
+        'updated_by',
     ];
 
     protected $casts = [
-        'fecha' => 'datetime',
-        'confirmada_at' => 'datetime',
         'subtotal' => 'decimal:2',
-        'impuesto' => 'decimal:2',
+        'total_isv' => 'decimal:2',
+        'descuento' => 'decimal:2',
         'total' => 'decimal:2',
+        'monto_pagado' => 'decimal:2',
         'saldo_pendiente' => 'decimal:2',
-        'plazo_dias' => 'integer',
-        'tasa_interes_mensual' => 'decimal:2',
+        'fecha_vencimiento' => 'date',
     ];
 
-    /**
-     * Relación con cliente
-     */
+    // ============================================
+    // RELACIONES
+    // ============================================
+
     public function cliente(): BelongsTo
     {
-        return $this->belongsTo(Cliente::class);
+        return $this->belongsTo(Cliente::class, 'cliente_id');
     }
 
-    /**
-     * Relación con bodega
-     */
     public function bodega(): BelongsTo
     {
-        return $this->belongsTo(Bodega::class);
+        return $this->belongsTo(Bodega::class, 'bodega_id');
     }
 
-    /**
-     * Relación con detalles de la venta
-     */
+    public function creador(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function actualizador(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'updated_by');
+    }
+
     public function detalles(): HasMany
     {
-        return $this->hasMany(VentaDetalle::class);
+        return $this->hasMany(VentaDetalle::class, 'venta_id');
     }
 
-    /**
-     * Usuario que creó la venta
-     */
-    public function user(): BelongsTo
+    public function pagos(): HasMany
     {
-        return $this->belongsTo(User::class);
+        return $this->hasMany(VentaPago::class, 'venta_id');
     }
 
-    /**
-     * Usuario que confirmó la venta
-     */
-    public function confirmadaPor(): BelongsTo
+    public function devoluciones(): HasMany
     {
-        return $this->belongsTo(User::class, 'confirmada_por');
+        return $this->hasMany(Devolucion::class, 'venta_id');
     }
 
-    /**
-     * Movimientos de inventario generados
-     */
-    public function movimientos(): HasMany
-    {
-        return $this->hasMany(MovimientoInventario::class, 'referencia_id')
-            ->where('referencia_tipo', 'venta');
-    }
+    // ============================================
+    // MÉTODOS DE CÁLCULO
+    // ============================================
 
     /**
-     * Scope para ventas en borrador
+     * Recalcular totales desde los detalles
      */
-    public function scopeBorradores($query)
+    public function recalcularTotales(): void
     {
-        return $query->where('estado', 'borrador');
-    }
+        $this->subtotal = $this->detalles()->sum('subtotal');
+        $this->total_isv = $this->detalles()->sum('total_isv');
 
-    /**
-     * Scope para ventas confirmadas
-     */
-    public function scopeConfirmadas($query)
-    {
-        return $query->where('estado', 'confirmada');
-    }
+        $totalBruto = $this->subtotal + $this->total_isv;
+        $this->total = $totalBruto - $this->descuento;
 
-    /**
-     * Scope para ventas canceladas
-     */
-    public function scopeCanceladas($query)
-    {
-        return $query->where('estado', 'cancelada');
-    }
-
-    /**
-     * Scope para ventas liquidadas
-     */
-    public function scopeLiquidadas($query)
-    {
-        return $query->where('estado', 'liquidada');
-    }
-
-    /**
-     * Scope para ventas al contado
-     */
-    public function scopeContado($query)
-    {
-        return $query->where('tipo_pago', 'contado');
-    }
-
-    /**
-     * Scope para ventas a crédito
-     */
-    public function scopeCredito($query)
-    {
-        return $query->where('tipo_pago', 'credito');
-    }
-
-    /**
-     * Scope por cliente
-     */
-    public function scopePorCliente($query, int $clienteId)
-    {
-        return $query->where('cliente_id', $clienteId);
-    }
-
-    /**
-     * Scope por bodega
-     */
-    public function scopePorBodega($query, int $bodegaId)
-    {
-        return $query->where('bodega_id', $bodegaId);
-    }
-
-    /**
-     * Verificar si es borrador
-     */
-    public function esBorrador(): bool
-    {
-        return $this->estado === 'borrador';
-    }
-
-    /**
-     * Verificar si está confirmada
-     */
-    public function estaConfirmada(): bool
-    {
-        return $this->estado === 'confirmada';
-    }
-
-    /**
-     * Verificar si está cancelada
-     */
-    public function estaCancelada(): bool
-    {
-        return $this->estado === 'cancelada';
-    }
-
-    /**
-     * Verificar si está liquidada
-     */
-    public function estaLiquidada(): bool
-    {
-        return $this->estado === 'liquidada';
-    }
-
-    /**
-     * Verificar si es al contado
-     */
-    public function esContado(): bool
-    {
-        return $this->tipo_pago === 'contado';
-    }
-
-    /**
-     * Verificar si es a crédito
-     */
-    public function esCredito(): bool
-    {
-        return $this->tipo_pago === 'credito';
-    }
-
-    /**
-     * Calcular totales desde los detalles
-     */
-    public function calcularTotales(): void
-    {
-        $this->subtotal = $this->detalles->sum('total_linea');
-        $this->impuesto = $this->subtotal * 0.15; // Ejemplo: 15% de impuesto
-        $this->total = $this->subtotal + $this->impuesto;
-
-        // Si es al contado, saldo pendiente = 0
-        // Si es a crédito y no está liquidada, saldo = total
-        if ($this->esContado()) {
-            $this->saldo_pendiente = 0;
-        } elseif ($this->esBorrador() || $this->estaConfirmada()) {
-            $this->saldo_pendiente = $this->total;
-        }
+        $this->saldo_pendiente = $this->total - $this->monto_pagado;
 
         $this->save();
     }
 
     /**
-     * Confirmar la venta y generar movimientos de inventario
+     * Calcular ganancia de la venta
      */
-    public function confirmar(): bool
+    public function calcularGanancia(): float
     {
-        if (!$this->esBorrador()) {
-            return false;
-        }
-
-        DB::beginTransaction();
-
-        try {
-            // Verificar stock disponible
-            foreach ($this->detalles as $detalle) {
-                $stockDisponible = DB::table('bodega_producto')
-                    ->where('bodega_id', $this->bodega_id)
-                    ->where('producto_id', $detalle->producto_id)
-                    ->value('stock') ?? 0;
-
-                if ($stockDisponible < $detalle->cantidad_base) {
-                    throw new \Exception(
-                        "Stock insuficiente para {$detalle->producto->nombre}. " .
-                        "Disponible: {$stockDisponible}, Requerido: {$detalle->cantidad_base}"
-                    );
-                }
-            }
-
-            // Generar movimientos de inventario por cada detalle
-            foreach ($this->detalles as $detalle) {
-                MovimientoInventario::create([
-                    'bodega_id' => $this->bodega_id,
-                    'producto_id' => $detalle->producto_id,
-                    'tipo' => 'salida',
-                    'cantidad_base' => $detalle->cantidad_base,
-                    'referencia_tipo' => 'venta',
-                    'referencia_id' => $this->id,
-                    'nota' => "Venta #{$this->id} - {$this->cliente->nombre}",
-                    'fecha' => $this->fecha,
-                    'user_id' => Auth::id(),
-                ]);
-            }
-
-            // Actualizar estado de la venta
-            $nuevoEstado = $this->esContado() ? 'liquidada' : 'confirmada';
-
-            $this->update([
-                'estado' => $nuevoEstado,
-                'confirmada_por' => Auth::id(),
-                'confirmada_at' => now(),
-            ]);
-
-            DB::commit();
-            return true;
-
-        } catch (\Exception $e) {
-            DB::rollBack();
-            Log::error('Error al confirmar venta: ' . $e->getMessage());
-            throw $e;
-        }
+        $costoTotal = $this->detalles()->sum(DB::raw('cantidad * costo_unitario'));
+        return $this->subtotal - $costoTotal;
     }
 
-    /**
-     * Cancelar la venta
-     */
-    public function cancelar(): bool
-    {
-        if ($this->estaConfirmada() || $this->estaLiquidada()) {
-            // Si ya está confirmada o liquidada, revertir movimientos
-            $this->revertirMovimientos();
-        }
-
-        $this->update(['estado' => 'cancelada']);
-        return true;
-    }
+    // ============================================
+    // MÉTODOS DE PAGO
+    // ============================================
 
     /**
-     * Liquidar la venta (marcar como pagada)
+     * Registrar un pago
      */
-    public function liquidar(): bool
-    {
-        if (!$this->estaConfirmada() || $this->esContado()) {
-            return false;
-        }
-
-        $this->update([
-            'estado' => 'liquidada',
-            'saldo_pendiente' => 0,
+    public function registrarPago(
+        float $monto,
+        string $metodoPago = 'efectivo',
+        ?string $referencia = null,
+        ?string $nota = null
+    ): VentaPago {
+        $pago = $this->pagos()->create([
+            'monto' => $monto,
+            'metodo_pago' => $metodoPago,
+            'referencia' => $referencia,
+            'nota' => $nota,
+            'created_by' => Auth::id(),
         ]);
 
-        return true;
+        $this->monto_pagado += $monto;
+        $this->saldo_pendiente = $this->total - $this->monto_pagado;
+
+        if ($this->saldo_pendiente <= 0) {
+            $this->estado_pago = 'pagado';
+            $this->saldo_pendiente = 0;
+        } elseif ($this->monto_pagado > 0) {
+            $this->estado_pago = 'parcial';
+        }
+
+        $this->save();
+
+        if ($this->tipo_pago === 'credito') {
+            $this->cliente->registrarPago($monto);
+        }
+
+        return $pago;
     }
 
     /**
-     * Registrar un pago parcial
+     * Verificar si está pagada
      */
-    public function registrarPago(float $monto): bool
+    public function estaPagada(): bool
     {
-        if (!$this->esCredito() || $this->estaLiquidada() || $this->estaCancelada()) {
-            return false;
-        }
-
-        $nuevoSaldo = max(0, $this->saldo_pendiente - $monto);
-
-        $this->update([
-            'saldo_pendiente' => $nuevoSaldo,
-            'estado' => $nuevoSaldo <= 0 ? 'liquidada' : 'confirmada',
-        ]);
-
-        return true;
-    }
-
-    /**
-     * Calcular fecha de vencimiento
-     */
-    public function getFechaVencimientoAttribute(): ?\Carbon\Carbon
-    {
-        if (!$this->esCredito() || !$this->plazo_dias) {
-            return null;
-        }
-
-        return $this->fecha->addDays($this->plazo_dias);
+        return $this->estado_pago === 'pagado';
     }
 
     /**
@@ -353,54 +165,250 @@ class Venta extends Model
      */
     public function estaVencida(): bool
     {
-        if (!$this->esCredito() || $this->estaLiquidada()) {
+        if ($this->estaPagada()) {
             return false;
         }
 
-        $fechaVencimiento = $this->fecha_vencimiento;
-        return $fechaVencimiento && $fechaVencimiento->isPast();
-    }
-
-    /**
-     * Calcular días de mora
-     */
-    public function getDiasMoraAttribute(): int
-    {
-        if (!$this->estaVencida()) {
-            return 0;
+        if (!$this->fecha_vencimiento) {
+            return false;
         }
 
-        return now()->diffInDays($this->fecha_vencimiento);
+        return $this->fecha_vencimiento->isPast();
     }
 
     /**
-     * Revertir movimientos de inventario
+     * Obtener días de vencimiento
      */
-    protected function revertirMovimientos(): void
+    public function getDiasVencimiento(): ?int
     {
-        foreach ($this->movimientos as $movimiento) {
-            $movimiento->delete();
+        if (!$this->fecha_vencimiento) {
+            return null;
         }
+
+        return now()->diffInDays($this->fecha_vencimiento, false);
+    }
+
+    // ============================================
+    // MÉTODOS DE ESTADO
+    // ============================================
+
+    /**
+     * Completar venta (descontar stock, actualizar precios cliente)
+     */
+    public function completar(): bool
+    {
+        if ($this->estado !== 'borrador') {
+            return false;
+        }
+
+        DB::transaction(function () {
+            if (!$this->numero_venta) {
+                $this->numero_venta = $this->generarNumeroVenta();
+            }
+
+            foreach ($this->detalles as $detalle) {
+                $bodegaProducto = BodegaProducto::where('bodega_id', $this->bodega_id)
+                    ->where('producto_id', $detalle->producto_id)
+                    ->first();
+
+                if ($bodegaProducto) {
+                    $bodegaProducto->reducirStock($detalle->cantidad);
+                }
+
+                $this->cliente->actualizarUltimoPrecio(
+                    $detalle->producto_id,
+                    $detalle->precio_unitario,
+                    $detalle->precio_con_isv,
+                    $detalle->cantidad
+                );
+            }
+
+            if ($this->tipo_pago === 'credito') {
+                $this->estado = 'pendiente_pago';
+                $this->estado_pago = 'pendiente';
+                $this->saldo_pendiente = $this->total;
+
+                if ($this->cliente->dias_credito > 0) {
+                    $this->fecha_vencimiento = now()->addDays($this->cliente->dias_credito);
+                }
+
+                $this->cliente->agregarDeuda($this->total);
+            } else {
+                $this->estado = 'pagada';
+                $this->estado_pago = 'pagado';
+                $this->monto_pagado = $this->total;
+                $this->saldo_pendiente = 0;
+            }
+
+            $this->save();
+        });
+
+        return true;
     }
 
     /**
-     * Boot del modelo
+     * Cancelar venta
      */
+    public function cancelar(?string $motivo = null): bool
+    {
+        if ($this->estado === 'cancelada') {
+            return false;
+        }
+
+        DB::transaction(function () use ($motivo) {
+            if (in_array($this->estado, ['completada', 'pendiente_pago', 'pagada'])) {
+                foreach ($this->detalles as $detalle) {
+                    $bodegaProducto = BodegaProducto::where('bodega_id', $this->bodega_id)
+                        ->where('producto_id', $detalle->producto_id)
+                        ->first();
+
+                    if ($bodegaProducto) {
+                        $bodegaProducto->agregarStockSinCosto($detalle->cantidad);
+                    }
+                }
+
+                if ($this->tipo_pago === 'credito' && $this->saldo_pendiente > 0) {
+                    $this->cliente->registrarPago($this->saldo_pendiente);
+                }
+            }
+
+            $this->estado = 'cancelada';
+            $this->nota = $this->nota
+                ? $this->nota . "\n[CANCELADA] " . $motivo
+                : "[CANCELADA] " . $motivo;
+
+            $this->save();
+        });
+
+        return true;
+    }
+
+    // ============================================
+    // GENERADORES
+    // ============================================
+
+    /**
+     * Generar número de venta único
+     */
+    protected function generarNumeroVenta(): string
+    {
+        $prefijo = 'V';
+        $bodegaCodigo = str_pad($this->bodega_id, 2, '0', STR_PAD_LEFT);
+        $fecha = now()->format('ymd');
+
+        $ultimaVenta = static::where('numero_venta', 'like', "{$prefijo}{$bodegaCodigo}-{$fecha}%")
+            ->orderBy('numero_venta', 'desc')
+            ->first();
+
+        if ($ultimaVenta) {
+            $ultimoNumero = (int) substr($ultimaVenta->numero_venta, -4);
+            $siguiente = $ultimoNumero + 1;
+        } else {
+            $siguiente = 1;
+        }
+
+        return "{$prefijo}{$bodegaCodigo}-{$fecha}-" . str_pad($siguiente, 4, '0', STR_PAD_LEFT);
+    }
+
+    // ============================================
+    // SCOPES
+    // ============================================
+
+    public function scopeBorrador($query)
+    {
+        return $query->where('estado', 'borrador');
+    }
+
+    public function scopeCompletadas($query)
+    {
+        return $query->whereIn('estado', ['completada', 'pendiente_pago', 'pagada']);
+    }
+
+    public function scopePendientesPago($query)
+    {
+        return $query->where('estado_pago', '!=', 'pagado');
+    }
+
+    public function scopeVencidas($query)
+    {
+        return $query->where('estado_pago', '!=', 'pagado')
+            ->whereNotNull('fecha_vencimiento')
+            ->where('fecha_vencimiento', '<', now());
+    }
+
+    public function scopePagada($query)
+    {
+        return $query->where('estado', 'pagada');
+    }
+
+    public function scopeCancelada($query)
+    {
+        return $query->where('estado', 'cancelada');
+    }
+
+    public function scopeDelCliente($query, int $clienteId)
+    {
+        return $query->where('cliente_id', $clienteId);
+    }
+
+    public function scopeDelDia($query, $fecha = null)
+    {
+        $fecha = $fecha ?? now()->toDateString();
+        return $query->whereDate('created_at', $fecha);
+    }
+
+    public function scopeDelMes($query, $mes = null, $anio = null)
+    {
+        $mes = $mes ?? now()->month;
+        $anio = $anio ?? now()->year;
+
+        return $query->whereMonth('created_at', $mes)
+            ->whereYear('created_at', $anio);
+    }
+
+    // ============================================
+    // HELPERS
+    // ============================================
+
+    /**
+     * Obtener resumen de la venta
+     */
+    public function getResumen(): array
+    {
+        return [
+            'numero_venta' => $this->numero_venta,
+            'cliente' => $this->cliente->nombre,
+            'fecha' => $this->created_at->format('d/m/Y H:i'),
+            'subtotal' => $this->subtotal,
+            'isv' => $this->total_isv,
+            'descuento' => $this->descuento,
+            'total' => $this->total,
+            'tipo_pago' => $this->tipo_pago,
+            'estado' => $this->estado,
+            'estado_pago' => $this->estado_pago,
+            'monto_pagado' => $this->monto_pagado,
+            'saldo_pendiente' => $this->saldo_pendiente,
+            'vencida' => $this->estaVencida(),
+            'dias_vencimiento' => $this->getDiasVencimiento(),
+            'ganancia' => $this->calcularGanancia(),
+        ];
+    }
+
+    // ============================================
+    // BOOT
+    // ============================================
+
     protected static function boot()
     {
         parent::boot();
 
-        // Asignar user_id automáticamente al crear
         static::creating(function ($venta) {
-            if (Auth::check() && !$venta->user_id) {
-                $venta->user_id = Auth::id();
+            if (!$venta->estado) {
+                $venta->estado = 'borrador';
             }
-        });
 
-        // Al eliminar una venta, eliminar sus detalles y movimientos
-        static::deleting(function ($venta) {
-            if ($venta->estaConfirmada() || $venta->estaLiquidada()) {
-                $venta->revertirMovimientos();
+            if (!$venta->estado_pago) {
+                $venta->estado_pago = 'pendiente';
             }
         });
     }

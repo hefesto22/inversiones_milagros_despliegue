@@ -10,110 +10,230 @@ class VentaDetalle extends Model
 {
     use HasFactory;
 
+    protected $table = 'venta_detalles';
+
+    // Tasa de ISV
+    public const ISV_RATE = 0.15;
+
     protected $fillable = [
         'venta_id',
         'producto_id',
-        'unidad_id_presentacion',
-        'cantidad_presentacion',
-        'factor_a_base',
-        'cantidad_base',
-        'precio_unitario_presentacion',
-        'descuento',
+        'unidad_id',
+        'cantidad',
+        'precio_unitario',
+        'precio_con_isv',
+        'costo_unitario',
+        'aplica_isv',
+        'isv_unitario',
+        'descuento_porcentaje',
+        'descuento_monto',
+        'subtotal',
+        'total_isv',
         'total_linea',
+        'precio_anterior',
     ];
 
     protected $casts = [
-        'cantidad_presentacion' => 'decimal:3',
-        'factor_a_base' => 'decimal:6',
-        'cantidad_base' => 'decimal:3',
-        'precio_unitario_presentacion' => 'decimal:4',
-        'descuento' => 'decimal:4',
+        'cantidad' => 'decimal:2',
+        'precio_unitario' => 'decimal:2',
+        'precio_con_isv' => 'decimal:2',
+        'costo_unitario' => 'decimal:2',
+        'aplica_isv' => 'boolean',
+        'isv_unitario' => 'decimal:2',
+        'descuento_porcentaje' => 'decimal:2',
+        'descuento_monto' => 'decimal:2',
+        'subtotal' => 'decimal:2',
+        'total_isv' => 'decimal:2',
         'total_linea' => 'decimal:2',
+        'precio_anterior' => 'decimal:2',
     ];
 
-    /**
-     * Relación con venta
-     */
+    // ============================================
+    // RELACIONES
+    // ============================================
+
     public function venta(): BelongsTo
     {
-        return $this->belongsTo(Venta::class);
+        return $this->belongsTo(Venta::class, 'venta_id');
     }
 
-    /**
-     * Relación con producto
-     */
     public function producto(): BelongsTo
     {
-        return $this->belongsTo(Producto::class);
+        return $this->belongsTo(Producto::class, 'producto_id');
     }
 
-    /**
-     * Relación con unidad de presentación
-     */
-    public function unidadPresentacion(): BelongsTo
+    public function unidad(): BelongsTo
     {
-        return $this->belongsTo(Unidad::class, 'unidad_id_presentacion');
+        return $this->belongsTo(Unidad::class, 'unidad_id');
     }
 
-    /**
-     * Calcular cantidad base automáticamente
-     */
-    public function calcularCantidadBase(): void
-    {
-        $this->cantidad_base = $this->cantidad_presentacion * $this->factor_a_base;
-    }
+    // ============================================
+    // MÉTODOS DE CÁLCULO
+    // ============================================
 
     /**
-     * Calcular total de línea
-     */
-    public function calcularTotalLinea(): void
-    {
-        $subtotal = $this->cantidad_presentacion * $this->precio_unitario_presentacion;
-        $this->total_linea = $subtotal - ($this->descuento ?? 0);
-    }
-
-    /**
-     * Calcular todo automáticamente
+     * Calcular todos los valores de la línea
      */
     public function calcular(): void
     {
-        $this->calcularCantidadBase();
-        $this->calcularTotalLinea();
+        // Subtotal sin ISV
+        $this->subtotal = $this->cantidad * $this->precio_unitario;
+
+        // Calcular ISV si aplica
+        if ($this->aplica_isv) {
+            $this->isv_unitario = round($this->precio_unitario * self::ISV_RATE, 2);
+            $this->precio_con_isv = $this->precio_unitario + $this->isv_unitario;
+            $this->total_isv = $this->cantidad * $this->isv_unitario;
+        } else {
+            $this->isv_unitario = 0;
+            $this->precio_con_isv = $this->precio_unitario;
+            $this->total_isv = 0;
+        }
+
+        // Calcular descuento
+        if ($this->descuento_porcentaje > 0) {
+            $this->descuento_monto = round(($this->subtotal + $this->total_isv) * ($this->descuento_porcentaje / 100), 2);
+        }
+
+        // Total de línea
+        $this->total_linea = $this->subtotal + $this->total_isv - $this->descuento_monto;
     }
 
     /**
-     * Obtener el precio unitario en unidad base
+     * Calcular ganancia de esta línea
      */
-    public function getPrecioUnitarioBaseAttribute(): float
+    public function calcularGanancia(): float
     {
-        if ($this->factor_a_base == 0) {
+        $costoTotal = $this->cantidad * $this->costo_unitario;
+        return $this->subtotal - $costoTotal;
+    }
+
+    /**
+     * Obtener margen de ganancia en porcentaje
+     */
+    public function getMargenPorcentaje(): float
+    {
+        if ($this->costo_unitario <= 0) {
+            return 100;
+        }
+
+        return (($this->precio_unitario - $this->costo_unitario) / $this->costo_unitario) * 100;
+    }
+
+    // ============================================
+    // MÉTODOS ESTÁTICOS
+    // ============================================
+
+    /**
+     * Crear detalle desde producto y cliente
+     */
+    public static function crearDesdeProducto(
+        Venta $venta,
+        Producto $producto,
+        float $cantidad,
+        ?float $precioOverride = null,
+        ?float $descuentoPorcentaje = null
+    ): self {
+        // Obtener precio de bodega_producto
+        $bodegaProducto = BodegaProducto::where('bodega_id', $venta->bodega_id)
+            ->where('producto_id', $producto->id)
+            ->first();
+
+        $precioSugerido = $bodegaProducto?->precio_venta_sugerido ?? 0;
+        $costoActual = $bodegaProducto?->costo_promedio_actual ?? 0;
+
+        // Usar precio override o el sugerido
+        $precioUnitario = $precioOverride ?? $precioSugerido;
+
+        // Obtener último precio del cliente (para mostrar referencia)
+        $precioAnterior = null;
+        $clienteProducto = $venta->cliente->productos()
+            ->where('producto_id', $producto->id)
+            ->first();
+
+        if ($clienteProducto) {
+            $precioAnterior = $clienteProducto->pivot->ultimo_precio_venta;
+        }
+
+        $detalle = new self([
+            'venta_id' => $venta->id,
+            'producto_id' => $producto->id,
+            'unidad_id' => $producto->unidad_id,
+            'cantidad' => $cantidad,
+            'precio_unitario' => $precioUnitario,
+            'costo_unitario' => $costoActual,
+            'aplica_isv' => $producto->aplica_isv ?? true,
+            'descuento_porcentaje' => $descuentoPorcentaje ?? 0,
+            'descuento_monto' => 0,
+            'precio_anterior' => $precioAnterior,
+        ]);
+
+        $detalle->calcular();
+
+        return $detalle;
+    }
+
+    // ============================================
+    // HELPERS
+    // ============================================
+
+    /**
+     * Verificar si el precio cambió respecto al anterior
+     */
+    public function precioCambio(): bool
+    {
+        if (!$this->precio_anterior) {
+            return false;
+        }
+
+        return abs($this->precio_unitario - $this->precio_anterior) > 0.01;
+    }
+
+    /**
+     * Obtener diferencia de precio
+     */
+    public function getDiferenciaPrecio(): float
+    {
+        if (!$this->precio_anterior) {
             return 0;
         }
 
-        return $this->precio_unitario_presentacion / $this->factor_a_base;
+        return $this->precio_unitario - $this->precio_anterior;
     }
 
     /**
-     * Boot del modelo
+     * Obtener diferencia de precio en porcentaje
      */
+    public function getDiferenciaPorcentaje(): float
+    {
+        if (!$this->precio_anterior || $this->precio_anterior == 0) {
+            return 0;
+        }
+
+        return (($this->precio_unitario - $this->precio_anterior) / $this->precio_anterior) * 100;
+    }
+
+    // ============================================
+    // BOOT
+    // ============================================
+
     protected static function boot()
     {
         parent::boot();
 
-        // Calcular automáticamente antes de guardar
         static::saving(function ($detalle) {
             $detalle->calcular();
         });
 
-        // Recalcular totales de la venta después de guardar
         static::saved(function ($detalle) {
-            $detalle->venta->calcularTotales();
+            if ($detalle->venta) {
+                $detalle->venta->recalcularTotales();
+            }
         });
 
-        // Recalcular totales de la venta después de eliminar
         static::deleted(function ($detalle) {
             if ($detalle->venta) {
-                $detalle->venta->calcularTotales();
+                $detalle->venta->recalcularTotales();
             }
         });
     }

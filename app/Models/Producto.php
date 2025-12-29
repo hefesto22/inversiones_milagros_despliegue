@@ -3,68 +3,138 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Producto extends Model
 {
+    use SoftDeletes;
+
     protected $table = 'productos';
+
+    // Tasa de ISV en Honduras (15%)
+    public const ISV_RATE = 0.15;
 
     protected $fillable = [
         'nombre',
-        'tipo',
-        'unidad_base_id',
         'sku',
+        'categoria_id',
+        'unidad_id',
+        'precio_sugerido',
+        'descripcion',
         'activo',
-        'user_id',
-        'user_update',
+        'created_by',
+        'updated_by',
+        'margen_ganancia',
+        'tipo_margen',
+        'aplica_isv', // 🆕 NUEVO CAMPO
     ];
 
     protected $casts = [
         'activo' => 'boolean',
+        'aplica_isv' => 'boolean', // 🆕 CAST
     ];
 
-    /**
-     * Unidad base (pieza, litro, libra, etc.)
-     */
-    public function unidadBase(): BelongsTo
+    // =======================
+    // RELACIONES
+    // =======================
+
+    public function categoria()
     {
-        return $this->belongsTo(Unidad::class, 'unidad_base_id');
+        return $this->belongsTo(Categoria::class, 'categoria_id');
     }
 
-    /**
-     * Presentaciones del producto (ej: cartón, pieza, litro).
-     */
-    public function presentaciones(): HasMany
+    public function unidad()
     {
-        return $this->hasMany(ProductoPresentacion::class, 'producto_id');
+        return $this->belongsTo(Unidad::class, 'unidad_id');
     }
 
-    /**
-     * Relación con bodegas (stock y precio por bodega).
-     */
-    public function bodegas(): BelongsToMany
+    public function imagenes()
     {
-        return $this->belongsToMany(Bodega::class, 'bodega_producto')
-            ->withPivot(['stock', 'stock_min', 'precio_base', 'activo'])
+        return $this->hasMany(ProductoImagen::class, 'producto_id');
+    }
+
+    public function bodegas()
+    {
+        return $this->belongsToMany(Bodega::class, 'bodega_producto', 'producto_id', 'bodega_id')
+            ->withPivot([
+                'stock',
+                'stock_minimo',
+                'activo',
+                'precio_compra_semana_actual',
+                'cantidad_comprada_semana',
+                'fecha_inicio_semana',
+                'precio_venta_calculado',
+            ])
             ->withTimestamps();
     }
 
-    /**
-     * Usuario que creó el producto.
-     */
-    public function creador(): BelongsTo
+    public function bodegaProductos()
     {
-        return $this->belongsTo(User::class, 'user_id');
+        return $this->hasMany(BodegaProducto::class, 'producto_id');
+    }
+
+    public function compraDetalles()
+    {
+        return $this->hasMany(CompraDetalle::class, 'producto_id');
+    }
+
+    public function creador()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function actualizador()
+    {
+        return $this->belongsTo(User::class, 'updated_by');
+    }
+
+    public function lotes()
+    {
+        return $this->hasMany(Lote::class, 'producto_id');
+    }
+
+    public function reempaqueProductos()
+    {
+        return $this->hasMany(ReempaqueProducto::class, 'producto_id');
+    }
+
+    // =======================
+    // 🆕 MÉTODOS DE ISV
+    // =======================
+
+    /**
+     * Calcular precio con ISV
+     * @param float $precioBase Precio sin ISV
+     * @return int Precio con ISV redondeado hacia arriba
+     */
+    public function calcularPrecioConIsv(float $precioBase): int
+    {
+        if (!$this->aplica_isv) {
+            return (int) ceil($precioBase);
+        }
+
+        return (int) ceil($precioBase * (1 + self::ISV_RATE));
     }
 
     /**
-     * Usuario que actualizó el producto por última vez.
+     * Obtener el monto del ISV para un precio dado
+     * @param float $precioBase Precio sin ISV
+     * @return float Monto del ISV
      */
-    public function actualizador(): BelongsTo
+    public function calcularMontoIsv(float $precioBase): float
     {
-        return $this->belongsTo(User::class, 'user_update');
+        if (!$this->aplica_isv) {
+            return 0;
+        }
+
+        return $precioBase * self::ISV_RATE;
     }
 
+    /**
+     * Verificar si el producto aplica ISV
+     */
+    public function tieneIsv(): bool
+    {
+        return $this->aplica_isv ?? true;
+    }
 }

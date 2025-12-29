@@ -6,144 +6,259 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 
 class Compra extends Model
 {
     use HasFactory;
 
+    protected $table = 'compras';
+
     protected $fillable = [
         'proveedor_id',
         'bodega_id',
-        'fecha',
-        'subtotal',
-        'impuesto',
-        'total',
+        'numero_compra', // 🆕
+        'tipo_pago',
+        'interes_porcentaje', // 🆕 (reemplaza interes_credito)
+        'periodo_interes', // 🆕
+        'fecha_inicio_credito', // 🆕
         'estado',
-        'numero_factura',
         'nota',
-        'user_id',
-        'confirmada_por',
-        'confirmada_at',
+        'total',
+        'created_by',
+        'updated_by',
     ];
 
     protected $casts = [
-        'fecha' => 'datetime',
-        'confirmada_at' => 'datetime',
-        'subtotal' => 'decimal:2',
-        'impuesto' => 'decimal:2',
+        'interes_porcentaje' => 'decimal:2', // 🆕
         'total' => 'decimal:2',
+        'fecha_inicio_credito' => 'date', // 🆕
     ];
 
-    /**
-     * Relación con proveedor
-     */
+    // ============================================
+    // RELACIONES
+    // ============================================
+
     public function proveedor(): BelongsTo
     {
-        return $this->belongsTo(Proveedor::class);
+        return $this->belongsTo(Proveedor::class, 'proveedor_id');
     }
 
-    /**
-     * Relación con bodega
-     */
     public function bodega(): BelongsTo
     {
-        return $this->belongsTo(Bodega::class);
+        return $this->belongsTo(Bodega::class, 'bodega_id');
     }
 
-    /**
-     * Relación con detalles de la compra
-     */
+    public function creador(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function actualizador(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'updated_by');
+    }
+
     public function detalles(): HasMany
     {
-        return $this->hasMany(CompraDetalle::class);
+        return $this->hasMany(CompraDetalle::class, 'compra_id');
     }
 
-    /**
-     * Usuario que creó la compra
-     */
-    public function user(): BelongsTo
+    public function lotes(): HasMany
     {
-        return $this->belongsTo(User::class);
+        return $this->hasMany(Lote::class, 'compra_id');
     }
+    // ============================================
+    // SCOPES - Estados Específicos
+    // ============================================
 
-    /**
-     * Usuario que confirmó la compra
-     */
-    public function confirmadaPor(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'confirmada_por');
-    }
-
-    /**
-     * Movimientos de inventario generados
-     */
-    public function movimientos(): HasMany
-    {
-        return $this->hasMany(MovimientoInventario::class, 'referencia_id')
-            ->where('referencia_tipo', 'compra');
-    }
-
-    /**
-     * Scope para compras en borrador
-     */
-    public function scopeBorradores($query)
+    public function scopeBorrador($query)
     {
         return $query->where('estado', 'borrador');
     }
 
-    /**
-     * Scope para compras confirmadas
-     */
-    public function scopeConfirmadas($query)
+    public function scopeOrdenada($query)
     {
-        return $query->where('estado', 'confirmada');
+        return $query->where('estado', 'ordenada');
     }
 
-    /**
-     * Scope para compras canceladas
-     */
-    public function scopeCanceladas($query)
+    public function scopeRecibidaPagada($query)
+    {
+        return $query->where('estado', 'recibida_pagada');
+    }
+
+    public function scopeRecibidaPendientePago($query)
+    {
+        return $query->where('estado', 'recibida_pendiente_pago');
+    }
+
+    public function scopePorRecibirPagada($query)
+    {
+        return $query->where('estado', 'por_recibir_pagada');
+    }
+
+    public function scopePorRecibirPendientePago($query)
+    {
+        return $query->where('estado', 'por_recibir_pendiente_pago');
+    }
+
+    public function scopeCancelada($query)
     {
         return $query->where('estado', 'cancelada');
     }
 
+    // ============================================
+    // SCOPES - Agrupaciones Útiles
+    // ============================================
+
     /**
-     * Scope por proveedor
+     * Compras que están pendientes de recibir la mercancía
      */
-    public function scopePorProveedor($query, int $proveedorId)
+    public function scopePendienteRecibir($query)
     {
-        return $query->where('proveedor_id', $proveedorId);
+        return $query->whereIn('estado', [
+            'ordenada',
+            'por_recibir_pagada',
+            'por_recibir_pendiente_pago'
+        ]);
     }
 
     /**
-     * Scope por bodega
+     * Compras que están pendientes de pago
      */
-    public function scopePorBodega($query, int $bodegaId)
+    public function scopePendientePago($query)
     {
-        return $query->where('bodega_id', $bodegaId);
+        return $query->whereIn('estado', [
+            'recibida_pendiente_pago',
+            'por_recibir_pendiente_pago'
+        ]);
     }
 
     /**
-     * Verificar si es borrador
+     * Compras completadas (recibidas y pagadas)
      */
-    public function esBorrador(): bool
+    public function scopeCompletadas($query)
     {
-        return $this->estado === 'borrador';
+        return $query->where('estado', 'recibida_pagada');
     }
 
     /**
-     * Verificar si está confirmada
+     * Compras activas (no son borrador ni canceladas ni completadas)
      */
-    public function estaConfirmada(): bool
+    public function scopeActivas($query)
     {
-        return $this->estado === 'confirmada';
+        return $query->whereNotIn('estado', ['borrador', 'cancelada', 'recibida_pagada']);
+    }
+
+    // ============================================
+    // 🆕 MÉTODOS PARA CÁLCULO DE INTERESES
+    // ============================================
+
+    /**
+     * Calcular cuántos periodos han pasado desde el inicio del crédito
+     */
+    public function getPeriodosTranscurridos(): int
+    {
+        if (!$this->fecha_inicio_credito || !$this->periodo_interes) {
+            return 0;
+        }
+
+        $fechaInicio = Carbon::parse($this->fecha_inicio_credito);
+        $fechaActual = Carbon::now();
+
+        if ($this->periodo_interes === 'semanal') {
+            return $fechaInicio->diffInWeeks($fechaActual);
+        }
+
+        if ($this->periodo_interes === 'mensual') {
+            return $fechaInicio->diffInMonths($fechaActual);
+        }
+
+        return 0;
     }
 
     /**
-     * Verificar si está cancelada
+     * Calcular interés acumulado hasta la fecha
+     */
+    public function getInteresAcumulado(): float
+    {
+        if (!$this->interes_porcentaje || $this->tipo_pago !== 'credito') {
+            return 0;
+        }
+
+        $periodos = $this->getPeriodosTranscurridos();
+        $tasaInteres = $this->interes_porcentaje / 100;
+
+        // Interés simple: Total * Tasa * Periodos
+        $interesAcumulado = $this->total * $tasaInteres * $periodos;
+
+        return round($interesAcumulado, 2);
+    }
+
+    /**
+     * Calcular el saldo total con intereses
+     */
+    public function getSaldoConIntereses(): float
+    {
+        return $this->total + $this->getInteresAcumulado();
+    }
+
+    /**
+     * Obtener información detallada del crédito
+     */
+    public function getInfoCredito(): array
+    {
+        if ($this->tipo_pago !== 'credito') {
+            return [];
+        }
+
+        return [
+            'monto_original' => $this->total,
+            'interes_porcentaje' => $this->interes_porcentaje,
+            'periodo' => $this->periodo_interes,
+            'fecha_inicio' => $this->fecha_inicio_credito?->format('d/m/Y'),
+            'periodos_transcurridos' => $this->getPeriodosTranscurridos(),
+            'interes_acumulado' => $this->getInteresAcumulado(),
+            'saldo_total' => $this->getSaldoConIntereses(),
+        ];
+    }
+
+    // ============================================
+    // MÉTODOS DE NEGOCIO
+    // ============================================
+
+    /**
+     * Recalcular total basado en detalles
+     */
+    public function recalcularTotal(): void
+    {
+        $this->total = $this->detalles()->sum('subtotal');
+        $this->save();
+    }
+
+    /**
+     * Obtiene el saldo pendiente de pago (actualizado con intereses)
+     */
+    public function getSaldoPendiente(): float
+    {
+        // Solo hay saldo pendiente si la mercancía fue recibida pero no se ha pagado
+        if ($this->estado === 'recibida_pendiente_pago') {
+            // 🆕 Ahora incluye intereses si es a crédito
+            return $this->getSaldoConIntereses();
+        }
+        return 0;
+    }
+
+    /**
+     * Verifica si la compra está completamente finalizada
+     */
+    public function estaCompletada(): bool
+    {
+        return $this->estado === 'recibida_pagada';
+    }
+
+    /**
+     * Verifica si la compra está cancelada
      */
     public function estaCancelada(): bool
     {
@@ -151,103 +266,32 @@ class Compra extends Model
     }
 
     /**
-     * Calcular totales desde los detalles
+     * Verifica si se puede editar (solo borradores)
      */
-    public function calcularTotales(): void
+    public function esEditable(): bool
     {
-        $this->subtotal = $this->detalles->sum('total_linea');
-        $this->impuesto = $this->subtotal * 0.15; // Ejemplo: 15% de impuesto
-        $this->total = $this->subtotal + $this->impuesto;
-        $this->save();
+        return $this->estado === 'borrador';
     }
 
     /**
-     * Confirmar la compra y generar movimientos de inventario
+     * Verifica si ya fue recibida la mercancía
      */
-    public function confirmar(): bool
+    public function fueRecibida(): bool
     {
-        if (!$this->esBorrador()) {
-            return false;
-        }
-
-        DB::beginTransaction();
-
-        try {
-            // Generar movimientos de inventario por cada detalle
-            foreach ($this->detalles as $detalle) {
-                MovimientoInventario::create([
-                    'bodega_id' => $this->bodega_id,
-                    'producto_id' => $detalle->producto_id,
-                    'tipo' => 'entrada',
-                    'cantidad_base' => $detalle->cantidad_base,
-                    'referencia_tipo' => 'compra',
-                    'referencia_id' => $this->id,
-                    'nota' => "Compra #{$this->id} - {$this->proveedor->nombre}",
-                    'fecha' => $this->fecha,
-                    'user_id' => Auth::id(),
-                ]);
-            }
-
-            // Actualizar estado de la compra
-            $this->update([
-                'estado' => 'confirmada',
-                'confirmada_por' => Auth::id(),
-                'confirmada_at' => now(),
-            ]);
-
-            DB::commit();
-            return true;
-
-        } catch (\Exception $e) {
-            DB::rollBack();
-            Log::error('Error al confirmar compra: ' . $e->getMessage());
-            return false;
-        }
+        return in_array($this->estado, [
+            'recibida_pagada',
+            'recibida_pendiente_pago'
+        ]);
     }
 
     /**
-     * Cancelar la compra
+     * Verifica si ya fue pagada
      */
-    public function cancelar(): bool
+    public function fuePagada(): bool
     {
-        if ($this->estaConfirmada()) {
-            // Si ya está confirmada, revertir movimientos
-            $this->revertirMovimientos();
-        }
-
-        $this->update(['estado' => 'cancelada']);
-        return true;
-    }
-
-    /**
-     * Revertir movimientos de inventario
-     */
-    protected function revertirMovimientos(): void
-    {
-        foreach ($this->movimientos as $movimiento) {
-            $movimiento->delete();
-        }
-    }
-
-    /**
-     * Boot del modelo
-     */
-    protected static function boot()
-    {
-        parent::boot();
-
-        // Asignar user_id automáticamente al crear
-        static::creating(function ($compra) {
-            if (Auth::check() && !$compra->user_id) {
-                $compra->user_id = Auth::id();
-            }
-        });
-
-        // Al eliminar una compra, eliminar sus detalles y movimientos
-        static::deleting(function ($compra) {
-            if ($compra->estaConfirmada()) {
-                $compra->revertirMovimientos();
-            }
-        });
+        return in_array($this->estado, [
+            'recibida_pagada',
+            'por_recibir_pagada'
+        ]);
     }
 }

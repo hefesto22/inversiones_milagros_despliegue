@@ -2,23 +2,23 @@
 
 namespace App\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Str;
 use Spatie\Permission\Traits\HasRoles;
 
+/**
+ * @method bool hasRole(string|array|\Spatie\Permission\Contracts\Role $roles, string $guard = null)
+ * @method bool hasAnyRole(string|array|\Spatie\Permission\Contracts\Role $roles, string $guard = null)
+ */
 class User extends Authenticatable
 {
-    /** @use HasFactory<\Database\Factories\UserFactory> */
     use HasFactory, Notifiable, HasRoles;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var list<string>
-     */
     protected $fillable = [
         'name',
         'email',
@@ -26,21 +26,11 @@ class User extends Authenticatable
         'created_by',
     ];
 
-    /**
-     * The attributes that should be hidden for serialization.
-     *
-     * @var list<string>
-     */
     protected $hidden = [
         'password',
         'remember_token',
     ];
 
-    /**
-     * Get the attributes that should be cast.
-     *
-     * @return array<string, string>
-     */
     protected function casts(): array
     {
         return [
@@ -49,9 +39,125 @@ class User extends Authenticatable
         ];
     }
 
-    /**
-     * Get the user's initials
-     */
+    // ============================================
+    // RELACIONES DE AUDITORÍA
+    // ============================================
+
+    public function creador()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function usuariosCreados(): HasMany
+    {
+        return $this->hasMany(User::class, 'created_by');
+    }
+
+    // ============================================
+    // RELACIONES DE BODEGAS
+    // ============================================
+
+    public function bodegas(): BelongsToMany
+    {
+        return $this->belongsToMany(Bodega::class, 'bodega_user')
+            ->withTimestamps();
+    }
+
+    // ============================================
+    // RELACIONES DE CHOFER - CAMIONES
+    // ============================================
+
+    public function asignacionesCamion(): HasMany
+    {
+        return $this->hasMany(CamionChofer::class, 'user_id');
+    }
+
+    public function asignacionCamionActiva(): HasOne
+    {
+        return $this->hasOne(CamionChofer::class, 'user_id')
+            ->where('activo', true)
+            ->whereNull('fecha_fin');
+    }
+
+    // ============================================
+    // RELACIONES DE CHOFER - COMISIONES
+    // ============================================
+
+    public function comisionesConfig(): HasMany
+    {
+        return $this->hasMany(ChoferComisionConfig::class, 'user_id');
+    }
+
+    public function comisionesProducto(): HasMany
+    {
+        return $this->hasMany(ChoferComisionProducto::class, 'user_id');
+    }
+
+    public function cuenta(): HasOne
+    {
+        return $this->hasOne(ChoferCuenta::class, 'user_id');
+    }
+
+    public function cuentaMovimientos(): HasMany
+    {
+        return $this->hasMany(ChoferCuentaMovimiento::class, 'user_id');
+    }
+
+    // ============================================
+    // RELACIONES DE CHOFER - VIAJES
+    // ============================================
+
+    public function viajesComoChofer(): HasMany
+    {
+        return $this->hasMany(Viaje::class, 'chofer_id');
+    }
+
+    public function liquidaciones(): HasMany
+    {
+        return $this->hasMany(Liquidacion::class, 'chofer_id');
+    }
+
+    // ============================================
+    // RELACIONES DE DOCUMENTOS CREADOS
+    // ============================================
+
+    public function comprasCreadas(): HasMany
+    {
+        return $this->hasMany(Compra::class, 'created_by');
+    }
+
+    public function ventasCreadas(): HasMany
+    {
+        return $this->hasMany(Venta::class, 'created_by');
+    }
+
+    public function viajesCreados(): HasMany
+    {
+        return $this->hasMany(Viaje::class, 'created_by');
+    }
+
+    // ============================================
+    // SCOPES
+    // ============================================
+
+    public function scopeChoferes($query)
+    {
+        return $query->whereHas('roles', function ($q) {
+            $q->where('name', 'Chofer');
+        });
+    }
+
+    public function scopeConAccesoBodega($query, int $bodegaId)
+    {
+        return $query->whereHas('bodegas', function ($q) use ($bodegaId) {
+            $q->where('bodega_id', $bodegaId);
+        });
+    }
+
+    // ============================================
+    // MÉTODOS GENERALES
+    // ============================================
+
     public function initials(): string
     {
         return Str::of($this->name)
@@ -61,13 +167,142 @@ class User extends Authenticatable
             ->implode('');
     }
 
-    public function creador()
+    public function tieneAccesoBodega(int $bodegaId): bool
     {
-        return $this->belongsTo(User::class, 'created_by');
+        return $this->bodegas()->where('bodega_id', $bodegaId)->exists();
     }
-    
-    public function bodegas()
+
+    public function getBodegasIds(): array
     {
-        return $this->belongsToMany(\App\Models\Bodega::class, 'bodega_user')->withTimestamps();
+        return $this->bodegas()->pluck('bodegas.id')->toArray();
+    }
+
+    // ============================================
+    // MÉTODOS DE CHOFER
+    // ============================================
+
+    public function esChofer(): bool
+    {
+        return $this->hasRole('Chofer');
+    }
+
+    public function getCamionActual(): ?Camion
+    {
+        return $this->asignacionCamionActiva?->camion;
+    }
+
+    public function tieneViajeActivo(): bool
+    {
+        return $this->viajesComoChofer()
+            ->whereNotIn('estado', ['cerrado', 'cancelado'])
+            ->exists();
+    }
+
+    public function getViajeActivo(): ?Viaje
+    {
+        return $this->viajesComoChofer()
+            ->whereNotIn('estado', ['cerrado', 'cancelado'])
+            ->first();
+    }
+
+    /**
+     * Obtener o crear cuenta del chofer
+     */
+    public function getOrCreateCuenta(): ChoferCuenta
+    {
+        return $this->cuenta ?? ChoferCuenta::create([
+            'user_id' => $this->id,
+            'saldo' => 0,
+            'total_comisiones_historico' => 0,
+            'total_cobros_historico' => 0,
+            'total_pagado_historico' => 0,
+        ]);
+    }
+
+    /**
+     * Obtener saldo actual de cuenta
+     */
+    public function getSaldoCuenta(): float
+    {
+        return $this->cuenta?->saldo ?? 0;
+    }
+
+    /**
+     * Obtener comisión configurada para un producto/categoría
+     */
+    public function getComisionPara(int $productoId, int $categoriaId, ?int $unidadId = null): array
+    {
+        // Primero buscar excepción por producto
+        $comisionProducto = $this->comisionesProducto()
+            ->where('producto_id', $productoId)
+            ->where('activo', true)
+            ->where('vigente_desde', '<=', now())
+            ->where(function ($q) {
+                $q->whereNull('vigente_hasta')
+                    ->orWhere('vigente_hasta', '>=', now());
+            })
+            ->first();
+
+        if ($comisionProducto) {
+            return [
+                'normal' => $comisionProducto->comision_normal,
+                'reducida' => $comisionProducto->comision_reducida,
+                'tipo' => 'producto',
+            ];
+        }
+
+        // Buscar por categoría + unidad
+        $comisionConfig = $this->comisionesConfig()
+            ->where('categoria_id', $categoriaId)
+            ->where('activo', true)
+            ->where('vigente_desde', '<=', now())
+            ->where(function ($q) {
+                $q->whereNull('vigente_hasta')
+                    ->orWhere('vigente_hasta', '>=', now());
+            })
+            ->where(function ($q) use ($unidadId) {
+                $q->where('unidad_id', $unidadId)
+                    ->orWhereNull('unidad_id');
+            })
+            ->orderByRaw('unidad_id IS NULL') // Priorizar específico sobre general
+            ->first();
+
+        if ($comisionConfig) {
+            return [
+                'normal' => $comisionConfig->comision_normal,
+                'reducida' => $comisionConfig->comision_reducida,
+                'tipo' => 'categoria',
+            ];
+        }
+
+        // Sin comisión configurada
+        return [
+            'normal' => 0,
+            'reducida' => 0,
+            'tipo' => 'ninguna',
+        ];
+    }
+
+    /**
+     * Obtener total de comisiones pendientes de liquidar
+     */
+    public function getTotalComisionesPendientes(): float
+    {
+        return $this->viajesComoChofer()
+            ->where('estado', 'cerrado')
+            ->whereDoesntHave('liquidacionViajes')
+            ->sum('neto_chofer');
+    }
+
+    /**
+     * Obtener viajes pendientes de liquidar
+     */
+    public function getViajesPendientesLiquidar()
+    {
+        return $this->viajesComoChofer()
+            ->where('estado', 'cerrado')
+            ->whereDoesntHave('liquidacionViajes')
+            ->orderBy('fecha_salida')
+            ->get();
     }
 }

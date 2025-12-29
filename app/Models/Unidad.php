@@ -2,29 +2,48 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
 class Unidad extends Model
 {
-    use HasFactory;
     protected $table = 'unidades';
 
     protected $fillable = [
         'nombre',
         'simbolo',
         'es_decimal',
-        'user_id',
-        'user_update',
+        'activo',
+        'created_by',
+        'updated_by',
     ];
 
-    public function user()
+    // =======================
+    // RELACIONES
+    // =======================
+
+    // Productos que usan esta unidad
+    public function productos()
     {
-        return $this->belongsTo(User::class, 'user_id');
+        return $this->hasMany(Producto::class);
     }
 
-    public function userUpdate()
+    // Relación con categorías permitidas (nueva pivot categoria_unidad)
+    public function categorias()
     {
-        return $this->belongsTo(User::class, 'user_update');
+        return $this->belongsToMany(Categoria::class, 'categoria_unidad')
+            ->withTimestamps()
+            ->withPivot(['activo', 'created_by', 'updated_by']);
+    }
+
+    // Usuario que creó el registro
+    public function creador()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    // Usuario que actualizó el registro
+    public function actualizador()
+    {
+        return $this->belongsTo(User::class, 'updated_by');
     }
 }

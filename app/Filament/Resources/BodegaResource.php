@@ -3,6 +3,7 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\BodegaResource\Pages;
+use App\Filament\Resources\BodegaResource\RelationManagers\UsuariosRelationManager;
 use App\Models\Bodega;
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -16,103 +17,111 @@ class BodegaResource extends Resource
 
     protected static ?string $navigationIcon = 'heroicon-o-building-storefront';
     protected static ?string $navigationGroup = 'Configuración';
-    protected static ?int $navigationSort = 10;
-
+    protected static ?int $navigationSort = 3;
     protected static ?string $modelLabel = 'Bodega';
     protected static ?string $pluralModelLabel = 'Bodegas';
+    protected static ?string $navigationLabel = 'Bodegas';
 
+    // ======================================================
+    // FORMULARIO
+    // ======================================================
     public static function form(Form $form): Form
     {
-        return $form->schema([
-            Forms\Components\Section::make('Información de la bodega')
-                ->columns(2)
-                ->schema([
-                    Forms\Components\TextInput::make('nombre')
-                        ->label('Nombre')
-                        ->required()
-                        ->maxLength(150),
+        return $form
+            ->schema([
+                Forms\Components\Section::make()
+                    ->schema([
+                        Forms\Components\Grid::make(2)
+                            ->schema([
+                                Forms\Components\TextInput::make('nombre')
+                                    ->required()
+                                    ->maxLength(150)
+                                    ->placeholder('Ej: Bodega Central, Norte, Sucursal #1'),
 
-                    Forms\Components\TextInput::make('ubicacion')
-                        ->label('Ubicación')
-                        ->maxLength(255),
+                                Forms\Components\TextInput::make('codigo')
+                                    ->maxLength(20)
+                                    ->unique(ignoreRecord: true)
+                                    ->placeholder('Ej: BOD-001'),
 
-                    Forms\Components\Toggle::make('activo')
-                        ->label('Activa')
-                        ->default(true)
-                        ->inline(false)
-                        ->columnSpanFull(),
-                ]),
+                                Forms\Components\TextInput::make('ubicacion')
+                                    ->maxLength(255)
+                                    ->placeholder('Ubicación física o dirección'),
 
-            Forms\Components\Section::make('Usuarios asignados')
-                ->description('Selecciona los usuarios que trabajan en esta bodega (sin importar el rol).')
-                ->schema([
-                    Forms\Components\Select::make('usuarios')
-                        ->label('Usuarios')
-                        ->multiple()
-                        ->preload()
-                        ->searchable()
-                        ->relationship('usuarios', 'name') // usa el campo "name" en users
-                        ->helperText('Estos usuarios tendrán esta bodega como su “casa de trabajo”.'),
-                ]),
-        ]);
+                                Forms\Components\Toggle::make('activo')
+                                    ->label('Activo')
+                                    ->default(true),
+                            ]),
+                    ]),
+            ]);
     }
 
+    // ======================================================
+    // TABLA
+    // ======================================================
     public static function table(Table $table): Table
     {
         return $table
             ->columns([
                 Tables\Columns\TextColumn::make('nombre')
-                    ->label('Nombre')
                     ->searchable()
-                    ->sortable(),
+                    ->sortable()
+                    ->weight('bold'),
+
+                Tables\Columns\TextColumn::make('codigo')
+                    ->searchable()
+                    ->label('Código')
+                    ->color('info')
+                    ->toggleable(),
 
                 Tables\Columns\TextColumn::make('ubicacion')
-                    ->label('Ubicación')
+                    ->toggleable()
+                    ->limit(30),
+
+                Tables\Columns\ToggleColumn::make('activo')
+                    ->label('Activo'),
+
+                Tables\Columns\TextColumn::make('creador.name')
+                    ->label('Creado por')
                     ->toggleable(isToggledHiddenByDefault: true),
-
-                Tables\Columns\IconColumn::make('activo')
-                    ->label('Activa')
-                    ->boolean()
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('usuarios_count')
-                    ->counts('usuarios')
-                    ->label('Usuarios asignados')
-                    ->sortable(),
 
                 Tables\Columns\TextColumn::make('created_at')
-                    ->label('Creada')
-                    ->dateTime('Y-m-d H:i')
-                    ->toggleable(isToggledHiddenByDefault: true),
-
-                Tables\Columns\TextColumn::make('updated_at')
-                    ->label('Actualizada')
-                    ->dateTime('Y-m-d H:i')
+                    ->label('Fecha de creación')
+                    ->dateTime('d/m/Y H:i')
+                    ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
                 Tables\Filters\TernaryFilter::make('activo')
-                    ->label('Activa')
-                    ->boolean(),
+                    ->label('Estado')
+                    ->placeholder('Todos')
+                    ->trueLabel('Activas')
+                    ->falseLabel('Inactivas'),
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),
-                Tables\Actions\DeleteAction::make(), // Filament Shield controlará permisos
+                Tables\Actions\DeleteAction::make(),
             ])
             ->bulkActions([
-                Tables\Actions\DeleteBulkAction::make(),
+                Tables\Actions\BulkActionGroup::make([
+                    Tables\Actions\DeleteBulkAction::make(),
+                ]),
             ])
             ->defaultSort('nombre');
     }
 
+    // ======================================================
+    // RELACIONES (AQUÍ SE AGREGA EL RELATION MANAGER)
+    // ======================================================
     public static function getRelations(): array
     {
         return [
-            // Si más adelante deseas gestionar usuarios desde la bodega:
-            // BodegaResource\RelationManagers\UsuariosRelationManager::class,
+            UsuariosRelationManager::class,
         ];
     }
 
+    // ======================================================
+    // PÁGINAS
+    // ======================================================
     public static function getPages(): array
     {
         return [

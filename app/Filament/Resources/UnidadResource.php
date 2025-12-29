@@ -15,94 +15,98 @@ class UnidadResource extends Resource
     protected static ?string $model = Unidad::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-scale';
-    protected static ?string $navigationLabel = 'Unidades';
-    protected static ?string $pluralLabel = 'Unidades';
-    protected static ?string $modelLabel = 'Unidad';
+    protected static ?string $navigationGroup = 'Configuración';
     protected static ?int $navigationSort = 1;
+    protected static ?string $modelLabel = 'Unidad de Medida';
+    protected static ?string $pluralModelLabel = 'Unidades de Medida';
+    protected static ?string $navigationLabel = 'Unidades';
 
+    // =======================================================
+    // FORMULARIO
+    // =======================================================
     public static function form(Form $form): Form
     {
         return $form
             ->schema([
-                Forms\Components\TextInput::make('nombre')
-                    ->label('Nombre')
-                    ->required()
-                    ->maxLength(255)
-                    ->placeholder('Ej: pieza, libra, litro'),
+                Forms\Components\Section::make()
+                    ->schema([
+                        Forms\Components\Grid::make(2)
+                            ->schema([
+                                Forms\Components\TextInput::make('nombre')
+                                    ->required()
+                                    ->maxLength(100)
+                                    ->unique(ignoreRecord: true)
+                                    ->placeholder('Ej: Pieza, Cartón 30, Libra'),
 
-                Forms\Components\TextInput::make('simbolo')
-                    ->label('Símbolo')
-                    ->maxLength(50)
-                    ->placeholder('Ej: pz, lb, L'),
+                                Forms\Components\TextInput::make('simbolo')
+                                    ->maxLength(20)
+                                    ->placeholder('Ej: pz, ct30, lb'),
 
-                Forms\Components\Toggle::make('es_decimal')
-                    ->label('¿Acepta decimales?')
-                    ->default(false),
+                                Forms\Components\Toggle::make('es_decimal')
+                                    ->label('¿Acepta decimales?')
+                                    ->helperText('Activa si la unidad puede tener valores decimales (ej: 2.5 libras)')
+                                    ->default(false),
 
-                // Mostrar solo lectura de quién creó / actualizó
-                Forms\Components\Placeholder::make('creado_por')
-                    ->label('Creado por')
-                    ->content(fn (?Unidad $record) => $record?->user?->name ?? '—')
-                    ->hidden(fn (string $operation) => $operation === 'create'),
-
-                Forms\Components\Placeholder::make('actualizado_por')
-                    ->label('Última actualización por')
-                    ->content(fn (?Unidad $record) => $record?->userUpdate?->name ?? '—')
-                    ->hidden(fn (string $operation) => $operation === 'create'),
-
-                Forms\Components\Placeholder::make('created_at')
-                    ->label('Creado')
-                    ->content(fn (?Unidad $record) => optional($record?->created_at)->format('d/m/Y H:i'))
-                    ->hidden(fn (string $operation) => $operation === 'create'),
-
-                Forms\Components\Placeholder::make('updated_at')
-                    ->label('Actualizado')
-                    ->content(fn (?Unidad $record) => optional($record?->updated_at)->format('d/m/Y H:i'))
-                    ->hidden(fn (string $operation) => $operation === 'create'),
+                                Forms\Components\Toggle::make('activo')
+                                    ->label('Activo')
+                                    ->default(true),
+                            ]),
+                    ]),
             ]);
     }
 
+    // =======================================================
+    // TABLA
+    // =======================================================
     public static function table(Table $table): Table
     {
         return $table
             ->columns([
-                Tables\Columns\TextColumn::make('id')->sortable(),
-
                 Tables\Columns\TextColumn::make('nombre')
-                    ->label('Nombre')
                     ->searchable()
-                    ->sortable(),
+                    ->sortable()
+                    ->weight('bold'),
 
                 Tables\Columns\TextColumn::make('simbolo')
-                    ->label('Símbolo')
-                    ->sortable(),
+                    ->searchable()
+                    ->badge()
+                    ->color('info'),
 
                 Tables\Columns\IconColumn::make('es_decimal')
                     ->label('Decimales')
-                    ->boolean(),
+                    ->boolean()
+                    ->trueIcon('heroicon-o-check-circle')
+                    ->falseIcon('heroicon-o-x-circle')
+                    ->trueColor('success')
+                    ->falseColor('gray'),
 
-                Tables\Columns\TextColumn::make('user.name')
+                Tables\Columns\ToggleColumn::make('activo')
+                    ->label('Activo'),
+
+                Tables\Columns\TextColumn::make('creador.name')
                     ->label('Creado por')
-                    ->sortable()
-                    ->toggleable(),
-
-                Tables\Columns\TextColumn::make('userUpdate.name')
-                    ->label('Actualizado por')
-                    ->sortable()
-                    ->toggleable(),
+                    ->toggleable(isToggledHiddenByDefault: true),
 
                 Tables\Columns\TextColumn::make('created_at')
-                    ->label('Creado')
+                    ->label('Fecha de creación')
                     ->dateTime('d/m/Y H:i')
-                    ->toggleable(isToggledHiddenByDefault: true),
-
-                Tables\Columns\TextColumn::make('updated_at')
-                    ->label('Actualizado')
-                    ->dateTime('d/m/Y H:i')
+                    ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
+            ->filters([
+                Tables\Filters\TernaryFilter::make('activo')
+                    ->label('Estado')
+                    ->placeholder('Todos')
+                    ->trueLabel('Activos')
+                    ->falseLabel('Inactivos'),
+
+                Tables\Filters\TernaryFilter::make('es_decimal')
+                    ->label('Tipo')
+                    ->placeholder('Todos')
+                    ->trueLabel('Con decimales')
+                    ->falseLabel('Enteros'),
+            ])
             ->actions([
-                Tables\Actions\ViewAction::make(),
                 Tables\Actions\EditAction::make(),
                 Tables\Actions\DeleteAction::make(),
             ])
@@ -110,20 +114,27 @@ class UnidadResource extends Resource
                 Tables\Actions\BulkActionGroup::make([
                     Tables\Actions\DeleteBulkAction::make(),
                 ]),
-            ]);
+            ])
+            ->defaultSort('nombre');
     }
 
+    // =======================================================
+    // RELACIONES
+    // =======================================================
     public static function getRelations(): array
     {
         return [];
     }
 
+    // =======================================================
+    // PÁGINAS
+    // =======================================================
     public static function getPages(): array
     {
         return [
-            'index' => Pages\ListUnidads::route('/'),
+            'index'  => Pages\ListUnidads::route('/'),
             'create' => Pages\CreateUnidad::route('/create'),
-            'edit' => Pages\EditUnidad::route('/{record}/edit'),
+            'edit'   => Pages\EditUnidad::route('/{record}/edit'),
         ];
     }
 }

@@ -2,74 +2,68 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
-use Illuminate\Support\Facades\Auth;
 
 class Bodega extends Model
 {
-    use HasFactory;
-
     protected $table = 'bodegas';
 
-    /**
-     * Campos que se pueden asignar en masa
-     */
     protected $fillable = [
         'nombre',
+        'codigo',
         'ubicacion',
         'activo',
-        'user_id',
-        'user_update',
+        'created_by',
+        'updated_by',
     ];
 
-    protected $casts = [
-        'activo' => 'boolean',
-    ];
+    // =======================
+    // RELACIONES
+    // =======================
 
-    /**
-     * Relación: usuarios asignados a la bodega (Many-to-Many)
-     */
-    public function usuarios(): BelongsToMany
+    // Productos y stock por bodega
+    public function productos()
+    {
+        return $this->hasMany(BodegaProducto::class, 'bodega_id');
+    }
+
+    // Usuarios asignados a esta bodega (pivot bodega_user)
+    public function usuarios()
     {
         return $this->belongsToMany(User::class, 'bodega_user')
-            ->withTimestamps();
+            ->withTimestamps()
+            ->withPivot(['rol', 'activo', 'created_by', 'updated_by']);
     }
 
-    /**
-     * Relación: usuario que creó la bodega
-     */
-    public function creador(): BelongsTo
+    // Usuario creador del registro
+    public function creador()
     {
-        return $this->belongsTo(User::class, 'user_id');
+        return $this->belongsTo(User::class, 'created_by');
     }
 
-    /**
-     * Relación: usuario que actualizó por última vez
-     */
-    public function actualizador(): BelongsTo
+    // Usuario que actualizó el registro
+    public function actualizador()
     {
-        return $this->belongsTo(User::class, 'user_update');
+        return $this->belongsTo(User::class, 'updated_by');
     }
 
-    /**
-     * Eventos de creación/actualización automáticos
-     */
-    protected static function booted(): void
+    public function compras()
     {
-        static::creating(function (Bodega $bodega) {
-            if (Auth::check()) {
-                $bodega->user_id = Auth::id();        // usuario que crea
-                $bodega->user_update = Auth::id();    // también como actualizador inicial
-            }
-        });
+        return $this->hasMany(Compra::class, 'bodega_id');
+    }
 
-        static::updating(function (Bodega $bodega) {
-            if (Auth::check()) {
-                $bodega->user_update = Auth::id();    // usuario que edita
-            }
-        });
+    public function lotes()
+    {
+        return $this->hasMany(Lote::class, 'bodega_id');
+    }
+
+    public function reempaques()
+    {
+        return $this->hasMany(Reempaque::class, 'bodega_id');
+    }
+
+    public function reempaqueProductos()
+    {
+        return $this->hasMany(ReempaqueProducto::class, 'bodega_id');
     }
 }

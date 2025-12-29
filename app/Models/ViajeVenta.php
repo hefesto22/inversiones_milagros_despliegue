@@ -6,20 +6,25 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\Auth;
 
 class ViajeVenta extends Model
 {
-    use HasFactory;
+    use HasFactory, SoftDeletes;
+
+    protected $table = 'viaje_ventas';
 
     protected $fillable = [
         'viaje_id',
         'cliente_id',
+        'numero_venta',
         'fecha_venta',
         'tipo_pago',
         'plazo_dias',
         'subtotal',
         'impuesto',
+        'descuento',
         'total',
         'saldo_pendiente',
         'estado',
@@ -32,296 +37,231 @@ class ViajeVenta extends Model
 
     protected $casts = [
         'fecha_venta' => 'datetime',
-        'confirmada_at' => 'datetime',
+        'plazo_dias' => 'integer',
         'subtotal' => 'decimal:2',
         'impuesto' => 'decimal:2',
+        'descuento' => 'decimal:2',
         'total' => 'decimal:2',
         'saldo_pendiente' => 'decimal:2',
-        'plazo_dias' => 'integer',
+        'confirmada_at' => 'datetime',
     ];
 
-    /**
-     * Relación con viaje
-     */
+    // ============================================
+    // RELACIONES
+    // ============================================
+
     public function viaje(): BelongsTo
     {
-        return $this->belongsTo(Viaje::class);
+        return $this->belongsTo(Viaje::class, 'viaje_id');
     }
 
-    /**
-     * Relación con cliente
-     */
     public function cliente(): BelongsTo
     {
-        return $this->belongsTo(Cliente::class);
+        return $this->belongsTo(Cliente::class, 'cliente_id');
     }
 
-    /**
-     * Relación con detalles de la venta
-     */
-    public function detalles(): HasMany
+    public function userCreador(): BelongsTo
     {
-        return $this->hasMany(ViajeVentaDetalle::class);
+        return $this->belongsTo(User::class, 'user_id');
     }
 
-    /**
-     * Usuario que creó la venta (chofer)
-     */
-    public function user(): BelongsTo
-    {
-        return $this->belongsTo(User::class);
-    }
-
-    /**
-     * Usuario que confirmó la venta
-     */
     public function confirmadaPor(): BelongsTo
     {
         return $this->belongsTo(User::class, 'confirmada_por');
     }
 
-    /**
-     * Scope para ventas en borrador
-     */
+    public function detalles(): HasMany
+    {
+        return $this->hasMany(ViajeVentaDetalle::class, 'viaje_venta_id');
+    }
+
+    // ============================================
+    // SCOPES
+    // ============================================
+
     public function scopeBorradores($query)
     {
         return $query->where('estado', 'borrador');
     }
 
-    /**
-     * Scope para ventas confirmadas
-     */
     public function scopeConfirmadas($query)
     {
         return $query->where('estado', 'confirmada');
     }
 
-    /**
-     * Scope para ventas canceladas
-     */
     public function scopeCanceladas($query)
     {
         return $query->where('estado', 'cancelada');
     }
 
-    /**
-     * Scope por viaje
-     */
-    public function scopePorViaje($query, int $viajeId)
-    {
-        return $query->where('viaje_id', $viajeId);
-    }
-
-    /**
-     * Scope por cliente
-     */
-    public function scopePorCliente($query, int $clienteId)
-    {
-        return $query->where('cliente_id', $clienteId);
-    }
-
-    /**
-     * Scope para ventas al contado
-     */
     public function scopeContado($query)
     {
         return $query->where('tipo_pago', 'contado');
     }
 
-    /**
-     * Scope para ventas a crédito
-     */
     public function scopeCredito($query)
     {
         return $query->where('tipo_pago', 'credito');
     }
 
-    /**
-     * Verificar si es borrador
-     */
-    public function esBorrador(): bool
+    public function scopePorViaje($query, int $viajeId)
     {
-        return $this->estado === 'borrador';
+        return $query->where('viaje_id', $viajeId);
     }
 
-    /**
-     * Verificar si está confirmada
-     */
-    public function estaConfirmada(): bool
+    public function scopePorCliente($query, int $clienteId)
     {
-        return $this->estado === 'confirmada';
+        return $query->where('cliente_id', $clienteId);
     }
 
-    /**
-     * Verificar si está cancelada
-     */
-    public function estaCancelada(): bool
-    {
-        return $this->estado === 'cancelada';
-    }
+    // ============================================
+    // MÉTODOS
+    // ============================================
 
     /**
-     * Verificar si es al contado
-     */
-    public function esContado(): bool
-    {
-        return $this->tipo_pago === 'contado';
-    }
-
-    /**
-     * Verificar si es a crédito
-     */
-    public function esCredito(): bool
-    {
-        return $this->tipo_pago === 'credito';
-    }
-
-    /**
-     * Calcular totales desde los detalles
+     * Calcular totales basados en detalles
      */
     public function calcularTotales(): void
     {
-        $this->subtotal = $this->detalles->sum('total_linea');
-        $this->impuesto = $this->subtotal * 0.15; // Ejemplo: 15% de impuesto
-        $this->total = $this->subtotal + $this->impuesto;
+        $subtotal = $this->detalles()->sum('total_linea');
+        $this->subtotal = $subtotal;
+        $this->total = $subtotal + $this->impuesto - $this->descuento;
 
-        // Si es al contado, saldo pendiente = 0
-        // Si es a crédito, saldo = total
-        if ($this->esContado()) {
-            $this->saldo_pendiente = 0;
-        } elseif ($this->esBorrador() || $this->estaConfirmada()) {
-            $this->saldo_pendiente = $this->total;
+        if ($this->estado === 'borrador') {
+            $this->saldo_pendiente = $this->tipo_pago === 'credito' ? $this->total : 0;
         }
 
         $this->save();
     }
 
     /**
-     * Confirmar la venta
-     * Nota: NO genera movimientos de inventario aquí
-     * Los movimientos se generan al cerrar el viaje completo
+     * Confirmar venta
      */
-    public function confirmar(): bool
+    public function confirmar(int $userId): void
     {
-        if (!$this->esBorrador()) {
-            return false;
+        if ($this->estado !== 'borrador') {
+            throw new \Exception('Solo se pueden confirmar ventas en borrador');
         }
 
-        // Verificar que el viaje esté en ruta
-        if (!$this->viaje->estaEnRuta()) {
-            throw new \Exception('El viaje debe estar en ruta para confirmar ventas');
-        }
+        // Verificar disponibilidad en el viaje
+        $this->verificarDisponibilidad();
 
-        // Verificar stock disponible en la carga del viaje
-        foreach ($this->detalles as $detalle) {
-            $cargado = $this->viaje->cargas()
-                ->where('producto_id', $detalle->producto_id)
-                ->sum('cantidad_base');
-
-            $vendido = $this->viaje->ventas()
-                ->where('estado', 'confirmada')
-                ->whereHas('detalles', function ($q) use ($detalle) {
-                    $q->where('producto_id', $detalle->producto_id);
-                })
-                ->get()
-                ->flatMap->detalles
-                ->where('producto_id', $detalle->producto_id)
-                ->sum('cantidad_base');
-
-            $disponible = $cargado - $vendido;
-
-            if ($disponible < $detalle->cantidad_base) {
-                throw new \Exception(
-                    "Stock insuficiente en el viaje para {$detalle->producto->nombre}. " .
-                    "Disponible: {$disponible}, Requerido: {$detalle->cantidad_base}"
-                );
+        // Verificar crédito del cliente si es a crédito
+        if ($this->tipo_pago === 'credito') {
+            if (!$this->cliente->tieneCreditoDisponible($this->total)) {
+                throw new \Exception('El cliente no tiene crédito disponible suficiente');
             }
         }
 
         $this->update([
             'estado' => 'confirmada',
-            'confirmada_por' => Auth::id(),
+            'confirmada_por' => $userId,
             'confirmada_at' => now(),
         ]);
-
-        return true;
     }
 
     /**
-     * Cancelar la venta
+     * Cancelar venta
      */
-    public function cancelar(): bool
+    public function cancelar(): void
     {
+        if ($this->estado === 'cancelada') {
+            throw new \Exception('La venta ya está cancelada');
+        }
+
+        if ($this->viaje->estado === 'finalizado') {
+            throw new \Exception('No se puede cancelar una venta de un viaje finalizado');
+        }
+
         $this->update(['estado' => 'cancelada']);
-        return true;
     }
 
     /**
-     * Calcular fecha de vencimiento
+     * Registrar cobro
      */
-    public function getFechaVencimientoAttribute(): ?\Carbon\Carbon
+    public function registrarCobro(float $monto): void
     {
-        if (!$this->esCredito() || !$this->plazo_dias) {
-            return null;
+        if ($this->tipo_pago !== 'credito') {
+            throw new \Exception('Solo se pueden registrar cobros en ventas a crédito');
         }
 
-        return $this->fecha_venta->addDays($this->plazo_dias);
-    }
-
-    /**
-     * Verificar si está vencida
-     */
-    public function estaVencida(): bool
-    {
-        if (!$this->esCredito() || $this->saldo_pendiente <= 0) {
-            return false;
+        if ($monto > $this->saldo_pendiente) {
+            throw new \Exception('El monto excede el saldo pendiente');
         }
 
-        $fechaVencimiento = $this->fecha_vencimiento;
-        return $fechaVencimiento && $fechaVencimiento->isPast();
+        $this->decrement('saldo_pendiente', $monto);
     }
 
     /**
-     * Calcular días de mora
+     * Verificar disponibilidad de productos en el viaje
      */
-    public function getDiasMoraAttribute(): int
+    protected function verificarDisponibilidad(): void
     {
-        if (!$this->estaVencida()) {
-            return 0;
+        foreach ($this->detalles as $detalle) {
+            // Buscar la carga correspondiente
+            $carga = $this->viaje->cargas()
+                ->where('producto_id', $detalle->producto_id)
+                ->first();
+
+            if (!$carga) {
+                throw new \Exception("El producto {$detalle->producto->nombre} no está cargado en este viaje");
+            }
+
+            // Verificar disponibilidad
+            $disponible = $carga->getCantidadDisponible();
+
+            if ($disponible < $detalle->cantidad_base) {
+                throw new \Exception("Stock insuficiente de {$detalle->producto->nombre} en el viaje. Disponible: {$disponible}");
+            }
+        }
+    }
+
+    /**
+     * Obtener total de comisiones generadas
+     */
+    public function getTotalComisiones(): float
+    {
+        $total = 0;
+
+        foreach ($this->detalles as $detalle) {
+            $config = ComisionChoferConfig::where('chofer_user_id', $this->viaje->chofer_user_id)
+                ->where(function ($q) use ($detalle) {
+                    $q->where('producto_id', $detalle->producto_id)
+                      ->orWhere('tipo_producto', $detalle->producto->tipo);
+                })
+                ->whereNull('vigente_hasta')
+                ->first();
+
+            if ($config) {
+                $comisionData = $config->calcularComision(
+                    $detalle->cantidad_presentacion,
+                    $detalle->precio_unitario_presentacion,
+                    $detalle->precio_referencia ?? 0
+                );
+
+                $total += $comisionData['comision_neta'];
+            }
         }
 
-        return now()->diffInDays($this->fecha_vencimiento);
+        return $total;
     }
 
     /**
-     * Registrar un pago parcial
-     */
-    public function registrarPago(float $monto): bool
-    {
-        if (!$this->esCredito() || $this->saldo_pendiente <= 0) {
-            return false;
-        }
-
-        $nuevoSaldo = max(0, $this->saldo_pendiente - $monto);
-
-        $this->update([
-            'saldo_pendiente' => $nuevoSaldo,
-        ]);
-
-        return true;
-    }
-
-    /**
-     * Boot del modelo
+     * Boot method para eventos
      */
     protected static function boot()
     {
         parent::boot();
 
-        // Asignar user_id automáticamente al crear
         static::creating(function ($venta) {
-            if (Auth::check() && !$venta->user_id) {
-                $venta->user_id = Auth::id();
+            // Generar número de venta si no existe
+            if (!$venta->numero_venta) {
+                $venta->numero_venta = 'VR-' . $venta->viaje_id . '-' . str_pad(
+                    $venta->viaje->ventas()->count() + 1,
+                    4,
+                    '0',
+                    STR_PAD_LEFT
+                );
             }
         });
     }

@@ -2,76 +2,17 @@
 
 namespace App\Filament\Resources\ClienteResource\RelationManagers;
 
-use App\Models\Producto;
-use App\Models\Unidad;
-use Filament\Forms;
-use Filament\Forms\Form;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Tables;
 use Filament\Tables\Table;
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\Auth;
 
 class PreciosRelationManager extends RelationManager
 {
-    protected static string $relationship = 'precios';
+    protected static string $relationship = 'preciosCliente';
 
-    protected static ?string $title = 'Precios de Venta';
+    protected static ?string $title = 'Historial de Precios';
 
-    protected static ?string $modelLabel = 'Precio de Venta';
-
-    protected static ?string $pluralModelLabel = 'Precios de Venta';
-
-    public function form(Form $form): Form
-    {
-        return $form
-            ->schema([
-                Forms\Components\Section::make('Información del Precio')
-                    ->columns(12)
-                    ->schema([
-                        Forms\Components\Select::make('producto_id')
-                            ->label('Producto')
-                            ->options(Producto::pluck('nombre', 'id'))
-                            ->searchable()
-                            ->preload()
-                            ->required()
-                            ->columnSpan(6),
-
-                        Forms\Components\Select::make('unidad_id')
-                            ->label('Unidad')
-                            ->options(Unidad::pluck('nombre', 'id'))
-                            ->searchable()
-                            ->preload()
-                            ->required()
-                            ->columnSpan(6),
-
-                        Forms\Components\TextInput::make('precio_venta')
-                            ->label('Precio de Venta')
-                            ->numeric()
-                            ->required()
-                            ->minValue(0)
-                            ->step(0.0001)
-                            ->prefix('L')
-                            ->rules(['decimal:0,4'])
-                            ->columnSpan(4),
-
-                        Forms\Components\DatePicker::make('vigente_desde')
-                            ->label('Vigente Desde')
-                            ->required()
-                            ->default(now())
-                            ->native(false)
-                            ->displayFormat('Y-m-d')
-                            ->columnSpan(4),
-
-                        Forms\Components\DatePicker::make('vigente_hasta')
-                            ->label('Vigente Hasta')
-                            ->nullable()
-                            ->native(false)
-                            ->displayFormat('Y-m-d')
-                            ->columnSpan(4),
-                    ]),
-            ]);
-    }
+    protected static ?string $modelLabel = 'precio';
 
     public function table(Table $table): Table
     {
@@ -80,128 +21,75 @@ class PreciosRelationManager extends RelationManager
             ->columns([
                 Tables\Columns\TextColumn::make('producto.nombre')
                     ->label('Producto')
+                    ->sortable()
                     ->searchable()
-                    ->sortable(),
+                    ->weight('bold'),
 
-                Tables\Columns\TextColumn::make('unidad.nombre')
+                Tables\Columns\TextColumn::make('producto.unidad.nombre')
                     ->label('Unidad')
-                    ->searchable()
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('precio_venta')
-                    ->label('Precio de Venta')
-                    ->money('HNL')
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('vigente_desde')
-                    ->label('Vigente Desde')
-                    ->date('Y-m-d')
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('vigente_hasta')
-                    ->label('Vigente Hasta')
-                    ->date('Y-m-d')
-                    ->placeholder('Vigente')
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('estado')
-                    ->label('Estado')
                     ->badge()
-                    ->getStateUsing(function ($record) {
-                        if (is_null($record->vigente_hasta)) {
-                            return 'Vigente';
-                        }
-                        return $record->vigente_hasta->isFuture() ? 'Vigente' : 'Histórico';
-                    })
-                    ->color(fn (string $state): string => match ($state) {
-                        'Vigente' => 'success',
-                        'Histórico' => 'gray',
-                    }),
+                    ->color('info'),
 
-                Tables\Columns\TextColumn::make('user.name')
-                    ->label('Creado por')
-                    ->toggleable(isToggledHiddenByDefault: true),
+                Tables\Columns\TextColumn::make('ultimo_precio_venta')
+                    ->label('Último Precio')
+                    ->money('HNL')
+                    ->sortable()
+                    ->weight('bold')
+                    ->color('success'),
 
-                Tables\Columns\TextColumn::make('created_at')
-                    ->label('Fecha de Creación')
-                    ->dateTime('Y-m-d H:i')
-                    ->toggleable(isToggledHiddenByDefault: true)
+                Tables\Columns\TextColumn::make('ultimo_precio_con_isv')
+                    ->label('Precio + ISV')
+                    ->money('HNL')
+                    ->sortable()
+                    ->color('warning')
+                    ->description('Con 15% ISV'),
+
+                Tables\Columns\TextColumn::make('cantidad_ultima_venta')
+                    ->label('Últ. Cantidad')
+                    ->numeric(decimalPlaces: 2)
                     ->sortable(),
+
+                Tables\Columns\TextColumn::make('fecha_ultima_venta')
+                    ->label('Última Venta')
+                    ->dateTime('d/m/Y H:i')
+                    ->sortable()
+                    ->description(fn ($record) => $record->fecha_ultima_venta
+                        ? $record->fecha_ultima_venta->diffForHumans()
+                        : null
+                    ),
+
+                Tables\Columns\TextColumn::make('total_ventas')
+                    ->label('Veces Vendido')
+                    ->numeric()
+                    ->sortable()
+                    ->badge()
+                    ->color('primary'),
+
+                Tables\Columns\TextColumn::make('cantidad_total_vendida')
+                    ->label('Total Vendido')
+                    ->numeric(decimalPlaces: 2)
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
-                Tables\Filters\SelectFilter::make('producto_id')
-                    ->label('Producto')
-                    ->options(Producto::pluck('nombre', 'id'))
-                    ->searchable()
-                    ->preload(),
+                Tables\Filters\Filter::make('con_ventas_recientes')
+                    ->label('Ventas últimos 30 días')
+                    ->query(fn ($query) => $query->where('fecha_ultima_venta', '>=', now()->subDays(30))),
 
-                Tables\Filters\SelectFilter::make('unidad_id')
-                    ->label('Unidad')
-                    ->options(Unidad::pluck('nombre', 'id'))
-                    ->searchable()
-                    ->preload(),
-
-                Tables\Filters\Filter::make('estado')
-                    ->label('Estado')
-                    ->form([
-                        Forms\Components\Select::make('estado')
-                            ->label('Estado')
-                            ->options([
-                                'vigente' => 'Vigente',
-                                'historico' => 'Histórico',
-                            ])
-                            ->placeholder('Todos'),
-                    ])
-                    ->query(function (Builder $query, array $data): Builder {
-                        return $query->when(
-                            $data['estado'] === 'vigente',
-                            fn (Builder $q) => $q->whereNull('vigente_hasta')
-                                ->orWhere('vigente_hasta', '>=', now())
-                        )->when(
-                            $data['estado'] === 'historico',
-                            fn (Builder $q) => $q->whereNotNull('vigente_hasta')
-                                ->where('vigente_hasta', '<', now())
-                        );
-                    }),
-
-                Tables\Filters\Filter::make('vigente_desde')
-                    ->label('Rango de Fechas')
-                    ->form([
-                        Forms\Components\DatePicker::make('desde')
-                            ->label('Desde')
-                            ->native(false),
-                        Forms\Components\DatePicker::make('hasta')
-                            ->label('Hasta')
-                            ->native(false),
-                    ])
-                    ->query(function (Builder $query, array $data): Builder {
-                        return $query
-                            ->when(
-                                $data['desde'],
-                                fn (Builder $query, $date): Builder => $query->whereDate('vigente_desde', '>=', $date),
-                            )
-                            ->when(
-                                $data['hasta'],
-                                fn (Builder $query, $date): Builder => $query->whereDate('vigente_desde', '<=', $date),
-                            );
-                    }),
-            ])
-            ->headerActions([
-                Tables\Actions\CreateAction::make()
-                    ->mutateFormDataUsing(function (array $data): array {
-                        $data['user_id'] = Auth::id();
-                        return $data;
-                    }),
+                Tables\Filters\Filter::make('productos_frecuentes')
+                    ->label('Productos frecuentes (5+ ventas)')
+                    ->query(fn ($query) => $query->where('total_ventas', '>=', 5)),
             ])
             ->actions([
-                Tables\Actions\EditAction::make(),
-                Tables\Actions\DeleteAction::make(),
+                Tables\Actions\Action::make('ver_producto')
+                    ->label('Ver Producto')
+                    ->icon('heroicon-o-eye')
+                    ->color('info')
+                    ->url(fn ($record) => route('filament.admin.resources.productos.edit', ['record' => $record->producto_id])),
             ])
-            ->bulkActions([
-                Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make(),
-                ]),
-            ])
-            ->defaultSort('vigente_desde', 'desc');
+            ->defaultSort('fecha_ultima_venta', 'desc')
+            ->emptyStateHeading('Sin historial de precios')
+            ->emptyStateDescription('Cuando se realicen ventas a este cliente, aquí aparecerá el historial de precios por producto.')
+            ->emptyStateIcon('heroicon-o-currency-dollar');
     }
 }
