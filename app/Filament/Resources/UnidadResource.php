@@ -37,10 +37,13 @@ class UnidadResource extends Resource
                                     ->maxLength(100)
                                     ->unique(ignoreRecord: true)
                                     ->placeholder('Ej: Pieza, Cartón 30, Libra'),
-
-                                Forms\Components\TextInput::make('simbolo')
-                                    ->maxLength(20)
-                                    ->placeholder('Ej: pz, ct30, lb'),
+                                    Forms\Components\TextInput::make('simbolo')
+                                    ->label('Factor/Equivalencia')
+                                    ->numeric()
+                                    ->step(0.01)
+                                    ->default(1)
+                                    ->required()
+                                    ->helperText('Ej: 1 para Cartón, 0.5 para Medio Cartón, 2 para 2 Libras'),
 
                                 Forms\Components\Toggle::make('es_decimal')
                                     ->label('¿Acepta decimales?')

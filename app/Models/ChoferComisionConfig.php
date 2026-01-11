@@ -51,52 +51,9 @@ class ChoferComisionConfig extends Model
         return $this->belongsTo(Unidad::class, 'unidad_id');
     }
 
-    public function creador(): BelongsTo
+    public function creadoPor(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
-    }
-
-    // ============================================
-    // MÉTODOS
-    // ============================================
-
-    public function estaVigente(): bool
-    {
-        if (!$this->activo) {
-            return false;
-        }
-
-        $hoy = now()->startOfDay();
-
-        if ($this->vigente_desde > $hoy) {
-            return false;
-        }
-
-        if ($this->vigente_hasta && $this->vigente_hasta < $hoy) {
-            return false;
-        }
-
-        return true;
-    }
-
-    public function finalizar(): void
-    {
-        $this->vigente_hasta = now();
-        $this->activo = false;
-        $this->save();
-    }
-
-    public function getDescripcion(): string
-    {
-        $desc = $this->categoria->nombre ?? 'Sin categoría';
-
-        if ($this->unidad) {
-            $desc .= ' - ' . $this->unidad->nombre;
-        } else {
-            $desc .= ' (cualquier presentación)';
-        }
-
-        return $desc;
     }
 
     // ============================================
@@ -110,14 +67,10 @@ class ChoferComisionConfig extends Model
 
     public function scopeVigentes($query)
     {
-        $hoy = now()->startOfDay();
-
-        return $query->where('activo', true)
-            ->where('vigente_desde', '<=', $hoy)
-            ->where(function ($q) use ($hoy) {
-                $q->whereNull('vigente_hasta')
-                    ->orWhere('vigente_hasta', '>=', $hoy);
-            });
+        return $query->where(function ($q) {
+            $q->whereNull('vigente_hasta')
+              ->orWhere('vigente_hasta', '>=', now());
+        });
     }
 
     public function scopeDelChofer($query, int $userId)
@@ -128,5 +81,51 @@ class ChoferComisionConfig extends Model
     public function scopeDeCategoria($query, int $categoriaId)
     {
         return $query->where('categoria_id', $categoriaId);
+    }
+
+    // ============================================
+    // MÉTODOS
+    // ============================================
+
+    /**
+     * Verificar si está vigente
+     */
+    public function estaVigente(): bool
+    {
+        if (!$this->activo) {
+            return false;
+        }
+
+        if ($this->vigente_hasta && $this->vigente_hasta < now()) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Obtener comisión según precio de venta
+     */
+    public function getComision(float $precioVenta, float $precioSugerido): float
+    {
+        if ($precioVenta >= $precioSugerido) {
+            return $this->comision_normal;
+        }
+
+        return $this->comision_reducida;
+    }
+
+    /**
+     * Descripción para mostrar
+     */
+    public function getDescripcion(): string
+    {
+        $desc = $this->categoria?->nombre ?? 'Sin categoría';
+        
+        if ($this->unidad) {
+            $desc .= ' (' . $this->unidad->nombre . ')';
+        }
+
+        return $desc;
     }
 }

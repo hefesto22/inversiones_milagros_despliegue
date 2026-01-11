@@ -12,6 +12,9 @@ class ViajeCarga extends Model
 
     protected $table = 'viaje_cargas';
 
+    // Tasa de ISV en Honduras (15%)
+    public const ISV_RATE = 0.15;
+
     protected $fillable = [
         'viaje_id',
         'producto_id',
@@ -63,12 +66,56 @@ class ViajeCarga extends Model
     // ============================================
 
     /**
-     * Calcular subtotales
+     * Calcular subtotales considerando ISV si aplica
      */
     public function calcular(): void
     {
+        // Subtotal costo (siempre sin ISV)
         $this->subtotal_costo = $this->cantidad * $this->costo_unitario;
-        $this->subtotal_venta = $this->cantidad * $this->precio_venta_sugerido;
+
+        // Subtotal venta (con ISV si el producto lo aplica)
+        $precioBase = $this->precio_venta_sugerido;
+        
+        // Verificar si el producto aplica ISV
+        $aplicaIsv = $this->producto?->aplica_isv ?? false;
+        
+        if ($aplicaIsv) {
+            // Precio con ISV redondeado hacia arriba (por unidad)
+            $precioConIsv = ceil($precioBase * (1 + self::ISV_RATE));
+            $this->subtotal_venta = $this->cantidad * $precioConIsv;
+        } else {
+            $this->subtotal_venta = $this->cantidad * $precioBase;
+        }
+    }
+
+    /**
+     * Obtener precio con ISV (unitario)
+     */
+    public function getPrecioConIsv(): float
+    {
+        $precioBase = $this->precio_venta_sugerido ?? 0;
+        $aplicaIsv = $this->producto?->aplica_isv ?? false;
+        
+        if ($aplicaIsv) {
+            return ceil($precioBase * (1 + self::ISV_RATE));
+        }
+        
+        return $precioBase;
+    }
+
+    /**
+     * Obtener monto de ISV del subtotal
+     */
+    public function getMontoIsv(): float
+    {
+        $aplicaIsv = $this->producto?->aplica_isv ?? false;
+        
+        if (!$aplicaIsv) {
+            return 0;
+        }
+        
+        $subtotalSinIsv = $this->cantidad * $this->precio_venta_sugerido;
+        return $this->subtotal_venta - $subtotalSinIsv;
     }
 
     /**
@@ -149,7 +196,9 @@ class ViajeCarga extends Model
             'porcentaje_vendido' => round($this->getPorcentajeVendido(), 2),
             'costo_unitario' => $this->costo_unitario,
             'precio_sugerido' => $this->precio_venta_sugerido,
+            'precio_con_isv' => $this->getPrecioConIsv(),
             'precio_minimo' => $this->precio_venta_minimo,
+            'aplica_isv' => $this->producto?->aplica_isv ?? false,
         ];
     }
 

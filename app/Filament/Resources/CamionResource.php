@@ -164,12 +164,45 @@ class CamionResource extends Resource
                     ->badge()
                     ->color('info'),
 
-                Tables\Columns\TextColumn::make('choferActual.name')
+                Tables\Columns\TextColumn::make('chofer_viaje_activo')
                     ->label('Chofer Actual')
-                    ->getStateUsing(fn ($record) => $record->getChoferActual()?->name)
+                    ->getStateUsing(function ($record) {
+                        // Obtener el chofer del viaje activo
+                        $viajeActivo = $record->getViajeActivo();
+                        return $viajeActivo?->chofer?->name;
+                    })
                     ->badge()
                     ->color('success')
                     ->placeholder('Sin asignar'),
+
+                Tables\Columns\TextColumn::make('viaje_estado')
+                    ->label('Estado Viaje')
+                    ->getStateUsing(function ($record) {
+                        $viajeActivo = $record->getViajeActivo();
+                        if (!$viajeActivo) {
+                            return null;
+                        }
+                        return match ($viajeActivo->estado) {
+                            'planificado' => 'Planificado',
+                            'cargando' => 'Cargando',
+                            'en_ruta' => 'En Ruta',
+                            'regresando' => 'Regresando',
+                            'descargando' => 'Descargando',
+                            'liquidando' => 'Liquidando',
+                            default => $viajeActivo->estado,
+                        };
+                    })
+                    ->badge()
+                    ->color(fn ($state) => match ($state) {
+                        'Planificado' => 'gray',
+                        'Cargando' => 'info',
+                        'En Ruta' => 'warning',
+                        'Regresando' => 'primary',
+                        'Descargando' => 'info',
+                        'Liquidando' => 'warning',
+                        default => 'gray',
+                    })
+                    ->placeholder('Disponible'),
 
                 Tables\Columns\IconColumn::make('activo')
                     ->label('Activo')
@@ -195,6 +228,20 @@ class CamionResource extends Resource
                     ->placeholder('Todos')
                     ->trueLabel('Activos')
                     ->falseLabel('Inactivos'),
+                
+                Tables\Filters\Filter::make('con_viaje_activo')
+                    ->label('Con viaje activo')
+                    ->query(fn (Builder $query) => $query->whereHas('viajes', function ($q) {
+                        $q->whereNotIn('estado', ['cerrado', 'cancelado']);
+                    }))
+                    ->toggle(),
+
+                Tables\Filters\Filter::make('disponibles')
+                    ->label('Disponibles')
+                    ->query(fn (Builder $query) => $query->whereDoesntHave('viajes', function ($q) {
+                        $q->whereNotIn('estado', ['cerrado', 'cancelado']);
+                    }))
+                    ->toggle(),
             ])
             ->actions([
                 Tables\Actions\EditAction::make(),

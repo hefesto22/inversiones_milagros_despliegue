@@ -14,8 +14,8 @@ class ViajeComisionDetalle extends Model
 
     protected $fillable = [
         'viaje_id',
-        'venta_id',
-        'venta_detalle_id',
+        'viaje_venta_id',
+        'viaje_venta_detalle_id',
         'producto_id',
         'cantidad',
         'precio_vendido',
@@ -50,12 +50,12 @@ class ViajeComisionDetalle extends Model
 
     public function venta(): BelongsTo
     {
-        return $this->belongsTo(Venta::class, 'venta_id');
+        return $this->belongsTo(ViajeVenta::class, 'viaje_venta_id');
     }
 
     public function ventaDetalle(): BelongsTo
     {
-        return $this->belongsTo(VentaDetalle::class, 'venta_detalle_id');
+        return $this->belongsTo(ViajeVentaDetalle::class, 'viaje_venta_detalle_id');
     }
 
     public function producto(): BelongsTo
@@ -146,7 +146,7 @@ class ViajeComisionDetalle extends Model
 
     public function scopeDeLaVenta($query, int $ventaId)
     {
-        return $query->where('venta_id', $ventaId);
+        return $query->where('viaje_venta_id', $ventaId);
     }
 
     public function scopeNormales($query)

@@ -84,8 +84,12 @@ return new class extends Migration
                 ->comment('Comisión total ganada en este viaje');
             $table->decimal('cobros_devoluciones', 14, 2)->default(0)
                 ->comment('Total cobrado al chofer por devoluciones');
-            $table->decimal('neto_chofer', 14, 2)->default(0)
+                $table->decimal('neto_chofer', 14, 2)->default(0)
                 ->comment('comision_ganada - cobros_devoluciones');
+            
+            // Pago de comisiones
+            $table->boolean('comision_pagada')->default(false);
+            $table->date('fecha_pago_comision')->nullable();
 
             // Efectivo
             $table->decimal('efectivo_inicial', 14, 2)->default(0)
@@ -255,7 +259,7 @@ return new class extends Migration
             $table->index(['viaje_id', 'motivo']);
         });
 
-        // =====================================================
+// =====================================================
         // 📊 DETALLE DE COMISIONES POR VIAJE
         // =====================================================
         Schema::create('viaje_comision_detalle', function (Blueprint $table) {
@@ -265,13 +269,9 @@ return new class extends Migration
                 ->constrained('viajes')
                 ->cascadeOnDelete();
 
-            $table->foreignId('venta_id')
-                ->constrained('ventas')
-                ->cascadeOnDelete();
-
-            $table->foreignId('venta_detalle_id')
-                ->constrained('venta_detalles')
-                ->cascadeOnDelete();
+            // Sin foreign key directo - se agregan después en la migración de viaje_ventas
+            $table->unsignedBigInteger('viaje_venta_id');
+            $table->unsignedBigInteger('viaje_venta_detalle_id');
 
             $table->foreignId('producto_id')
                 ->constrained('productos')

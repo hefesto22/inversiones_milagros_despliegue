@@ -9,10 +9,13 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use App\Models\ViajeVenta;
+use App\Models\Traits\CalculaComisionesViaje;
 
 class Viaje extends Model
 {
     use HasFactory;
+    use CalculaComisionesViaje;
 
     protected $table = 'viajes';
 
@@ -127,7 +130,13 @@ class Viaje extends Model
     {
         return $this->hasMany(Venta::class, 'viaje_id');
     }
-
+    /**
+     * Ventas realizadas en ruta (Punto de Venta del Chofer)
+     */
+    public function ventasRuta(): HasMany
+    {
+        return $this->hasMany(ViajeVenta::class, 'viaje_id');
+    }
     public function liquidacionViajes(): HasMany
     {
         return $this->hasMany(LiquidacionViaje::class, 'viaje_id');

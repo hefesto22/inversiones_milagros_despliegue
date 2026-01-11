@@ -73,6 +73,24 @@ class ViajeResource extends Resource
         return $bodegaAsignada;
     }
 
+    /**
+     * Obtener IDs de choferes ocupados (asignados a viajes activos)
+     */
+    protected static function getChoferesOcupados(?int $viajeActualId = null): array
+    {
+        $query = Viaje::whereNotIn('estado', [
+            Viaje::ESTADO_CERRADO,
+            Viaje::ESTADO_CANCELADO
+        ])->whereNotNull('chofer_id');
+
+        // Si estamos editando, excluir el viaje actual
+        if ($viajeActualId) {
+            $query->where('id', '!=', $viajeActualId);
+        }
+
+        return $query->pluck('chofer_id')->toArray();
+    }
+
     public static function getEloquentQuery(): Builder
     {
         $query = parent::getEloquentQuery()->with(['camion', 'chofer', 'bodegaOrigen']);
@@ -134,7 +152,11 @@ class ViajeResource extends Resource
                                             $camion = Camion::find($state);
                                             $chofer = $camion?->getChoferActual();
                                             if ($chofer) {
-                                                $set('chofer_id', $chofer->id);
+                                                // Solo auto-seleccionar si el chofer está disponible
+                                                $choferesOcupados = static::getChoferesOcupados();
+                                                if (!in_array($chofer->id, $choferesOcupados)) {
+                                                    $set('chofer_id', $chofer->id);
+                                                }
                                             }
                                         }
                                     })
@@ -142,14 +164,20 @@ class ViajeResource extends Resource
 
                                 Forms\Components\Select::make('chofer_id')
                                     ->label('Chofer')
-                                    ->options(function () {
+                                    ->options(function (Forms\Get $get, $record) {
+                                        // Obtener choferes ocupados (excluyendo el viaje actual si estamos editando)
+                                        $viajeActualId = $record?->id;
+                                        $choferesOcupados = static::getChoferesOcupados($viajeActualId);
+
                                         return User::whereHas('roles', function ($q) {
                                             $q->where('name', 'Chofer');
-                                        })->pluck('name', 'id');
+                                        })
+                                            ->whereNotIn('id', $choferesOcupados)
+                                            ->pluck('name', 'id');
                                     })
                                     ->required()
                                     ->searchable()
-                                    ->helperText('Usuario con rol de chofer'),
+                                    ->helperText('Solo choferes disponibles'),
 
                                 Forms\Components\Select::make('bodega_origen_id')
                                     ->label('Bodega Origen')
@@ -439,7 +467,7 @@ class ViajeResource extends Resource
                     ->relationship('bodegaOrigen', 'nombre')
                     ->searchable()
                     ->preload()
-                    ->visible(fn () => static::esSuperAdminOJefe()),
+                    ->visible(fn() => static::esSuperAdminOJefe()),
 
                 Tables\Filters\SelectFilter::make('chofer_id')
                     ->label('Chofer')
@@ -548,14 +576,28 @@ class ViajeResource extends Resource
                     ->icon('heroicon-o-calculator')
                     ->color('warning')
                     ->requiresConfirmation()
-                    ->modalDescription('Se revisarán cobros y comisiones del chofer.')
+                    ->modalDescription('Se calcularán comisiones, cobros y totales del viaje.')
                     ->visible(fn($record) => in_array($record->estado, [Viaje::ESTADO_REGRESANDO, Viaje::ESTADO_DESCARGANDO]))
                     ->action(function ($record) {
-                        $record->iniciarLiquidacion();
-                        \Filament\Notifications\Notification::make()
-                            ->title('Liquidación iniciada')
-                            ->success()
-                            ->send();
+                        try {
+                            $resultado = $record->liquidarCompleto();
+                            $record->iniciarLiquidacion();
+
+                            \Filament\Notifications\Notification::make()
+                                ->title('Liquidación completada')
+                                ->body("Comisión: L " . number_format($resultado['comision_ganada'], 2) .
+                                    " | Cobros: L " . number_format($resultado['cobros'], 2) .
+                                    " | Neto: L " . number_format($resultado['neto_chofer'], 2))
+                                ->success()
+                                ->duration(10000)
+                                ->send();
+                        } catch (\Exception $e) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('Error al liquidar')
+                                ->body($e->getMessage())
+                                ->danger()
+                                ->send();
+                        }
                     }),
 
                 // Acción: Cerrar Viaje
@@ -619,7 +661,9 @@ class ViajeResource extends Resource
         return [
             RelationManagers\CargasRelationManager::class,
             RelationManagers\MermasRelationManager::class,
+            RelationManagers\DescargasRelationManager::class,  // NUEVO
             RelationManagers\VentasRelationManager::class,
+            RelationManagers\ComisionesRelationManager::class, // NUEVO
         ];
     }
 

@@ -89,6 +89,11 @@ class ViajeVenta extends Model
         return $query->where('estado', 'confirmada');
     }
 
+    public function scopeCompletadas($query)
+    {
+        return $query->where('estado', 'completada');
+    }
+
     public function scopeCanceladas($query)
     {
         return $query->where('estado', 'cancelada');
@@ -119,13 +124,37 @@ class ViajeVenta extends Model
     // ============================================
 
     /**
+     * Generar número de venta único
+     */
+    public static function generarNumeroVenta(int $viajeId): string
+    {
+        // Buscar el último número usado para este viaje (incluyendo eliminados)
+        $ultimaVenta = static::withTrashed()
+            ->where('viaje_id', $viajeId)
+            ->orderByRaw('CAST(SUBSTRING_INDEX(numero_venta, "-", -1) AS UNSIGNED) DESC')
+            ->first();
+
+        $secuencia = 1;
+        
+        if ($ultimaVenta && $ultimaVenta->numero_venta) {
+            // Extraer el último número de la secuencia
+            $partes = explode('-', $ultimaVenta->numero_venta);
+            $ultimoNumero = (int) end($partes);
+            $secuencia = $ultimoNumero + 1;
+        }
+
+        return 'VR-' . $viajeId . '-' . str_pad($secuencia, 4, '0', STR_PAD_LEFT);
+    }
+
+    /**
      * Calcular totales basados en detalles
      */
     public function calcularTotales(): void
     {
-        $subtotal = $this->detalles()->sum('total_linea');
-        $this->subtotal = $subtotal;
-        $this->total = $subtotal + $this->impuesto - $this->descuento;
+        $this->subtotal = $this->detalles()->sum('subtotal');
+        $this->impuesto = $this->detalles()->sum('total_isv');
+        $totalBruto = $this->detalles()->sum('total_linea');
+        $this->total = $totalBruto - $this->descuento;
 
         if ($this->estado === 'borrador') {
             $this->saldo_pendiente = $this->tipo_pago === 'credito' ? $this->total : 0;
@@ -147,8 +176,8 @@ class ViajeVenta extends Model
         $this->verificarDisponibilidad();
 
         // Verificar crédito del cliente si es a crédito
-        if ($this->tipo_pago === 'credito') {
-            if (!$this->cliente->tieneCreditoDisponible($this->total)) {
+        if ($this->tipo_pago === 'credito' && $this->cliente) {
+            if (!$this->cliente->puedeComprarCredito($this->total)) {
                 throw new \Exception('El cliente no tiene crédito disponible suficiente');
             }
         }
@@ -169,8 +198,8 @@ class ViajeVenta extends Model
             throw new \Exception('La venta ya está cancelada');
         }
 
-        if ($this->viaje->estado === 'finalizado') {
-            throw new \Exception('No se puede cancelar una venta de un viaje finalizado');
+        if ($this->viaje && $this->viaje->estado === 'cerrado') {
+            throw new \Exception('No se puede cancelar una venta de un viaje cerrado');
         }
 
         $this->update(['estado' => 'cancelada']);
@@ -210,40 +239,18 @@ class ViajeVenta extends Model
             // Verificar disponibilidad
             $disponible = $carga->getCantidadDisponible();
 
-            if ($disponible < $detalle->cantidad_base) {
+            if ($disponible < $detalle->cantidad) {
                 throw new \Exception("Stock insuficiente de {$detalle->producto->nombre} en el viaje. Disponible: {$disponible}");
             }
         }
     }
 
     /**
-     * Obtener total de comisiones generadas
+     * Verificar si la venta está pagada
      */
-    public function getTotalComisiones(): float
+    public function estaPagada(): bool
     {
-        $total = 0;
-
-        foreach ($this->detalles as $detalle) {
-            $config = ComisionChoferConfig::where('chofer_user_id', $this->viaje->chofer_user_id)
-                ->where(function ($q) use ($detalle) {
-                    $q->where('producto_id', $detalle->producto_id)
-                      ->orWhere('tipo_producto', $detalle->producto->tipo);
-                })
-                ->whereNull('vigente_hasta')
-                ->first();
-
-            if ($config) {
-                $comisionData = $config->calcularComision(
-                    $detalle->cantidad_presentacion,
-                    $detalle->precio_unitario_presentacion,
-                    $detalle->precio_referencia ?? 0
-                );
-
-                $total += $comisionData['comision_neta'];
-            }
-        }
-
-        return $total;
+        return $this->saldo_pendiente <= 0;
     }
 
     /**
@@ -256,12 +263,7 @@ class ViajeVenta extends Model
         static::creating(function ($venta) {
             // Generar número de venta si no existe
             if (!$venta->numero_venta) {
-                $venta->numero_venta = 'VR-' . $venta->viaje_id . '-' . str_pad(
-                    $venta->viaje->ventas()->count() + 1,
-                    4,
-                    '0',
-                    STR_PAD_LEFT
-                );
+                $venta->numero_venta = static::generarNumeroVenta($venta->viaje_id);
             }
         });
     }
