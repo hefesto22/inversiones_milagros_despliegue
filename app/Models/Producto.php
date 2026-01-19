@@ -30,7 +30,7 @@ class Producto extends Model
         'margen_ganancia',
         'tipo_margen',
         'aplica_isv',
-        'precio_venta_maximo',       // 🆕 PRECIO MÁXIMO DE VENTA
+        'precio_venta_maximo',       // 🆕 PRECIO MÁXIMO DE VENTA (precio competitivo)
         'margen_minimo_seguridad',   // 🆕 MARGEN MÍNIMO DE SEGURIDAD
         'formato_empaque',
         'unidades_por_bulto',
@@ -109,7 +109,7 @@ class Producto extends Model
     }
 
     // =======================
-    // 🆕 MÉTODOS DE PRECIO MÁXIMO
+    // 🆕 MÉTODOS DE PRECIO MÁXIMO COMPETITIVO
     // =======================
 
     /**
@@ -129,20 +129,22 @@ class Producto extends Model
     }
 
     /**
-     * Calcular precio de venta respetando el tope máximo
+     * Calcular precio de venta usando el precio máximo competitivo
      * 
-     * Lógica:
-     * 1. Si costo >= precio_maximo → Usa costo + margen_minimo (protege contra pérdidas)
-     * 2. Si precio_calculado > precio_maximo → Usa precio_maximo (mantiene competitividad)
-     * 3. Si precio_calculado <= precio_maximo → Usa precio_calculado (precio normal con margen)
+     * LÓGICA CORREGIDA:
+     * 1. Si costo < precio_maximo → Usar precio_maximo (igualar a la competencia)
+     * 2. Si costo >= precio_maximo → Usar costo + margen_minimo% (proteger contra pérdidas)
+     * 
+     * Ejemplo 1: Costo L34, Precio máximo L42 → Vender a L42 (porque 34 < 42)
+     * Ejemplo 2: Costo L45, Precio máximo L42, Margen 3% → Vender a L46.35 (porque 45 >= 42)
      * 
      * @param float $costo Costo actual del producto
-     * @param float $precioCalculado Precio calculado con el margen normal
+     * @param float $precioCalculado Precio calculado con el margen normal (no se usa en esta lógica)
      * @return array ['precio' => float, 'razon' => string, 'alerta' => bool, 'mensaje' => string|null]
      */
     public function calcularPrecioConTope(float $costo, float $precioCalculado): array
     {
-        // Si no hay precio máximo configurado, usar el calculado
+        // Si no hay precio máximo configurado, usar el precio calculado normal
         if (!$this->tienePrecioMaximo()) {
             return [
                 'precio' => $precioCalculado,
@@ -155,34 +157,24 @@ class Producto extends Model
         $precioMaximo = (float) $this->precio_venta_maximo;
         $margenMinimo = $this->getMargenMinimoSeguridad();
 
-        // Caso 1: El costo es igual o mayor al precio máximo → Proteger contra pérdidas
-        if ($costo >= $precioMaximo) {
-            $precioConMargenMinimo = $costo * (1 + ($margenMinimo / 100));
-            
-            return [
-                'precio' => round($precioConMargenMinimo, 2),
-                'razon' => 'margen_minimo',
-                'alerta' => true,
-                'mensaje' => "⚠️ Costo (L" . number_format($costo, 2) . ") supera o iguala precio máximo (L" . number_format($precioMaximo, 2) . "). Se aplica margen mínimo {$margenMinimo}%.",
-            ];
-        }
-
-        // Caso 2: El precio calculado supera el máximo → Usar el máximo como tope
-        if ($precioCalculado > $precioMaximo) {
+        // Caso 1: El costo es MENOR que el precio máximo → Usar el precio máximo (competitivo)
+        if ($costo < $precioMaximo) {
             return [
                 'precio' => $precioMaximo,
-                'razon' => 'tope_maximo',
+                'razon' => 'precio_competitivo',
                 'alerta' => false,
                 'mensaje' => null,
             ];
         }
 
-        // Caso 3: El precio calculado es menor o igual al máximo → Usar precio calculado normal
+        // Caso 2: El costo es IGUAL O MAYOR al precio máximo → Aplicar margen mínimo de seguridad
+        $precioConMargenMinimo = $costo * (1 + ($margenMinimo / 100));
+        
         return [
-            'precio' => $precioCalculado,
-            'razon' => 'normal',
-            'alerta' => false,
-            'mensaje' => null,
+            'precio' => round($precioConMargenMinimo, 2),
+            'razon' => 'margen_minimo',
+            'alerta' => true,
+            'mensaje' => "⚠️ Costo (L" . number_format($costo, 2) . ") supera o iguala precio competitivo (L" . number_format($precioMaximo, 2) . "). Se aplica margen mínimo {$margenMinimo}%.",
         ];
     }
 

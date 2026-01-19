@@ -67,7 +67,17 @@ class CargasRelationManager extends RelationManager
                             $producto = Producto::find($state);
 
                             if ($bodegaProducto && $producto) {
-                                $precioBase = $bodegaProducto->precio_venta_sugerido ?? ($bodegaProducto->costo_promedio_actual + 5);
+                                $costoPromedio = $bodegaProducto->costo_promedio_actual ?? 0;
+                                
+                                // 🎯 USAR PRECIO MÁXIMO COMPETITIVO SI ESTÁ CONFIGURADO
+                                // Si el producto tiene precio_venta_maximo y el costo es menor, usar ese precio
+                                if ($producto->tienePrecioMaximo() && $costoPromedio < $producto->precio_venta_maximo) {
+                                    $precioBase = (float) $producto->precio_venta_maximo;
+                                } else {
+                                    // Si no tiene precio máximo o el costo supera el máximo, usar el precio calculado
+                                    $precioBase = $bodegaProducto->precio_venta_sugerido ?? ($costoPromedio + 5);
+                                }
+                                
                                 $aplicaIsv = $producto->aplica_isv ?? false;
                                 
                                 // Precio con ISV redondeado hacia arriba
@@ -76,9 +86,9 @@ class CargasRelationManager extends RelationManager
                                     : (int) $precioBase;
 
                                 $set('stock_disponible', number_format((float) $bodegaProducto->stock, 2));
-                                $set('costo_unitario', $bodegaProducto->costo_promedio_actual);
+                                $set('costo_unitario', $costoPromedio);
                                 $set('precio_venta_sugerido', $precioBase);
-                                $set('precio_venta_minimo', $bodegaProducto->costo_promedio_actual);
+                                $set('precio_venta_minimo', $costoPromedio);
                                 $set('aplica_isv', $aplicaIsv);
                                 $set('precio_con_isv', $precioConIsv);
                                 $set('unidad_id', $producto->unidad_id);
@@ -90,7 +100,7 @@ class CargasRelationManager extends RelationManager
                                 // Si ya hay cantidad, calcular subtotales
                                 $cantidad = floatval($get('cantidad') ?? 0);
                                 if ($cantidad > 0) {
-                                    $set('subtotal_costo', round($bodegaProducto->costo_promedio_actual * $cantidad, 2));
+                                    $set('subtotal_costo', round($costoPromedio * $cantidad, 2));
                                     $set('subtotal_venta', round($precioConIsv * $cantidad, 2));
                                 }
                             }

@@ -87,6 +87,21 @@ class EditProducto extends EditRecord
         $currentUser = Auth::user();
         $data['updated_by'] = $currentUser->id;
 
+        // 🎯 MANEJAR PRECIO MÁXIMO COMPETITIVO
+        // Convertir string vacío a null para que se guarde correctamente
+        if (array_key_exists('precio_venta_maximo', $data)) {
+            $data['precio_venta_maximo'] = !empty($data['precio_venta_maximo']) 
+                ? (float) $data['precio_venta_maximo'] 
+                : null;
+        }
+
+        // 🎯 MANEJAR MARGEN MÍNIMO DE SEGURIDAD
+        if (array_key_exists('margen_minimo_seguridad', $data)) {
+            $data['margen_minimo_seguridad'] = !empty($data['margen_minimo_seguridad']) 
+                ? (float) $data['margen_minimo_seguridad'] 
+                : 3.00; // Valor por defecto
+        }
+
         // Verificar si puede editar stock
         $puedeEditarStock = $this->usuarioPuedeEditarStock();
 
@@ -136,20 +151,78 @@ class EditProducto extends EditRecord
             }
         }
 
-        // 🎯 Limpiar todos los campos temporales
+        // 🎯 Limpiar todos los campos temporales (excepto precio_venta_maximo que es un campo real)
         foreach ($data as $key => $value) {
             if (
                 str_starts_with($key, 'bodega_nombre_') ||
                 str_starts_with($key, 'stock_actual_') ||
                 str_starts_with($key, 'stock_minimo_') ||
                 str_starts_with($key, 'costo_promedio_') ||
-                str_starts_with($key, 'precio_venta_') ||
-                str_starts_with($key, 'precio_isv_')  // 🆕 LIMPIAR CAMPO ISV
+                (str_starts_with($key, 'precio_venta_') && $key !== 'precio_venta_maximo') ||
+                str_starts_with($key, 'precio_isv_')
             ) {
                 unset($data[$key]);
             }
         }
 
         return $data;
+    }
+
+    /**
+     * 🆕 DESPUÉS DE GUARDAR: Recalcular precios de venta en todas las bodegas
+     * 
+     * Esto es necesario porque cuando cambias:
+     * - precio_venta_maximo
+     * - margen_minimo_seguridad  
+     * - margen_ganancia
+     * - tipo_margen
+     * 
+     * Los precios de venta deben recalcularse inmediatamente.
+     */
+    protected function afterSave(): void
+    {
+        $this->recalcularPreciosVenta();
+    }
+
+    /**
+     * Hook alternativo de Filament v3
+     */
+    protected function saved(): void
+    {
+        $this->recalcularPreciosVenta();
+    }
+
+    /**
+     * Método centralizado para recalcular precios
+     */
+    private function recalcularPreciosVenta(): void
+    {
+        // Recargar el producto para tener los valores actualizados
+        $producto = $this->record->fresh();
+        
+        if (!$producto) {
+            return;
+        }
+
+        // Obtener todas las bodegas de este producto
+        $bodegasProducto = BodegaProducto::where('producto_id', $producto->id)->get();
+        
+        foreach ($bodegasProducto as $bodegaProducto) {
+            // Solo recalcular si tiene costo promedio
+            if ($bodegaProducto->costo_promedio_actual > 0) {
+                // Recalcular precio de venta con la nueva configuración
+                $bodegaProducto->actualizarPrecioVentaSegunCosto();
+                $bodegaProducto->save();
+                
+                Log::info("Precio recalculado para producto en bodega", [
+                    'producto_id' => $producto->id,
+                    'producto_nombre' => $producto->nombre,
+                    'bodega_id' => $bodegaProducto->bodega_id,
+                    'costo_promedio' => $bodegaProducto->costo_promedio_actual,
+                    'precio_venta_nuevo' => $bodegaProducto->precio_venta_sugerido,
+                    'precio_maximo_configurado' => $producto->precio_venta_maximo,
+                ]);
+            }
+        }
     }
 }

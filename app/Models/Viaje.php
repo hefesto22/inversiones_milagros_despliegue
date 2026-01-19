@@ -213,15 +213,42 @@ class Viaje extends Model
         });
     }
 
+    /**
+     * Cancelar viaje y devolver stock a bodega
+     * 
+     * 🎯 CORREGIDO: Ahora devuelve el stock de todos los productos cargados
+     */
     public function cancelar(?string $motivo = null): void
     {
-        if ($motivo) {
-            $this->observaciones = $this->observaciones
-                ? $this->observaciones . "\n[CANCELADO] " . $motivo
-                : "[CANCELADO] " . $motivo;
-        }
-        $this->cambiarEstado(self::ESTADO_CANCELADO);
+        DB::transaction(function () use ($motivo) {
+            // 🎯 DEVOLVER STOCK DE LAS CARGAS A LA BODEGA
+            foreach ($this->cargas as $carga) {
+                $bodegaProducto = BodegaProducto::where('bodega_id', $this->bodega_origen_id)
+                    ->where('producto_id', $carga->producto_id)
+                    ->first();
+
+                if ($bodegaProducto) {
+                    // Devolver la cantidad cargada al stock
+                    // Usamos el costo original de la carga para mantener el promedio ponderado
+                    $bodegaProducto->actualizarCostoPromedio(
+                        $carga->cantidad,
+                        $carga->costo_unitario
+                    );
+                }
+            }
+
+            // Agregar motivo de cancelación
+            if ($motivo) {
+                $this->observaciones = $this->observaciones
+                    ? $this->observaciones . "\n[CANCELADO] " . $motivo
+                    : "[CANCELADO] " . $motivo;
+            }
+
+            // Cambiar estado
+            $this->cambiarEstado(self::ESTADO_CANCELADO);
+        });
     }
+
     protected function procesarReintegroDescargas(): void
     {
         // Obtener descargas que deben reingresar al stock y no han sido procesadas

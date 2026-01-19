@@ -36,7 +36,7 @@ class DatosEmpresa extends Page implements HasForms
     public function mount(): void
     {
         $empresa = Empresa::first();
-        
+
         if ($empresa) {
             $this->form->fill($empresa->toArray());
         } else {
@@ -58,13 +58,13 @@ class DatosEmpresa extends Page implements HasForms
                                 ->required()
                                 ->maxLength(150)
                                 ->placeholder('Ej: Mi Empresa S.A.'),
-                            
+
                             TextInput::make('rtn')
                                 ->label('RTN')
                                 ->maxLength(20)
                                 ->placeholder('Ej: 04011995001234'),
                         ]),
-                        
+
                         FileUpload::make('logo')
                             ->label('Logo de la Empresa')
                             ->image()
@@ -73,15 +73,15 @@ class DatosEmpresa extends Page implements HasForms
                             ->imageCropAspectRatio('1:1')
                             ->imageResizeTargetWidth('200')
                             ->imageResizeTargetHeight('200')
-                            ->maxSize(2024)
-                            ->helperText('Imagen cuadrada recomendada. Máximo 2MB.'),
-                        
+                            ->maxSize(4096)
+                            ->helperText('Imagen cuadrada recomendada. Máximo 4MB.'),
+
                         TextInput::make('cai')
                             ->label('CAI')
                             ->maxLength(50)
                             ->placeholder('Ej: 2D9140-66ECB0-947BE0-63BE03-09090C-7F')
                             ->helperText('Código de Autorización de Impresión'),
-                        
+
                         Textarea::make('lema')
                             ->label('Lema o Descripción')
                             ->maxLength(255)
@@ -99,14 +99,14 @@ class DatosEmpresa extends Page implements HasForms
                                 ->tel()
                                 ->maxLength(20)
                                 ->placeholder('Ej: 3296-0955'),
-                            
+
                             TextInput::make('correo_electronico')
                                 ->label('Correo Electrónico')
                                 ->email()
                                 ->maxLength(100)
                                 ->placeholder('Ej: info@miempresa.com'),
                         ]),
-                        
+
                         Textarea::make('direccion')
                             ->label('Dirección')
                             ->rows(2)
@@ -122,18 +122,18 @@ class DatosEmpresa extends Page implements HasForms
                                 ->label('Rango Desde')
                                 ->maxLength(25)
                                 ->placeholder('000-001-01-00001601'),
-                            
+
                             TextInput::make('rango_hasta')
                                 ->label('Rango Hasta')
                                 ->maxLength(25)
                                 ->placeholder('000-001-01-00001750'),
-                            
+
                             TextInput::make('ultimo_numero_emitido')
                                 ->label('Último Número Emitido')
                                 ->maxLength(25)
                                 ->placeholder('000-001-01-00001708'),
                         ]),
-                        
+
                         DatePicker::make('fecha_limite_emision')
                             ->label('Fecha Límite de Emisión')
                             ->displayFormat('d/m/Y')
@@ -155,9 +155,9 @@ class DatosEmpresa extends Page implements HasForms
     public function save(): void
     {
         $data = $this->form->getState();
-        
+
         $empresa = Empresa::first();
-        
+
         if ($empresa) {
             $empresa->update($data);
         } else {

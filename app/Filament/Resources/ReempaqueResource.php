@@ -603,15 +603,16 @@ class ReempaqueResource extends Resource
                                             ? $lote->costo_por_carton_facturado
                                             : ($lote->costo_por_huevo * 30);
 
-                                        $opciones[$lote->id] = sprintf(
-                                            '%s%s | %s | %s%s | L%s/carton',
-                                            $prefijo,
-                                            $lote->numero_lote,
-                                            $lote->producto->nombre ?? 'Sin producto',
-                                            $disponible,
-                                            $infoCompra,
-                                            number_format($costoPorCarton, 2)
-                                        );
+                                            $opciones[$lote->id] = sprintf(
+                                                '%s%s | %s | %s | %s%s | L%s/carton',
+                                                $prefijo,
+                                                $lote->numero_lote,
+                                                $lote->proveedor->nombre ?? 'Sin proveedor',
+                                                $lote->producto->nombre ?? 'Sin producto',
+                                                $disponible,
+                                                $infoCompra,
+                                                number_format($costoPorCarton, 2)
+                                            );
                                     }
 
                                     return $opciones;
