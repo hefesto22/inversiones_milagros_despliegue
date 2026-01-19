@@ -15,9 +15,11 @@ use Filament\Forms\Concerns\InteractsWithForms;
 use Filament\Forms\Contracts\HasForms;
 use Filament\Notifications\Notification;
 use Filament\Actions\Action;
+use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 
 class DatosEmpresa extends Page implements HasForms
 {
+    use HasPageShield;
     use InteractsWithForms;
 
     protected static ?string $navigationIcon = 'heroicon-o-building-office';

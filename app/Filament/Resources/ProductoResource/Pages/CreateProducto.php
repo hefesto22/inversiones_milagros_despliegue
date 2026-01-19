@@ -123,8 +123,8 @@ class CreateProducto extends CreateRecord
             $precioVentaInicial = 0;
 
             if ($this->precioSugerido > 0) {
-                // 🎯 Usar precio sugerido como costo inicial (redondeado hacia arriba)
-                $costoPromedioInicial = ceil($this->precioSugerido);
+                // 🎯 Usar precio sugerido como costo inicial (sin redondeo)
+                $costoPromedioInicial = $this->precioSugerido;
 
                 // Calcular precio de venta según el tipo de margen
                 if ($this->tipoMargen === 'porcentaje') {
@@ -134,8 +134,7 @@ class CreateProducto extends CreateRecord
                     $precioVentaInicial = $costoPromedioInicial + $this->margenGanancia;
                 }
 
-                // 🎯 Redondear precio de venta hacia arriba
-                $precioVentaInicial = ceil($precioVentaInicial);
+                // 🎯 Sin redondeo
 
                 Log::info('Precios calculados para bodega_producto:', [
                     'costo_promedio_inicial' => $costoPromedioInicial,

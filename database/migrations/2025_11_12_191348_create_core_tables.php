@@ -68,10 +68,22 @@ return new class extends Migration
             $table->decimal('precio_sugerido', 12, 2)->nullable();
             $table->text('descripcion')->nullable();
 
-            // 🆕 CAMPOS DE MARGEN E ISV
+            // CAMPOS DE FORMATO DE EMPAQUE
+            $table->string('formato_empaque', 50)->nullable()
+                ->comment('Formato de empaque del proveedor (ej: 1X24X12)');
+            $table->unsignedInteger('unidades_por_bulto')->nullable()
+                ->comment('Cantidad de unidades por caja/bulto (ej: 24 paquetes por caja)');
+
+            // CAMPOS DE MARGEN E ISV
             $table->decimal('margen_ganancia', 12, 2)->default(5.00)->comment('Margen por defecto L5');
             $table->enum('tipo_margen', ['porcentaje', 'monto'])->default('monto');
-            $table->boolean('aplica_isv')->default(true)->comment('Si el producto aplica ISV 15% en venta');
+            $table->boolean('aplica_isv')->default(false)->comment('Si el producto aplica ISV 15% en venta');
+
+            // 🆕 CAMPOS DE PRECIO MÁXIMO COMPETITIVO
+            $table->decimal('precio_venta_maximo', 12, 2)->nullable()
+                ->comment('Precio máximo de venta (tope competitivo). Si es null, no hay límite.');
+            $table->decimal('margen_minimo_seguridad', 5, 2)->default(3.00)
+                ->comment('Margen mínimo de seguridad en % cuando costo >= precio_maximo (default 3%)');
 
             $table->boolean('activo')->default(true);
             $table->foreignId('created_by')->nullable()->constrained('users')->nullOnDelete();
@@ -111,7 +123,7 @@ return new class extends Migration
                 ->comment('Stock apartado (pagado pero no entregado)');
             $table->decimal('stock_minimo', 14, 3)->nullable();
 
-            // 🎯 CAMPOS DE COSTO PROMEDIO CONTINUO (DIARIO)
+            // CAMPOS DE COSTO PROMEDIO CONTINUO (DIARIO)
             $table->decimal('costo_promedio_actual', 12, 4)->default(0)
                 ->comment('Costo promedio ponderado (WAC) - se actualiza con cada entrada de stock');
 
@@ -125,7 +137,7 @@ return new class extends Migration
         });
 
         // ======================================
-        // NUEVA TABLA PIVOTE: BODEGA ↔ USUARIOS
+        // TABLA PIVOTE: BODEGA ↔ USUARIOS
         // ======================================
         Schema::create('bodega_user', function (Blueprint $table) {
             $table->id();
@@ -145,7 +157,7 @@ return new class extends Migration
         });
 
         // ======================================
-        // NUEVA TABLA PIVOTE: CATEGORÍA ↔ UNIDADES
+        // TABLA PIVOTE: CATEGORÍA ↔ UNIDADES
         // ======================================
         Schema::create('categoria_unidad', function (Blueprint $table) {
             $table->id();

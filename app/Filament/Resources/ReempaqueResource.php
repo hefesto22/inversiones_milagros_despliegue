@@ -6,6 +6,7 @@ use App\Filament\Resources\ReempaqueResource\Pages;
 use App\Models\Reempaque;
 use App\Models\Lote;
 use App\Models\Categoria;
+use App\Models\Producto;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -202,7 +203,7 @@ class ReempaqueResource extends Resource
                                     return new \Illuminate\Support\HtmlString("
                                         <div class='rounded-lg bg-blue-50 dark:bg-blue-900/20 p-3'>
                                             <p class='text-sm text-blue-900 dark:text-blue-100'>
-                                                <strong>Individual:</strong> Usa un solo lote. Las categorias se heredan automaticamente.
+                                                <strong>Individual:</strong> Usa un solo lote. Puedes distribuir a multiples categorias.
                                             </p>
                                         </div>
                                     ");
@@ -210,7 +211,7 @@ class ReempaqueResource extends Resource
                                     return new \Illuminate\Support\HtmlString("
                                         <div class='rounded-lg bg-amber-50 dark:bg-amber-900/20 p-3'>
                                             <p class='text-sm text-amber-900 dark:text-amber-100'>
-                                                <strong>Mezclado:</strong> Combina varios lotes. Selecciona la categoria final manualmente.
+                                                <strong>Mezclado:</strong> Combina varios lotes. Distribuye a multiples categorias.
                                             </p>
                                         </div>
                                     ");
@@ -433,14 +434,10 @@ class ReempaqueResource extends Resource
                                         $huevos = (int) $lote->cantidad_huevos_remanente;
                                         $totalHuevos += $huevos;
 
-                                        // Detectar si es lote consolidado
                                         $esLoteSueltos = str_starts_with($lote->numero_lote ?? '', 'SUELTOS-');
 
                                         if ($esLoteSueltos) {
-                                            // Lote SUELTOS: usar costo_por_huevo directamente
                                             $costoParcial = ($lote->costo_por_huevo ?? 0) * $huevos;
-
-                                            // Si costo > 0, son huevos pagados
                                             if (($lote->costo_por_huevo ?? 0) > 0) {
                                                 $huevosFacturadosUsados = $huevos;
                                                 $huevosRegaloUsados = 0;
@@ -449,7 +446,6 @@ class ReempaqueResource extends Resource
                                                 $huevosRegaloUsados = 0;
                                             }
                                         } else {
-                                            // Lote normal: usar proporcion
                                             $huevosFacturadosLote = (int) (($lote->cantidad_cartones_facturados ?? 0) * 30);
                                             $huevosRegaloLote = (int) (($lote->cantidad_cartones_regalo ?? 0) * 30);
                                             $proporcion = $lote->cantidad_huevos_original > 0
@@ -483,17 +479,32 @@ class ReempaqueResource extends Resource
 
                                     $set('lotes_seleccionados', $lotesSeleccionados);
 
+                                    // Calcular distribucion automatica
                                     $c30 = floor($totalHuevos / 30);
                                     $resto = $totalHuevos - ($c30 * 30);
                                     $c15 = floor($resto / 15);
                                     $sueltos = $resto - ($c15 * 15);
 
                                     $set('merma', 0);
-                                    $set('cartones_30', $c30);
-                                    $set('cartones_15', $c15);
+
+                                    // Crear distribuciones automaticas
+                                    $distribuciones = [];
+                                    if ($c30 > 0) {
+                                        $distribuciones[] = [
+                                            'categoria_id' => $categoriaId,
+                                            'tipo_empaque' => 'carton_30',
+                                            'cantidad' => $c30,
+                                        ];
+                                    }
+                                    if ($c15 > 0) {
+                                        $distribuciones[] = [
+                                            'categoria_id' => $categoriaId,
+                                            'tipo_empaque' => 'carton_15',
+                                            'cantidad' => $c15,
+                                        ];
+                                    }
+                                    $set('distribuciones', $distribuciones);
                                     $set('huevos_sueltos', $sueltos);
-                                    $set('categoria_carton_30_id', $categoriaId);
-                                    $set('categoria_carton_15_id', $categoriaId);
 
                                     Notification::make()
                                         ->success()
@@ -632,45 +643,13 @@ class ReempaqueResource extends Resource
                                     $set('lote_cartones_facturados', $lote->cantidad_cartones_facturados ?? 0);
                                     $set('lote_cartones_regalo', $lote->cantidad_cartones_regalo ?? 0);
 
-                                    $set('cantidad_c30', $c30);
-                                    $set('cantidad_c15', $c15);
-
-                                    $huevos = ($c30 * 30) + ($c15 * 15);
-                                    $set('cantidad_huevos', $huevos);
-
-                                    // Detectar si es lote de sueltos consolidado
-                                    $esLoteSueltos = str_starts_with($lote->numero_lote ?? '', 'SUELTOS-');
-
-                                    if ($esLoteSueltos) {
-                                        // Para lotes SUELTOS: usar costo_por_huevo * huevos
-                                        $costoParcial = ($lote->costo_por_huevo ?? 0) * $huevos;
-                                        $set('costo_parcial', round($costoParcial, 2));
-
-                                        // Los lotes SUELTOS no tienen facturados/regalo tradicionales
-                                        // Si tienen costo > 0, son huevos pagados; si costo = 0, son gratis
-                                        if (($lote->costo_por_huevo ?? 0) > 0) {
-                                            $set('huevos_facturados_usados', $huevos);
-                                            $set('huevos_regalo_usados', 0);
-                                        } else {
-                                            // Costo 0 = huevos gratis
-                                            $set('huevos_facturados_usados', 0);
-                                            $set('huevos_regalo_usados', 0);
-                                        }
-                                    } else {
-                                        // Lote normal: calcular proporcion
-                                        $proporcion = $lote->cantidad_huevos_original > 0
-                                            ? $huevos / $lote->cantidad_huevos_original
-                                            : 0;
-
-                                        $huevosFacturadosLote = (int) (($lote->cantidad_cartones_facturados ?? 0) * 30);
-                                        $huevosRegaloLote = (int) (($lote->cantidad_cartones_regalo ?? 0) * 30);
-
-                                        $set('huevos_facturados_usados', round($huevosFacturadosLote * $proporcion, 2));
-                                        $set('huevos_regalo_usados', round($huevosRegaloLote * $proporcion, 2));
-
-                                        $costoParcial = ($lote->costo_total_lote ?? 0) * $proporcion;
-                                        $set('costo_parcial', round($costoParcial, 2));
-                                    }
+                                    // Iniciar en 0 para que el usuario defina cuánto sacar
+                                    $set('cantidad_c30', 0);
+                                    $set('cantidad_c15', 0);
+                                    $set('cantidad_huevos', 0);
+                                    $set('costo_parcial', 0);
+                                    $set('huevos_facturados_usados', 0);
+                                    $set('huevos_regalo_usados', 0);
                                 })
                                 ->disabled(fn(string $operation) => $operation === 'edit')
                                 ->dehydrated()
@@ -698,7 +677,7 @@ class ReempaqueResource extends Resource
                                         ->maxValue(fn(Forms\Get $get) => $get('disponible_c30') ?? 0)
                                         ->step(1)
                                         ->suffix('cartones')
-                                        ->live(onBlur: true)
+                                        ->live(debounce: 500)
                                         ->afterStateUpdated(function ($state, Forms\Set $set, Forms\Get $get) {
                                             $c30 = (int)($state ?? 0);
                                             $c15 = (int)($get('cantidad_c15') ?? 0);
@@ -712,20 +691,42 @@ class ReempaqueResource extends Resource
                                             $huevos = ($c30 * 30) + ($c15 * 15);
                                             $set('cantidad_huevos', $huevos);
 
-                                            $loteHuevosOriginal = $get('lote_huevos_original') ?? 0;
-                                            $loteCostoTotal = $get('lote_costo_total') ?? 0;
-                                            $loteCartonesFacturados = $get('lote_cartones_facturados') ?? 0;
-                                            $loteCartonesRegalo = $get('lote_cartones_regalo') ?? 0;
+                                            // Usar cantidad_huevos_remanente para proporción correcta
+                                            $loteId = $get('lote_id');
+                                            $lote = $loteId ? Lote::find($loteId) : null;
+                                            
+                                            if ($lote) {
+                                                $loteHuevosOriginal = $lote->cantidad_huevos_original;
+                                                $loteCostoTotal = $lote->costo_total_lote;
+                                                $loteCartonesFacturados = $lote->cantidad_cartones_facturados ?? 0;
+                                                $loteCartonesRegalo = $lote->cantidad_cartones_regalo ?? 0;
+                                                
+                                                $esLoteSueltos = str_starts_with($lote->numero_lote ?? '', 'SUELTOS-');
+                                                
+                                                if ($esLoteSueltos) {
+                                                    $costoParcial = ($lote->costo_por_huevo ?? 0) * $huevos;
+                                                    $set('costo_parcial', round($costoParcial, 2));
+                                                    
+                                                    if (($lote->costo_por_huevo ?? 0) > 0) {
+                                                        $set('huevos_facturados_usados', $huevos);
+                                                        $set('huevos_regalo_usados', 0);
+                                                    } else {
+                                                        $set('huevos_facturados_usados', 0);
+                                                        $set('huevos_regalo_usados', 0);
+                                                    }
+                                                } else {
+                                                    $proporcion = $loteHuevosOriginal > 0
+                                                        ? $huevos / $loteHuevosOriginal
+                                                        : 0;
+                                                    
+                                                    $costoParcial = $loteCostoTotal * $proporcion;
+                                                    $set('costo_parcial', round($costoParcial, 2));
 
-                                            if ($loteHuevosOriginal > 0) {
-                                                $proporcion = $huevos / $loteHuevosOriginal;
-                                                $costoParcial = $loteCostoTotal * $proporcion;
-                                                $set('costo_parcial', round($costoParcial, 2));
-
-                                                $huevosFacturadosLote = $loteCartonesFacturados * 30;
-                                                $huevosRegaloLote = $loteCartonesRegalo * 30;
-                                                $set('huevos_facturados_usados', round($huevosFacturadosLote * $proporcion, 2));
-                                                $set('huevos_regalo_usados', round($huevosRegaloLote * $proporcion, 2));
+                                                    $huevosFacturadosLote = $loteCartonesFacturados * 30;
+                                                    $huevosRegaloLote = $loteCartonesRegalo * 30;
+                                                    $set('huevos_facturados_usados', round($huevosFacturadosLote * $proporcion, 2));
+                                                    $set('huevos_regalo_usados', round($huevosRegaloLote * $proporcion, 2));
+                                                }
                                             }
                                         })
                                         ->helperText('Solo cartones completos')
@@ -754,7 +755,7 @@ class ReempaqueResource extends Resource
                                         ->maxValue(fn(Forms\Get $get) => $get('disponible_c15') ?? 0)
                                         ->step(1)
                                         ->suffix('cartones')
-                                        ->live(onBlur: true)
+                                        ->live(debounce: 500)
                                         ->afterStateUpdated(function ($state, Forms\Set $set, Forms\Get $get) {
                                             $c30 = (int)($get('cantidad_c30') ?? 0);
                                             $c15 = (int)($state ?? 0);
@@ -768,20 +769,42 @@ class ReempaqueResource extends Resource
                                             $huevos = ($c30 * 30) + ($c15 * 15);
                                             $set('cantidad_huevos', $huevos);
 
-                                            $loteHuevosOriginal = $get('lote_huevos_original') ?? 0;
-                                            $loteCostoTotal = $get('lote_costo_total') ?? 0;
-                                            $loteCartonesFacturados = $get('lote_cartones_facturados') ?? 0;
-                                            $loteCartonesRegalo = $get('lote_cartones_regalo') ?? 0;
+                                            // Usar lote directamente para proporción correcta
+                                            $loteId = $get('lote_id');
+                                            $lote = $loteId ? Lote::find($loteId) : null;
+                                            
+                                            if ($lote) {
+                                                $loteHuevosOriginal = $lote->cantidad_huevos_original;
+                                                $loteCostoTotal = $lote->costo_total_lote;
+                                                $loteCartonesFacturados = $lote->cantidad_cartones_facturados ?? 0;
+                                                $loteCartonesRegalo = $lote->cantidad_cartones_regalo ?? 0;
+                                                
+                                                $esLoteSueltos = str_starts_with($lote->numero_lote ?? '', 'SUELTOS-');
+                                                
+                                                if ($esLoteSueltos) {
+                                                    $costoParcial = ($lote->costo_por_huevo ?? 0) * $huevos;
+                                                    $set('costo_parcial', round($costoParcial, 2));
+                                                    
+                                                    if (($lote->costo_por_huevo ?? 0) > 0) {
+                                                        $set('huevos_facturados_usados', $huevos);
+                                                        $set('huevos_regalo_usados', 0);
+                                                    } else {
+                                                        $set('huevos_facturados_usados', 0);
+                                                        $set('huevos_regalo_usados', 0);
+                                                    }
+                                                } else {
+                                                    $proporcion = $loteHuevosOriginal > 0
+                                                        ? $huevos / $loteHuevosOriginal
+                                                        : 0;
+                                                    
+                                                    $costoParcial = $loteCostoTotal * $proporcion;
+                                                    $set('costo_parcial', round($costoParcial, 2));
 
-                                            if ($loteHuevosOriginal > 0) {
-                                                $proporcion = $huevos / $loteHuevosOriginal;
-                                                $costoParcial = $loteCostoTotal * $proporcion;
-                                                $set('costo_parcial', round($costoParcial, 2));
-
-                                                $huevosFacturadosLote = $loteCartonesFacturados * 30;
-                                                $huevosRegaloLote = $loteCartonesRegalo * 30;
-                                                $set('huevos_facturados_usados', round($huevosFacturadosLote * $proporcion, 2));
-                                                $set('huevos_regalo_usados', round($huevosRegaloLote * $proporcion, 2));
+                                                    $huevosFacturadosLote = $loteCartonesFacturados * 30;
+                                                    $huevosRegaloLote = $loteCartonesRegalo * 30;
+                                                    $set('huevos_facturados_usados', round($huevosFacturadosLote * $proporcion, 2));
+                                                    $set('huevos_regalo_usados', round($huevosRegaloLote * $proporcion, 2));
+                                                }
                                             }
                                         })
                                         ->helperText('Solo medios cartones')
@@ -870,7 +893,7 @@ class ReempaqueResource extends Resource
                 ->collapsible()
                 ->collapsed(false),
 
-            // PROCESO DE REEMPAQUE
+            // PROCESO DE REEMPAQUE - MERMA
             Forms\Components\Section::make('Proceso de Reempaque')
                 ->schema([
                     Forms\Components\Grid::make(3)->schema([
@@ -893,31 +916,13 @@ class ReempaqueResource extends Resource
                             ->default(0)
                             ->minValue(0)
                             ->live(onBlur: true)
-                            ->afterStateUpdated(function ($state, Forms\Set $set, Forms\Get $get) {
-                                $lotes = $get('lotes_seleccionados') ?? [];
-                                $total = (int) collect($lotes)->sum('cantidad_huevos');
-                                $merma = (int)($state ?? 0);
-                                $utiles = $total - $merma;
-
-                                if ($utiles > 0) {
-                                    $c30 = floor($utiles / 30);
-                                    $set('cartones_30', $c30);
-
-                                    $resto = $utiles - ($c30 * 30);
-                                    $c15 = floor($resto / 15);
-                                    $set('cartones_15', $c15);
-
-                                    $sueltos = $resto - ($c15 * 15);
-                                    $set('huevos_sueltos', $sueltos);
-                                }
-                            })
                             ->suffix('huevos')
                             ->helperText('Huevos rotos o perdidos')
                             ->disabled(fn(string $operation) => $operation === 'edit')
                             ->dehydrated(),
 
                         Forms\Components\Placeholder::make('utiles')
-                            ->label('Huevos Utiles')
+                            ->label('Huevos Utiles (Disponibles para distribuir)')
                             ->content(function (Forms\Get $get) {
                                 $lotes = $get('lotes_seleccionados') ?? [];
                                 $total = (int) collect($lotes)->sum('cantidad_huevos');
@@ -930,142 +935,327 @@ class ReempaqueResource extends Resource
                                 ");
                             }),
                     ]),
+                ])
+                ->visible(fn(Forms\Get $get) => !empty($get('lotes_seleccionados'))),
 
-                    Forms\Components\Grid::make(3)->schema([
-                        Forms\Components\TextInput::make('cartones_30')
-                            ->label('Cartones de 30')
-                            ->required()
-                            ->numeric()
-                            ->default(0)
-                            ->minValue(0)
-                            ->suffix('cartones')
-                            ->live(onBlur: true)
-                            ->afterStateUpdated(function ($state, Forms\Set $set, Forms\Get $get) {
-                                $lotes = $get('lotes_seleccionados') ?? [];
-                                $total = (int) collect($lotes)->sum('cantidad_huevos');
-                                $merma = (int)($get('merma') ?? 0);
-                                $utiles = $total - $merma;
-                                $c30 = (int)($state ?? 0);
-
-                                if ($utiles > 0 && $c30 >= 0) {
-                                    $resto = $utiles - ($c30 * 30);
-                                    if ($resto >= 0) {
-                                        $c15 = floor($resto / 15);
-                                        $set('cartones_15', $c15);
-                                        $sueltos = $resto - ($c15 * 15);
-                                        $set('huevos_sueltos', $sueltos);
-                                    }
-                                }
-                            })
-                            ->disabled(fn(string $operation) => $operation === 'edit')
-                            ->dehydrated(),
-
-                        Forms\Components\TextInput::make('cartones_15')
-                            ->label('Cartones de 15')
-                            ->required()
-                            ->numeric()
-                            ->default(0)
-                            ->minValue(0)
-                            ->suffix('cartones')
-                            ->live(onBlur: true)
-                            ->afterStateUpdated(function ($state, Forms\Set $set, Forms\Get $get) {
-                                $lotes = $get('lotes_seleccionados') ?? [];
-                                $total = (int) collect($lotes)->sum('cantidad_huevos');
-                                $merma = (int)($get('merma') ?? 0);
-                                $utiles = $total - $merma;
-                                $c30 = (int)($get('cartones_30') ?? 0);
-                                $c15 = (int)($state ?? 0);
-
-                                if ($utiles > 0) {
-                                    $usado = ($c30 * 30) + ($c15 * 15);
-                                    $sueltos = $utiles - $usado;
-                                    $set('huevos_sueltos', max(0, $sueltos));
-                                }
-                            })
-                            ->disabled(fn(string $operation) => $operation === 'edit')
-                            ->dehydrated(),
-
-                        Forms\Components\TextInput::make('huevos_sueltos')
-                            ->label('Huevos Sueltos')
-                            ->required()
-                            ->numeric()
-                            ->default(0)
-                            ->minValue(0)
-                            ->suffix('huevos')
-                            ->live(onBlur: true)
-                            ->disabled(fn(string $operation) => $operation === 'edit')
-                            ->dehydrated(),
-                    ]),
-
-                    Forms\Components\Placeholder::make('validacion')
+            // =====================================================
+            // 🆕 DISTRIBUCION DE HUEVOS - DISEÑO UX MEJORADO
+            // =====================================================
+            Forms\Components\Section::make('Distribucion de Huevos')
+                ->description('')
+                ->schema([
+                    // ========== HEADER INFORMATIVO ==========
+                    Forms\Components\Placeholder::make('distribucion_info_header')
                         ->label('')
                         ->content(function (Forms\Get $get) {
                             $lotes = $get('lotes_seleccionados') ?? [];
                             $total = (int) collect($lotes)->sum('cantidad_huevos');
                             $merma = (int)($get('merma') ?? 0);
-                            $utiles = $total - $merma;
+                            $disponibles = $total - $merma;
 
-                            $c30 = (int)($get('cartones_30') ?? 0);
-                            $c15 = (int)($get('cartones_15') ?? 0);
-                            $sueltos = (int)($get('huevos_sueltos') ?? 0);
-
-                            $empacado = ($c30 * 30) + ($c15 * 15) + $sueltos;
-
-                            if ($empacado === $utiles) {
+                            if ($disponibles <= 0) {
                                 return new \Illuminate\Support\HtmlString("
-                                    <div class='rounded-lg bg-green-50 dark:bg-green-900/20 p-4'>
-                                        <p class='text-sm font-semibold text-green-900 dark:text-green-100'>
-                                            Correcto: {$empacado} huevos empacados = {$utiles} huevos utiles
-                                        </p>
-                                    </div>
-                                ");
-                            } elseif ($empacado < $utiles) {
-                                $falta = $utiles - $empacado;
-                                return new \Illuminate\Support\HtmlString("
-                                    <div class='rounded-lg bg-yellow-50 dark:bg-yellow-900/20 p-4'>
-                                        <p class='text-sm font-semibold text-yellow-900 dark:text-yellow-100'>
-                                            Faltan {$falta} huevos por empacar
-                                        </p>
-                                    </div>
-                                ");
-                            } else {
-                                $exceso = $empacado - $utiles;
-                                return new \Illuminate\Support\HtmlString("
-                                    <div class='rounded-lg bg-red-50 dark:bg-red-900/20 p-4'>
-                                        <p class='text-sm font-semibold text-red-900 dark:text-red-100'>
-                                            Error: {$exceso} huevos de exceso
-                                        </p>
+                                    <div class='rounded-xl bg-gray-100 dark:bg-gray-800 p-4 text-center'>
+                                        <p class='text-gray-500'>Selecciona lotes para comenzar a distribuir</p>
                                     </div>
                                 ");
                             }
+
+                            // Calcular maximos posibles
+                            $maxC30 = floor($disponibles / 30);
+                            $maxC15 = floor($disponibles / 15);
+
+                            return new \Illuminate\Support\HtmlString("
+                                <div class='rounded-xl bg-gradient-to-r from-blue-500 to-blue-600 p-5 text-white shadow-lg'>
+                                    <div class='flex items-center gap-3 mb-3'>
+                                        <span class='text-3xl'>🥚</span>
+                                        <div>
+                                            <p class='text-blue-100 text-sm'>Huevos disponibles para distribuir</p>
+                                            <p class='text-3xl font-bold'>" . number_format($disponibles, 0) . " huevos</p>
+                                        </div>
+                                    </div>
+                                    <div class='border-t border-blue-400/30 pt-3 mt-3'>
+                                        <p class='text-blue-100 text-sm mb-1'>Puedes hacer:</p>
+                                        <p class='font-semibold'>
+                                            <span class='bg-blue-400/30 px-2 py-1 rounded'>{$maxC30} cartones (C30)</span>
+                                            <span class='mx-2'>o</span>
+                                            <span class='bg-blue-400/30 px-2 py-1 rounded'>{$maxC15} medios (C15)</span>
+                                            <span class='mx-2'>o combinaciones</span>
+                                        </p>
+                                    </div>
+                                </div>
+                            ");
+                        }),
+
+                    // ========== BARRA DE PROGRESO Y ESTADO ==========
+                    Forms\Components\Placeholder::make('distribucion_progreso')
+                        ->label('')
+                        ->content(function (Forms\Get $get) {
+                            $lotes = $get('lotes_seleccionados') ?? [];
+                            $total = (int) collect($lotes)->sum('cantidad_huevos');
+                            $merma = (int)($get('merma') ?? 0);
+                            $disponibles = $total - $merma;
+
+                            if ($disponibles <= 0) {
+                                return '';
+                            }
+
+                            // Calcular asignados
+                            $distribuciones = $get('distribuciones') ?? [];
+                            $asignados = 0;
+                            $c30Total = 0;
+                            $c15Total = 0;
+                            foreach ($distribuciones as $dist) {
+                                $cantidad = (int)($dist['cantidad'] ?? 0);
+                                $tipo = $dist['tipo_empaque'] ?? 'carton_30';
+                                if ($tipo === 'carton_30') {
+                                    $c30Total += $cantidad;
+                                    $asignados += $cantidad * 30;
+                                } else {
+                                    $c15Total += $cantidad;
+                                    $asignados += $cantidad * 15;
+                                }
+                            }
+
+                            $sueltos = (int)($get('huevos_sueltos') ?? 0);
+                            $totalAsignado = $asignados + $sueltos;
+                            $pendientes = $disponibles - $totalAsignado;
+
+                            // Calcular porcentaje
+                            $porcentaje = $disponibles > 0 ? min(100, ($totalAsignado / $disponibles) * 100) : 0;
+
+                            // Determinar colores segun estado
+                            if ($pendientes === 0) {
+                                $bgCard = 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800';
+                                $barColor = 'bg-green-500';
+                                $iconEstado = '✓';
+                                $textoEstado = 'Distribucion completa';
+                                $colorEstado = 'text-green-600 dark:text-green-400';
+                            } elseif ($pendientes > 0) {
+                                $bgCard = 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800';
+                                $barColor = 'bg-amber-500';
+                                $iconEstado = '⚠';
+                                $textoEstado = "Faltan {$pendientes} huevos por asignar";
+                                $colorEstado = 'text-amber-600 dark:text-amber-400';
+                            } else {
+                                $bgCard = 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800';
+                                $barColor = 'bg-red-500';
+                                $iconEstado = '✗';
+                                $exceso = abs($pendientes);
+                                $textoEstado = "Exceso de {$exceso} huevos";
+                                $colorEstado = 'text-red-600 dark:text-red-400';
+                            }
+
+                            // Sugerencia inteligente
+                            $sugerencia = '';
+                            if ($pendientes > 0) {
+                                $sugerenciaC30 = floor($pendientes / 30);
+                                $sugerenciaC15 = floor($pendientes / 15);
+                                $sugerenciaResto = $pendientes % 15;
+
+                                if ($sugerenciaC30 > 0 || $sugerenciaC15 > 0) {
+                                    $sugerencia = "<div class='mt-3 p-3 bg-white/50 dark:bg-gray-800/50 rounded-lg'>
+                                        <p class='text-sm font-medium text-gray-700 dark:text-gray-300'>💡 Sugerencia:</p>
+                                        <p class='text-sm text-gray-600 dark:text-gray-400'>
+                                            Agrega <strong>{$sugerenciaC30} C30</strong> o <strong>{$sugerenciaC15} C15</strong>";
+                                    if ($sugerenciaResto > 0) {
+                                        $sugerencia .= " + <strong>{$sugerenciaResto} sueltos</strong>";
+                                    }
+                                    $sugerencia .= " para completar</p></div>";
+                                } elseif ($pendientes < 30) {
+                                    $sugerencia = "<div class='mt-3 p-3 bg-white/50 dark:bg-gray-800/50 rounded-lg'>
+                                        <p class='text-sm font-medium text-gray-700 dark:text-gray-300'>💡 Sugerencia:</p>
+                                        <p class='text-sm text-gray-600 dark:text-gray-400'>
+                                            Agrega <strong>{$pendientes} huevos sueltos</strong> para completar
+                                        </p>
+                                    </div>";
+                                }
+                            }
+
+                            return new \Illuminate\Support\HtmlString("
+                                <div class='rounded-xl border-2 {$bgCard} p-4 mt-4'>
+                                    <!-- Barra de progreso -->
+                                    <div class='mb-4'>
+                                        <div class='flex justify-between text-sm mb-1'>
+                                            <span class='font-medium text-gray-700 dark:text-gray-300'>Progreso de distribucion</span>
+                                            <span class='font-bold {$colorEstado}'>" . number_format($porcentaje, 0) . "%</span>
+                                        </div>
+                                        <div class='w-full bg-gray-200 dark:bg-gray-700 rounded-full h-4 overflow-hidden'>
+                                            <div class='{$barColor} h-4 rounded-full transition-all duration-500' style='width: {$porcentaje}%'></div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Stats en fila -->
+                                    <div class='grid grid-cols-4 gap-3 text-center'>
+                                        <div class='bg-white/60 dark:bg-gray-800/60 rounded-lg p-3'>
+                                            <p class='text-xs text-gray-500 dark:text-gray-400'>Asignados</p>
+                                            <p class='text-xl font-bold text-green-600 dark:text-green-400'>" . number_format($asignados, 0) . "</p>
+                                            <p class='text-xs text-gray-400'>{$c30Total} C30 + {$c15Total} C15</p>
+                                        </div>
+                                        <div class='bg-white/60 dark:bg-gray-800/60 rounded-lg p-3'>
+                                            <p class='text-xs text-gray-500 dark:text-gray-400'>Sueltos</p>
+                                            <p class='text-xl font-bold text-purple-600 dark:text-purple-400'>{$sueltos}</p>
+                                            <p class='text-xs text-gray-400'>huevos</p>
+                                        </div>
+                                        <div class='bg-white/60 dark:bg-gray-800/60 rounded-lg p-3'>
+                                            <p class='text-xs text-gray-500 dark:text-gray-400'>Pendientes</p>
+                                            <p class='text-xl font-bold {$colorEstado}'>" . number_format(max(0, $pendientes), 0) . "</p>
+                                            <p class='text-xs text-gray-400'>por asignar</p>
+                                        </div>
+                                        <div class='bg-white/60 dark:bg-gray-800/60 rounded-lg p-3'>
+                                            <p class='text-xs text-gray-500 dark:text-gray-400'>Estado</p>
+                                            <p class='text-xl font-bold {$colorEstado}'>{$iconEstado}</p>
+                                            <p class='text-xs {$colorEstado}'>" . ($pendientes === 0 ? 'Listo' : ($pendientes > 0 ? 'Pendiente' : 'Error')) . "</p>
+                                        </div>
+                                    </div>
+
+                                    <!-- Mensaje de estado -->
+                                    <div class='mt-3 text-center'>
+                                        <p class='font-semibold {$colorEstado}'>{$iconEstado} {$textoEstado}</p>
+                                    </div>
+
+                                    {$sugerencia}
+                                </div>
+                            ");
+                        }),
+
+                    // ========== LINEAS DE DISTRIBUCION ==========
+                    Forms\Components\Placeholder::make('distribucion_titulo_lineas')
+                        ->label('')
+                        ->content(new \Illuminate\Support\HtmlString("
+                            <div class='flex items-center gap-2 mt-6 mb-2'>
+                                <span class='text-lg'>📦</span>
+                                <p class='font-semibold text-gray-700 dark:text-gray-300'>Lineas de Distribucion</p>
+                            </div>
+                        ")),
+
+                    // Repeater de distribuciones
+                    Forms\Components\Repeater::make('distribuciones')
+                        ->label('')
+                        ->schema([
+                            Forms\Components\Grid::make(12)->schema([
+                                Forms\Components\Select::make('categoria_id')
+                                    ->label('Categoria Destino')
+                                    ->options(Categoria::where('activo', true)->pluck('nombre', 'id'))
+                                    ->required()
+                                    ->searchable()
+                                    ->preload()
+                                    ->live()
+                                    ->columnSpan(4),
+
+                                Forms\Components\Select::make('tipo_empaque')
+                                    ->label('Tipo de Empaque')
+                                    ->options([
+                                        'carton_30' => '📦 Carton (30 huevos)',
+                                        'carton_15' => '📦 Medio (15 huevos)',
+                                    ])
+                                    ->required()
+                                    ->native(false)
+                                    ->live()
+                                    ->columnSpan(3),
+
+                                Forms\Components\TextInput::make('cantidad')
+                                    ->label('Cantidad')
+                                    ->required()
+                                    ->numeric()
+                                    ->default(0)
+                                    ->minValue(0)
+                                    ->live(onBlur: true)
+                                    ->columnSpan(2),
+
+                                Forms\Components\Placeholder::make('total_huevos_linea_display')
+                                    ->label('Total')
+                                    ->content(function (Forms\Get $get) {
+                                        $cantidad = (int)($get('cantidad') ?? 0);
+                                        $tipo = $get('tipo_empaque') ?? 'carton_30';
+                                        $multiplicador = $tipo === 'carton_30' ? 30 : 15;
+                                        $total = $cantidad * $multiplicador;
+
+                                        if ($total > 0) {
+                                            return new \Illuminate\Support\HtmlString("
+                                                <div class='text-center'>
+                                                    <p class='text-xl font-bold text-green-600 dark:text-green-400'>" . number_format($total, 0) . "</p>
+                                                    <p class='text-xs text-gray-500'>huevos</p>
+                                                </div>
+                                            ");
+                                        }
+                                        return new \Illuminate\Support\HtmlString("
+                                            <div class='text-center'>
+                                                <p class='text-xl font-bold text-gray-400'>0</p>
+                                                <p class='text-xs text-gray-400'>huevos</p>
+                                            </div>
+                                        ");
+                                    })
+                                    ->columnSpan(3),
+                            ]),
+                        ])
+                        ->columns(1)
+                        ->defaultItems(1)
+                        ->minItems(1)
+                        ->maxItems(20)
+                        ->addActionLabel('+ Agregar Linea de Distribucion')
+                        ->reorderable(false)
+                        ->collapsible()
+                        ->collapsed(false)
+                        ->itemLabel(function (array $state): ?string {
+                            $categoriaId = $state['categoria_id'] ?? null;
+                            $tipo = $state['tipo_empaque'] ?? 'carton_30';
+                            $cantidad = (int)($state['cantidad'] ?? 0);
+
+                            if (!$categoriaId) return '📝 Nueva linea';
+
+                            $categoria = Categoria::find($categoriaId);
+                            $tipoLabel = $tipo === 'carton_30' ? 'C30' : 'C15';
+                            $huevos = $cantidad * ($tipo === 'carton_30' ? 30 : 15);
+
+                            return "📦 " . ($categoria?->nombre ?? 'Sin categoria') . " - {$cantidad} {$tipoLabel} ({$huevos} huevos)";
                         })
-                        ->columnSpanFull(),
-                ])
-                ->visible(fn(Forms\Get $get) => !empty($get('lotes_seleccionados'))),
+                        ->live()
+                        ->disabled(fn(string $operation) => $operation === 'edit')
+                        ->dehydrated(),
 
-            // CATEGORIAS
-            Forms\Components\Section::make('Categorias de Productos')
-                ->description('Selecciona las categorias para los productos generados')
-                ->schema([
-                    Forms\Components\Grid::make(2)->schema([
-                        Forms\Components\Select::make('categoria_carton_30_id')
-                            ->label('Categoria Cartones de 30')
-                            ->options(Categoria::where('activo', true)->pluck('nombre', 'id'))
-                            ->searchable()
-                            ->preload()
-                            ->required(fn(Forms\Get $get) => ($get('cartones_30') ?? 0) > 0)
-                            ->visible(fn(Forms\Get $get) => $get('tipo') === 'mezclado')
-                            ->helperText('Para los cartones de 30 huevos'),
+                    // ========== HUEVOS SUELTOS ==========
+                    Forms\Components\Placeholder::make('sueltos_titulo')
+                        ->label('')
+                        ->content(new \Illuminate\Support\HtmlString("
+                            <div class='flex items-center gap-2 mt-4 mb-2'>
+                                <span class='text-lg'>🥚</span>
+                                <p class='font-semibold text-gray-700 dark:text-gray-300'>Huevos Sueltos (Remanente)</p>
+                            </div>
+                        "))
+                        ->visible(function (Forms\Get $get) {
+                            $lotes = $get('lotes_seleccionados') ?? [];
+                            $total = (int) collect($lotes)->sum('cantidad_huevos');
+                            return $total > 0;
+                        }),
 
-                        Forms\Components\Select::make('categoria_carton_15_id')
-                            ->label('Categoria Medios de 15')
-                            ->options(Categoria::where('activo', true)->pluck('nombre', 'id'))
-                            ->searchable()
-                            ->preload()
-                            ->required(fn(Forms\Get $get) => ($get('cartones_15') ?? 0) > 0)
-                            ->visible(fn(Forms\Get $get) => $get('tipo') === 'mezclado')
-                            ->helperText('Para los cartones de 15 huevos'),
-                    ]),
+                    Forms\Components\Grid::make(3)->schema([
+                        Forms\Components\TextInput::make('huevos_sueltos')
+                            ->label('')
+                            ->numeric()
+                            ->default(0)
+                            ->minValue(0)
+                            ->maxValue(29)
+                            ->suffix('huevos')
+                            ->placeholder('0')
+                            ->live(onBlur: true)
+                            ->disabled(fn(string $operation) => $operation === 'edit')
+                            ->dehydrated(),
+
+                        Forms\Components\Placeholder::make('sueltos_info')
+                            ->label('')
+                            ->content(new \Illuminate\Support\HtmlString("
+                                <div class='text-sm text-gray-500 dark:text-gray-400 pt-2'>
+                                    <p>Maximo 29 huevos</p>
+                                    <p class='text-xs'>Se consolidaran en el lote de sueltos de la bodega</p>
+                                </div>
+                            "))
+                            ->columnSpan(2),
+                    ])->visible(function (Forms\Get $get) {
+                        $lotes = $get('lotes_seleccionados') ?? [];
+                        $total = (int) collect($lotes)->sum('cantidad_huevos');
+                        return $total > 0;
+                    }),
 
                     // NOTA DE SUELTOS CON LOGICA DE COSTO
                     Forms\Components\Placeholder::make('info_sueltos_nota')
@@ -1084,42 +1274,27 @@ class ReempaqueResource extends Resource
 
                             if ($merma <= $huevosRegaloTotales) {
                                 return new \Illuminate\Support\HtmlString("
-                                    <div class='rounded-lg bg-green-50 dark:bg-green-900/20 p-4'>
+                                    <div class='rounded-lg bg-green-50 dark:bg-green-900/20 p-3 mt-2'>
                                         <p class='text-sm text-green-900 dark:text-green-100'>
-                                            <strong>Huevos Sueltos ({$sueltos}):</strong> Se guardaran con costo L 0.00
-                                            porque la merma ({$merma}) no supera los huevos de regalo ({$huevosRegaloTotales}).
-                                            Son huevos GRATIS.
+                                            <strong>💰 Costo de sueltos:</strong> L 0.00 (huevos gratis - la merma no supera los huevos de regalo)
                                         </p>
                                     </div>
                                 ");
                             } else {
                                 return new \Illuminate\Support\HtmlString("
-                                    <div class='rounded-lg bg-amber-50 dark:bg-amber-900/20 p-4'>
+                                    <div class='rounded-lg bg-amber-50 dark:bg-amber-900/20 p-3 mt-2'>
                                         <p class='text-sm text-amber-900 dark:text-amber-100'>
-                                            <strong>Huevos Sueltos ({$sueltos}):</strong> Se guardaran con el costo recalculado
-                                            porque la merma ({$merma}) supera los huevos de regalo ({$huevosRegaloTotales}).
-                                            Son huevos PAGADOS.
+                                            <strong>💰 Costo de sueltos:</strong> Se guardaran con costo recalculado (huevos pagados)
                                         </p>
                                     </div>
                                 ");
                             }
                         })
                         ->visible(fn(Forms\Get $get) => ($get('huevos_sueltos') ?? 0) > 0),
-
-                    Forms\Components\Placeholder::make('info_cat')
-                        ->label('')
-                        ->content(new \Illuminate\Support\HtmlString("
-                            <div class='text-sm text-blue-600 dark:text-blue-400'>
-                                <strong>Individual:</strong> Las categorias se heredan del lote automaticamente
-                            </div>
-                        "))
-                        ->visible(fn(Forms\Get $get) => $get('tipo') === 'individual'),
                 ])
-                ->visible(fn(Forms\Get $get) =>
-                    !empty($get('lotes_seleccionados')) &&
-                    ($get('cartones_30') > 0 || $get('cartones_15') > 0 || $get('huevos_sueltos') > 0)
-                )
-                ->collapsible(),
+                ->visible(fn(Forms\Get $get) => !empty($get('lotes_seleccionados')))
+                ->collapsible()
+                ->collapsed(false),
 
             // RESUMEN DE COSTOS
             Forms\Components\Section::make('Resumen de Costos')

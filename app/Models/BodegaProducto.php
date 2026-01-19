@@ -23,8 +23,8 @@ class BodegaProducto extends Model
         'stock' => 'decimal:3',
         'stock_reservado' => 'decimal:3',
         'stock_minimo' => 'decimal:3',
-        'costo_promedio_actual' => 'integer',
-        'precio_venta_sugerido' => 'integer',
+        'costo_promedio_actual' => 'decimal:2',
+        'precio_venta_sugerido' => 'decimal:2',
         'activo' => 'boolean',
     ];
 
@@ -124,7 +124,7 @@ class BodegaProducto extends Model
             $nuevoCostoPromedio = $costoUnitarioNuevo;
         }
 
-        $nuevoCostoPromedio = (int) ceil($nuevoCostoPromedio);
+        $nuevoCostoPromedio = round($nuevoCostoPromedio, 2);
 
         $this->stock = $stockTotal;
         $this->costo_promedio_actual = $nuevoCostoPromedio;
@@ -136,6 +136,11 @@ class BodegaProducto extends Model
 
     /**
      * Actualizar precio de venta basado en costo_promedio_actual
+     * 
+     * 🆕 NUEVA LÓGICA CON PRECIO MÁXIMO:
+     * 1. Calcula el precio normal (costo + margen)
+     * 2. Si hay precio_maximo configurado, aplica el tope
+     * 3. Si el costo >= precio_maximo, aplica margen mínimo de seguridad
      */
     public function actualizarPrecioVentaSegunCosto(): void
     {
@@ -145,16 +150,37 @@ class BodegaProducto extends Model
             return;
         }
 
-        $margen = $this->producto->margen_ganancia ?? 5;
-        $tipoMargen = $this->producto->tipo_margen ?? 'monto';
+        $producto = $this->producto;
+        
+        if (!$producto) {
+            return;
+        }
 
-        $precioVenta = match ($tipoMargen) {
+        $margen = $producto->margen_ganancia ?? 5;
+        $tipoMargen = $producto->tipo_margen ?? 'monto';
+
+        // Paso 1: Calcular precio normal con el margen configurado
+        $precioCalculado = match ($tipoMargen) {
             'porcentaje' => $costoBase * (1 + ($margen / 100)),
             'monto' => $costoBase + $margen,
             default => $costoBase + 5,
         };
 
-        $this->precio_venta_sugerido = (int) ceil($precioVenta);
+        // Paso 2: Aplicar lógica de precio máximo si está configurado
+        if ($producto->tienePrecioMaximo()) {
+            $resultado = $producto->calcularPrecioConTope($costoBase, $precioCalculado);
+            $precioFinal = $resultado['precio'];
+            
+            // Opcional: Log para debugging cuando hay alerta
+            // if ($resultado['alerta']) {
+            //     \Log::warning("Producto {$producto->id}: {$resultado['mensaje']}");
+            // }
+        } else {
+            $precioFinal = $precioCalculado;
+        }
+
+        // Guardar precio final
+        $this->precio_venta_sugerido = round($precioFinal, 2);
     }
 
     /**
@@ -182,6 +208,7 @@ class BodegaProducto extends Model
 
     /**
      * Obtener información de costos y precios
+     * 🆕 Incluye información sobre precio máximo
      */
     public function getAnalisisCostos(): array
     {
@@ -189,6 +216,11 @@ class BodegaProducto extends Model
         $precioVenta = $this->precio_venta_sugerido ?? 0;
         $margen = $precioVenta - $costoPromedio;
         $porcentajeMargen = $costoPromedio > 0 ? ($margen / $costoPromedio) * 100 : 0;
+
+        $producto = $this->producto;
+        $tienePrecioMaximo = $producto?->tienePrecioMaximo() ?? false;
+        $precioMaximo = $producto?->precio_venta_maximo;
+        $alertaPrecio = $tienePrecioMaximo && $costoPromedio >= $precioMaximo;
 
         return [
             'bodega' => $this->bodega->nombre ?? 'N/A',
@@ -204,6 +236,10 @@ class BodegaProducto extends Model
             'ganancia_potencial' => $this->stock * $margen,
             'stock_minimo' => $this->stock_minimo,
             'necesita_reabastecimiento' => $this->stock <= ($this->stock_minimo ?? 0),
+            // 🆕 Campos de precio máximo
+            'tiene_precio_maximo' => $tienePrecioMaximo,
+            'precio_maximo' => $precioMaximo,
+            'alerta_precio_maximo' => $alertaPrecio,
         ];
     }
 

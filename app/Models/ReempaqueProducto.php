@@ -15,6 +15,7 @@ class ReempaqueProducto extends Model
     protected $fillable = [
         'reempaque_id',
         'producto_id',
+        'categoria_id',  // 🆕 NUEVO
         'bodega_id',
         'cantidad',
         'costo_unitario',
@@ -49,7 +50,11 @@ class ReempaqueProducto extends Model
     {
         return $this->belongsTo(Bodega::class, 'bodega_id');
     }
-
+    // 🆕 NUEVA RELACIÓN
+    public function categoria(): BelongsTo
+    {
+        return $this->belongsTo(Categoria::class, 'categoria_id');
+    }
     // ============================================
     // SCOPES
     // ============================================

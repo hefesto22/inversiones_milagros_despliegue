@@ -198,8 +198,19 @@ class Viaje extends Model
 
     public function cerrar(): void
     {
-        $this->recalcularTotales();
-        $this->cambiarEstado(self::ESTADO_CERRADO);
+        DB::transaction(function () {
+            // 1. Calcular comisiones
+            $this->calcularComisiones();
+
+            // 2. Procesar reintegro de stock de las descargas
+            $this->procesarReintegroDescargas();
+
+            // 3. Recalcular totales
+            $this->recalcularTotales();
+
+            // 4. Cambiar estado
+            $this->cambiarEstado(self::ESTADO_CERRADO);
+        });
     }
 
     public function cancelar(?string $motivo = null): void
@@ -211,7 +222,42 @@ class Viaje extends Model
         }
         $this->cambiarEstado(self::ESTADO_CANCELADO);
     }
+    protected function procesarReintegroDescargas(): void
+    {
+        // Obtener descargas que deben reingresar al stock y no han sido procesadas
+        $descargas = $this->descargas()
+            ->where('reingresa_stock', true)
+            ->get();
 
+        foreach ($descargas as $descarga) {
+            // Solo reingresar productos en buen estado
+            if (!$descarga->estaEnBuenEstado()) {
+                continue;
+            }
+
+            // Buscar o crear el registro en bodega_producto
+            $bodegaProducto = BodegaProducto::firstOrCreate(
+                [
+                    'bodega_id' => $this->bodega_origen_id,
+                    'producto_id' => $descarga->producto_id,
+                ],
+                [
+                    'stock' => 0,
+                    'stock_reservado' => 0,
+                    'stock_minimo' => 0,
+                    'costo_promedio_actual' => $descarga->costo_unitario,
+                    'activo' => true,
+                ]
+            );
+
+            // Reingresar stock usando el costo de la descarga
+            // Usamos actualizarCostoPromedio para mantener el weighted average
+            $bodegaProducto->actualizarCostoPromedio(
+                $descarga->cantidad,
+                $descarga->costo_unitario
+            );
+        }
+    }
     // ============================================
     // MÉTODOS DE VERIFICACIÓN
     // ============================================
@@ -261,9 +307,9 @@ class Viaje extends Model
         $this->total_cargado_costo = $this->cargas()->sum('subtotal_costo');
         $this->total_cargado_venta = $this->cargas()->sum('subtotal_venta');
 
-        // Totales de ventas
-        $this->total_vendido = $this->ventas()
-            ->whereIn('estado', ['completada', 'pendiente_pago', 'pagada'])
+        // Totales de ventas - CAMBIAR ventas() por ventasRuta()
+        $this->total_vendido = $this->ventasRuta()
+            ->whereIn('estado', ['confirmada', 'completada'])
             ->sum('total');
 
         // Totales de merma
@@ -282,9 +328,9 @@ class Viaje extends Model
         // Neto chofer
         $this->neto_chofer = $this->comision_ganada - $this->cobros_devoluciones;
 
-        // Efectivo
-        $ventasEfectivo = $this->ventas()
-            ->whereIn('estado', ['completada', 'pagada'])
+        // Efectivo - CAMBIAR ventas() por ventasRuta()
+        $ventasEfectivo = $this->ventasRuta()
+            ->whereIn('estado', ['confirmada', 'completada'])
             ->where('tipo_pago', '!=', 'credito')
             ->sum('total');
 
@@ -299,15 +345,77 @@ class Viaje extends Model
         // Eliminar comisiones anteriores
         $this->comisionesDetalle()->delete();
 
-        foreach ($this->ventas()->with('detalles.producto.categoria')->get() as $venta) {
+        // Usar ventasRuta() en lugar de ventas() - estas son las ventas en ruta (ViajeVenta)
+        $ventas = $this->ventasRuta()
+            ->whereIn('estado', ['confirmada', 'completada'])
+            ->with(['detalles.producto.categoria'])
+            ->get();
+
+        foreach ($ventas as $venta) {
             foreach ($venta->detalles as $detalle) {
-                $this->calcularComisionDetalle($venta, $detalle);
+                $this->calcularComisionDetalleRuta($venta, $detalle);
             }
         }
 
+        // Actualizar total de comisiones
         $this->comision_ganada = $this->comisionesDetalle()->sum('comision_total');
         $this->neto_chofer = $this->comision_ganada - $this->cobros_devoluciones;
         $this->save();
+    }
+
+    protected function calcularComisionDetalleRuta(ViajeVenta $venta, ViajeVentaDetalle $detalle): void
+    {
+        $producto = $detalle->producto;
+
+        if (!$producto) {
+            return;
+        }
+
+        $categoriaId = $producto->categoria_id;
+
+        // Obtener unidad desde la carga del viaje
+        $carga = $this->cargas()->where('producto_id', $producto->id)->first();
+        $unidadId = $carga?->unidad_id;
+
+        // Obtener configuración de comisión del chofer
+        $comisionConfig = $this->chofer->getComisionPara($producto->id, $categoriaId, $unidadId);
+
+        // Si no hay comisión configurada, saltar
+        if ($comisionConfig['normal'] <= 0) {
+            return;
+        }
+
+        // Obtener precio sugerido de la carga
+        $precioSugerido = $carga?->precio_venta_sugerido ?? $detalle->precio_base;
+
+        // Determinar tipo de comisión basado en precio de venta vs precio sugerido
+        // ViajeVentaDetalle usa precio_base (sin ISV)
+        $precioVendido = $detalle->precio_base;
+
+        $tipoComision = $precioVendido >= $precioSugerido
+            ? ViajeComisionDetalle::TIPO_NORMAL
+            : ViajeComisionDetalle::TIPO_REDUCIDA;
+
+        $comisionUnitaria = $tipoComision === ViajeComisionDetalle::TIPO_NORMAL
+            ? $comisionConfig['normal']
+            : ($comisionConfig['reducida'] ?? $comisionConfig['normal']);
+
+        $comisionTotal = $detalle->cantidad * $comisionUnitaria;
+
+        // Crear registro de comisión
+        ViajeComisionDetalle::create([
+            'viaje_id' => $this->id,
+            'viaje_venta_id' => $venta->id,
+            'viaje_venta_detalle_id' => $detalle->id,
+            'producto_id' => $producto->id,
+            'cantidad' => $detalle->cantidad,
+            'precio_vendido' => $precioVendido,
+            'precio_sugerido' => $precioSugerido,
+            'costo' => $detalle->costo_unitario,
+            'tipo_comision' => $tipoComision,
+            'comision_unitaria' => $comisionUnitaria,
+            'comision_total' => $comisionTotal,
+        ]);
     }
 
     protected function calcularComisionDetalle(Venta $venta, VentaDetalle $detalle): void
@@ -350,6 +458,21 @@ class Viaje extends Model
         ]);
     }
 
+    public function liquidarCompleto(): array
+    {
+        // Calcular comisiones
+        $this->calcularComisiones();
+
+        // Recalcular totales (sin cerrar)
+        $this->recalcularTotales();
+
+        return [
+            'comision_ganada' => $this->comision_ganada,
+            'cobros' => $this->cobros_devoluciones,
+            'neto_chofer' => $this->neto_chofer,
+            'total_vendido' => $this->total_vendido,
+        ];
+    }
     // ============================================
     // MÉTODOS DE CONSULTA
     // ============================================

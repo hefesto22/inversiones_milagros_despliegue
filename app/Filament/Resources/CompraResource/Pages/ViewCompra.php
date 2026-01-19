@@ -596,8 +596,8 @@ class ViewCompra extends ViewRecord
                 : 0;
         }
 
-        // Redondear hacia arriba para no perder
-        $costoUnitario = ceil($costoUnitario * 100) / 100;
+        // Sin redondeo - mantener valor exacto
+        $costoUnitario = round($costoUnitario, 2);
 
         // Buscar o crear registro en bodega_producto
         $bodegaProducto = BodegaProducto::firstOrCreate(

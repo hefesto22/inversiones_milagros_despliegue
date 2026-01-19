@@ -18,6 +18,7 @@ class CreateReempaque extends CreateRecord
     protected function mutateFormDataBeforeCreate(array $data): array
     {
         $lotesSeleccionados = $data['lotes_seleccionados'] ?? [];
+        $distribuciones = $data['distribuciones'] ?? [];
 
         $totalHuevosUsados = (int) collect($lotesSeleccionados)->sum('cantidad_huevos');
         $merma = (int) ($data['merma'] ?? 0);
@@ -32,8 +33,6 @@ class CreateReempaque extends CreateRecord
             $lote = Lote::find($loteData['lote_id']);
             if ($lote) {
                 $huevosUsados = (int) ($loteData['cantidad_huevos'] ?? 0);
-
-                // Para lotes SUELTOS-*, usar costo_por_huevo directamente
                 $esLoteSueltos = str_starts_with($lote->numero_lote ?? '', 'SUELTOS-');
 
                 if ($esLoteSueltos) {
@@ -42,7 +41,6 @@ class CreateReempaque extends CreateRecord
                         $huevosFacturadosTotales += $huevosUsados;
                     }
                 } else {
-                    // Lote normal: usar proporcion
                     $proporcion = $lote->cantidad_huevos_original > 0
                         ? $huevosUsados / $lote->cantidad_huevos_original
                         : 0;
@@ -70,11 +68,25 @@ class CreateReempaque extends CreateRecord
         }
         $costoUnitarioPromedio = ceil($costoUnitarioPromedio * 100) / 100;
 
-        // Validar que el empaque cuadre
-        $cartones30 = (int) ($data['cartones_30'] ?? 0);
-        $cartones15 = (int) ($data['cartones_15'] ?? 0);
+        // Calcular totales desde distribuciones
+        $cartones30Total = 0;
+        $cartones15Total = 0;
+
+        foreach ($distribuciones as $dist) {
+            $cantidad = (int) ($dist['cantidad'] ?? 0);
+            $tipo = $dist['tipo_empaque'] ?? 'carton_30';
+
+            if ($tipo === 'carton_30') {
+                $cartones30Total += $cantidad;
+            } else {
+                $cartones15Total += $cantidad;
+            }
+        }
+
         $sueltos = (int) ($data['huevos_sueltos'] ?? 0);
-        $totalEmpacado = ($cartones30 * 30) + ($cartones15 * 15) + $sueltos;
+
+        // Validar que el empaque cuadre
+        $totalEmpacado = ($cartones30Total * 30) + ($cartones15Total * 15) + $sueltos;
 
         if (abs($totalEmpacado - $huevosUtiles) > 0.01) {
             throw new \Exception("Error: El total empacado ({$totalEmpacado}) no coincide con los huevos utiles ({$huevosUtiles})");
@@ -87,6 +99,11 @@ class CreateReempaque extends CreateRecord
         $data['costo_unitario_promedio'] = $costoUnitarioPromedio;
         $data['estado'] = 'completado';
         $data['created_by'] = Auth::id();
+
+        // Guardar totales para compatibilidad con tabla existente
+        $data['cartones_30'] = $cartones30Total;
+        $data['cartones_15'] = $cartones15Total;
+        $data['huevos_sueltos'] = $sueltos;
 
         // Guardar datos para usar en afterCreate
         $data['_huevos_facturados_totales'] = $huevosFacturadosTotales;
@@ -102,12 +119,10 @@ class CreateReempaque extends CreateRecord
 
         DB::transaction(function () use ($reempaque, $data) {
             $lotesSeleccionados = $data['lotes_seleccionados'] ?? [];
+            $distribuciones = $data['distribuciones'] ?? [];
             $merma = (int) ($data['merma'] ?? 0);
 
-            // =====================================================
-            // 🔧 FIX: RECALCULAR huevosRegaloTotales AQUÍ
-            // porque $this->data no tiene los valores de mutateFormDataBeforeCreate
-            // =====================================================
+            // Recalcular valores necesarios
             $huevosRegaloTotales = 0;
             $huevosFacturadosTotales = 0;
             $costoTotalPagado = 0;
@@ -134,9 +149,6 @@ class CreateReempaque extends CreateRecord
                     }
                 }
             }
-            // =====================================================
-            // FIN DEL FIX
-            // =====================================================
 
             // 1. Crear registros en reempaque_lotes y reducir remanente
             foreach ($lotesSeleccionados as $loteData) {
@@ -151,8 +163,6 @@ class CreateReempaque extends CreateRecord
                 $huevosUsados = (int) ($loteData['cantidad_huevos'] ?? 0);
 
                 $cartonesEquivalentes = $cartonesC30 + ($cartonesC15 * 0.5);
-
-                // Detectar si es lote de sueltos consolidado
                 $esLoteSueltos = str_starts_with($lote->numero_lote ?? '', 'SUELTOS-');
 
                 if ($esLoteSueltos) {
@@ -183,45 +193,28 @@ class CreateReempaque extends CreateRecord
                 $lote->reducirRemanente($huevosUsados);
             }
 
-            // 2. Crear productos finales y agregarlos al stock
+            // 2. Procesar cada linea de distribucion
             $bodegaId = $reempaque->bodega_id;
             $costoUnitarioPorHuevo = $reempaque->costo_unitario_promedio;
-            $tipo = $data['tipo'] ?? 'individual';
 
-            // Cartones de 30
-            if ($reempaque->cartones_30 > 0) {
-                $categoriaId = $this->obtenerCategoriaProducto(
-                    $tipo,
-                    $data,
-                    'categoria_carton_30_id',
-                    30
-                );
+            foreach ($distribuciones as $dist) {
+                $categoriaId = $dist['categoria_id'] ?? null;
+                $tipoEmpaque = $dist['tipo_empaque'] ?? 'carton_30';
+                $cantidad = (int) ($dist['cantidad'] ?? 0);
 
-                $this->crearYAgregarProducto(
-                    $reempaque,
-                    $categoriaId,
-                    30,
-                    $reempaque->cartones_30,
-                    $costoUnitarioPorHuevo * 30,
-                    $bodegaId
-                );
-            }
+                if (!$categoriaId || $cantidad <= 0) {
+                    continue;
+                }
 
-            // Cartones de 15
-            if ($reempaque->cartones_15 > 0) {
-                $categoriaId = $this->obtenerCategoriaProducto(
-                    $tipo,
-                    $data,
-                    'categoria_carton_15_id',
-                    15
-                );
+                $huevosPorUnidad = $tipoEmpaque === 'carton_30' ? 30 : 15;
+                $costoUnitarioProducto = $costoUnitarioPorHuevo * $huevosPorUnidad;
 
                 $this->crearYAgregarProducto(
                     $reempaque,
                     $categoriaId,
-                    15,
-                    $reempaque->cartones_15,
-                    $costoUnitarioPorHuevo * 15,
+                    $huevosPorUnidad,
+                    $cantidad,
+                    $costoUnitarioProducto,
                     $bodegaId
                 );
             }
@@ -233,8 +226,8 @@ class CreateReempaque extends CreateRecord
                     $lotesSeleccionados,
                     $bodegaId,
                     $merma,
-                    $huevosRegaloTotales,      // ← Ahora viene del recálculo
-                    $huevosFacturadosTotales,  // ← Ahora viene del recálculo
+                    $huevosRegaloTotales,
+                    $huevosFacturadosTotales,
                     $costoUnitarioPorHuevo
                 );
             }
@@ -243,10 +236,6 @@ class CreateReempaque extends CreateRecord
 
     /**
      * Consolidar sueltos en un unico lote por bodega
-     *
-     * LOGICA DE COSTO:
-     * - Si merma <= regalo: Los sueltos son huevos GRATIS (costo = 0)
-     * - Si merma > regalo: Los sueltos son huevos PAGADOS (costo = costo recalculado)
      */
     protected function consolidarSueltos(
         $reempaque,
@@ -257,7 +246,6 @@ class CreateReempaque extends CreateRecord
         int $huevosFacturadosTotales,
         float $costoUnitarioPorHuevo
     ): void {
-        // Obtener el primer lote para heredar producto y proveedor
         $primerLoteData = reset($lotesSeleccionados);
         $primerLote = Lote::find($primerLoteData['lote_id']);
 
@@ -267,34 +255,24 @@ class CreateReempaque extends CreateRecord
 
         $cantidadNueva = (int) $reempaque->huevos_sueltos;
 
-        // =====================================================
-        // 🎯 LOGICA CORRECTA DE COSTO PARA SUELTOS
-        // Si merma <= regalo: los sueltos vienen de huevos gratis = costo 0
-        // Si merma > regalo: los sueltos vienen de huevos pagados = costo recalculado
-        // =====================================================
+        // Logica de costo para sueltos
         if ($merma <= $huevosRegaloTotales) {
-            // Los sueltos son huevos de REGALO (gratis)
             $costoNuevo = 0.00;
         } else {
-            // Los sueltos son huevos PAGADOS
             $costoNuevo = round($costoUnitarioPorHuevo, 2);
         }
 
-        // Buscar lote consolidado existente para esta bodega
         $numeroLoteConsolidado = "SUELTOS-B{$bodegaId}";
         $loteExistente = Lote::where('numero_lote', $numeroLoteConsolidado)
             ->where('bodega_id', $bodegaId)
             ->first();
 
         if ($loteExistente) {
-            // ACTUALIZAR: Agregar al lote existente con promedio ponderado
             $cantidadActual = (int) $loteExistente->cantidad_huevos_remanente;
             $costoActual = (float) $loteExistente->costo_por_huevo;
 
-            // Promedio ponderado del costo
             $cantidadTotal = $cantidadActual + $cantidadNueva;
 
-            // Calcular promedio ponderado solo si ambos tienen valores
             if ($cantidadTotal > 0) {
                 $costoPromedioPonderado = (($cantidadActual * $costoActual) + ($cantidadNueva * $costoNuevo)) / $cantidadTotal;
             } else {
@@ -313,7 +291,6 @@ class CreateReempaque extends CreateRecord
                 'reempaque_origen_id' => $reempaque->id,
             ]);
         } else {
-            // CREAR: Nuevo lote consolidado para esta bodega
             $costoTotalSueltos = round($cantidadNueva * $costoNuevo, 2);
 
             Lote::create([
@@ -337,33 +314,6 @@ class CreateReempaque extends CreateRecord
                 'created_by' => Auth::id(),
             ]);
         }
-    }
-
-    protected function obtenerCategoriaProducto(
-        string $tipo,
-        array $data,
-        string $categoriaFieldName,
-        int $huevosPorUnidad
-    ): int {
-        if ($tipo === 'individual') {
-            $lotesSeleccionados = $data['lotes_seleccionados'] ?? [];
-            if (!empty($lotesSeleccionados)) {
-                $primerLoteData = reset($lotesSeleccionados);
-                if ($primerLoteData && isset($primerLoteData['lote_id'])) {
-                    $primerLote = Lote::find($primerLoteData['lote_id']);
-                    if ($primerLote && $primerLote->producto) {
-                        return $primerLote->producto->categoria_id;
-                    }
-                }
-            }
-            throw new \Exception("No se pudo obtener la categoria del lote original");
-        }
-
-        if (!isset($data[$categoriaFieldName])) {
-            throw new \Exception("Debes seleccionar la categoria para productos de {$huevosPorUnidad} huevos");
-        }
-
-        return $data[$categoriaFieldName];
     }
 
     protected function crearYAgregarProducto(
@@ -412,6 +362,7 @@ class CreateReempaque extends CreateRecord
             'reempaque_id' => $reempaque->id,
             'producto_id' => $producto->id,
             'bodega_id' => $bodegaId,
+            'categoria_id' => $categoriaId, // Nuevo campo
             'cantidad' => $cantidad,
             'costo_unitario' => $costoUnitarioProducto,
             'costo_total' => $costoTotal,

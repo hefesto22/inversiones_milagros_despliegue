@@ -492,6 +492,13 @@ class ViajeResource extends Resource
                             ->when($data['hasta'], fn($q, $date) => $q->whereDate('fecha_salida', '<=', $date));
                     }),
             ])
+
+            /**
+             * REEMPLAZAR LAS ACCIONES EN ViajeResource.php (líneas ~370-480)
+             * 
+             * Estas son las acciones corregidas para la tabla de viajes
+             */
+
             ->actions([
                 Tables\Actions\ViewAction::make(),
                 Tables\Actions\EditAction::make()
@@ -555,29 +562,62 @@ class ViajeResource extends Resource
                             ->send();
                     }),
 
-                // Acción: Iniciar Descarga
+                // Acción: Descargar (genera descargas automáticas)
                 Tables\Actions\Action::make('iniciar_descarga')
                     ->label('Descargar')
                     ->icon('heroicon-o-archive-box-x-mark')
                     ->color('info')
                     ->requiresConfirmation()
+                    ->modalHeading('Iniciar Descarga')
+                    ->modalDescription('Se generarán automáticamente las descargas de productos no vendidos. ¿Desea continuar?')
                     ->visible(fn($record) => $record->estado === Viaje::ESTADO_REGRESANDO)
                     ->action(function ($record) {
-                        $record->iniciarDescarga();
+                        DB::transaction(function () use ($record) {
+                            // Generar descargas automáticas
+                            foreach ($record->cargas as $carga) {
+                                $disponible = $carga->getCantidadDisponible();
+
+                                if ($disponible > 0) {
+                                    \App\Models\ViajeDescarga::create([
+                                        'viaje_id' => $record->id,
+                                        'producto_id' => $carga->producto_id,
+                                        'unidad_id' => $carga->unidad_id,
+                                        'cantidad' => $disponible,
+                                        'costo_unitario' => $carga->costo_unitario,
+                                        'subtotal_costo' => $disponible * $carga->costo_unitario,
+                                        'estado_producto' => 'bueno',
+                                        'reingresa_stock' => true,
+                                        'cobrar_chofer' => false,
+                                        'monto_cobrar' => 0,
+                                    ]);
+
+                                    $carga->increment('cantidad_devuelta', $disponible);
+                                }
+                            }
+
+                            // Cambiar estado
+                            $record->iniciarDescarga();
+                        });
+
                         \Filament\Notifications\Notification::make()
-                            ->title('Descarga iniciada')
+                            ->title('Descarga generada')
+                            ->body('Se han registrado las devoluciones automáticamente.')
                             ->success()
                             ->send();
                     }),
 
-                // Acción: Liquidar
+                // Acción: Liquidar (solo si ya hay descargas)
                 Tables\Actions\Action::make('liquidar')
                     ->label('Liquidar')
                     ->icon('heroicon-o-calculator')
                     ->color('warning')
                     ->requiresConfirmation()
                     ->modalDescription('Se calcularán comisiones, cobros y totales del viaje.')
-                    ->visible(fn($record) => in_array($record->estado, [Viaje::ESTADO_REGRESANDO, Viaje::ESTADO_DESCARGANDO]))
+                    ->visible(
+                        fn($record) =>
+                        $record->estado === Viaje::ESTADO_DESCARGANDO
+                            && $record->descargas()->exists()
+                    )
                     ->action(function ($record) {
                         try {
                             $resultado = $record->liquidarCompleto();
@@ -600,21 +640,25 @@ class ViajeResource extends Resource
                         }
                     }),
 
-                // Acción: Cerrar Viaje
+                // Acción: Cerrar Viaje (con reintegro de stock)
                 Tables\Actions\Action::make('cerrar')
                     ->label('Cerrar Viaje')
                     ->icon('heroicon-o-check-circle')
                     ->color('success')
                     ->requiresConfirmation()
-                    ->modalDescription('Se calcularán los totales finales y se cerrará el viaje.')
+                    ->modalHeading('Cerrar Viaje')
+                    ->modalDescription('Se reintegrará el stock devuelto a la bodega. Esta acción no se puede revertir.')
                     ->visible(fn($record) => $record->estado === Viaje::ESTADO_LIQUIDANDO)
                     ->action(function ($record) {
                         try {
                             $record->cerrar();
+
                             \Filament\Notifications\Notification::make()
                                 ->title('Viaje cerrado')
-                                ->body('Se han calculado todos los totales.')
+                                ->body("Stock reintegrado. Comisión: L " . number_format($record->comision_ganada, 2) .
+                                    " | Neto chofer: L " . number_format($record->neto_chofer, 2))
                                 ->success()
+                                ->duration(10000)
                                 ->send();
                         } catch (\Exception $e) {
                             \Filament\Notifications\Notification::make()

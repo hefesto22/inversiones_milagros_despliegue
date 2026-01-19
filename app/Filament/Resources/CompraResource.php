@@ -58,7 +58,7 @@ class CompraResource extends Resource
     }
 
     /**
-     * 🆕 Verificar si un producto tiene categoría con ISV
+     * Verificar si un producto tiene categoría con ISV
      */
     protected static function productoAplicaIsv(?int $productoId): bool
     {
@@ -76,7 +76,7 @@ class CompraResource extends Resource
     }
 
     /**
-     * 🆕 Calcular desglose de ISV (15%)
+     * Calcular desglose de ISV (15%)
      */
     protected static function calcularDesgloseIsv(float $precioConIsv): array
     {
@@ -317,7 +317,9 @@ class CompraResource extends Resource
                                                         ->orderBy('nombre')
                                                         ->get()
                                                         ->mapWithKeys(fn($producto) => [
-                                                            $producto->id => $producto->nombre . ' - ' . ($producto->sku ?? 'Sin SKU')
+                                                            $producto->id => $producto->nombre . 
+                                                                ($producto->formato_empaque ? " [{$producto->formato_empaque}]" : '') .
+                                                                ' - ' . ($producto->sku ?? 'Sin SKU')
                                                         ])
                                                         ->toArray();
                                                 }
@@ -340,7 +342,9 @@ class CompraResource extends Resource
                                                     ->orderBy('nombre')
                                                     ->get()
                                                     ->mapWithKeys(fn($producto) => [
-                                                        $producto->id => $producto->nombre . ' - ' . ($producto->sku ?? 'Sin SKU')
+                                                        $producto->id => $producto->nombre . 
+                                                            ($producto->formato_empaque ? " [{$producto->formato_empaque}]" : '') .
+                                                            ' - ' . ($producto->sku ?? 'Sin SKU')
                                                     ])
                                                     ->toArray();
                                             })
@@ -357,7 +361,12 @@ class CompraResource extends Resource
                                                         $set('unidad_id', null);
                                                     }
 
-                                                    // 🆕 Verificar si aplica ISV
+                                                    // 🆕 Guardar info de formato de empaque
+                                                    $set('_tiene_formato', $producto ? $producto->tieneFormatoEmpaque() : false);
+                                                    $set('_unidades_por_bulto', $producto->unidades_por_bulto ?? null);
+                                                    $set('_formato_empaque', $producto->formato_empaque ?? null);
+
+                                                    // Verificar si aplica ISV
                                                     $aplicaIsv = $producto && $producto->categoria && $producto->categoria->aplica_isv;
                                                     $set('_aplica_isv', $aplicaIsv);
 
@@ -379,7 +388,6 @@ class CompraResource extends Resource
                                                         if ($ultimoPrecio) {
                                                             $set('precio_unitario', number_format($ultimoPrecio, 2, '.', ''));
 
-                                                            // 🆕 Si aplica ISV, calcular desglose automáticamente
                                                             if ($aplicaIsv) {
                                                                 $desglose = self::calcularDesgloseIsv((float)$ultimoPrecio);
                                                                 $set('precio_con_isv', number_format($desglose['precio_con_isv'], 2, '.', ''));
@@ -391,6 +399,9 @@ class CompraResource extends Resource
                                                 } else {
                                                     $set('unidad_id', null);
                                                     $set('_aplica_isv', false);
+                                                    $set('_tiene_formato', false);
+                                                    $set('_unidades_por_bulto', null);
+                                                    $set('_formato_empaque', null);
                                                 }
                                             })
                                             ->columnSpan(1),
@@ -422,7 +433,20 @@ class CompraResource extends Resource
                                                 $regalo = (float)($get('cantidad_regalo') ?? 0);
                                                 $set('cantidad_recibida', $facturada + $regalo);
                                             })
-                                            ->helperText('Lo que pagas')
+                                            ->helperText(function (Forms\Get $get) {
+                                                $productoId = $get('producto_id');
+                                                if (!$productoId) {
+                                                    return 'Lo que pagas';
+                                                }
+
+                                                $producto = Producto::with('unidad')->find($productoId);
+                                                if ($producto && $producto->tieneFormatoEmpaque()) {
+                                                    $unidadNombre = $producto->unidad->nombre ?? 'unidades';
+                                                    return "En {$unidadNombre} (1 caja = {$producto->unidades_por_bulto})";
+                                                }
+
+                                                return 'Lo que pagas';
+                                            })
                                             ->columnSpan(1),
 
                                         Forms\Components\TextInput::make('cantidad_regalo')
@@ -451,6 +475,61 @@ class CompraResource extends Resource
                                             ->columnSpan(1),
                                     ]),
 
+                                // 🆕 EQUIVALENCIA EN CAJAS (solo visible si tiene formato)
+                                Forms\Components\Placeholder::make('equivalencia_cajas')
+                                    ->label('')
+                                    ->content(function (Forms\Get $get) {
+                                        $productoId = $get('producto_id');
+                                        $cantidadFacturada = (float) ($get('cantidad_facturada') ?? 0);
+                                        $cantidadRegalo = (float) ($get('cantidad_regalo') ?? 0);
+                                        $cantidadTotal = $cantidadFacturada + $cantidadRegalo;
+
+                                        if (!$productoId || $cantidadTotal <= 0) {
+                                            return '';
+                                        }
+
+                                        $producto = Producto::with('unidad')->find($productoId);
+                                        
+                                        if (!$producto || !$producto->tieneFormatoEmpaque()) {
+                                            return '';
+                                        }
+
+                                        $equivalencia = $producto->calcularEquivalenciaBultos($cantidadTotal);
+                                        $unidadNombre = $producto->unidad->nombre ?? 'unidades';
+
+                                        $esExacto = $equivalencia['sueltos'] == 0;
+                                        $colorClass = $esExacto ? 'green' : 'blue';
+                                        $icono = $esExacto ? '✅' : '📦';
+
+                                        return new \Illuminate\Support\HtmlString("
+                                            <div class='rounded-lg bg-{$colorClass}-50 dark:bg-{$colorClass}-900/20 p-3'>
+                                                <div class='flex items-center justify-between'>
+                                                    <div>
+                                                        <p class='text-sm font-semibold text-{$colorClass}-900 dark:text-{$colorClass}-100'>
+                                                            {$icono} Equivalencia: <strong>{$equivalencia['texto']}</strong>
+                                                        </p>
+                                                        <p class='text-xs text-{$colorClass}-700 dark:text-{$colorClass}-300 mt-1'>
+                                                            Formato: {$producto->formato_empaque} → 1 caja = {$producto->unidades_por_bulto} {$unidadNombre}
+                                                        </p>
+                                                    </div>
+                                                    <div class='text-right'>
+                                                        <p class='text-lg font-bold text-{$colorClass}-600 dark:text-{$colorClass}-400'>
+                                                            " . number_format($cantidadTotal, 0) . " {$unidadNombre}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ");
+                                    })
+                                    ->columnSpanFull()
+                                    ->visible(function (Forms\Get $get) {
+                                        $productoId = $get('producto_id');
+                                        if (!$productoId) return false;
+                                        
+                                        $producto = Producto::find($productoId);
+                                        return $producto && $producto->tieneFormatoEmpaque();
+                                    }),
+
                                 // 🎯 FILA 3: Precios
                                 Forms\Components\Grid::make(4)
                                     ->schema([
@@ -465,7 +544,6 @@ class CompraResource extends Resource
                                             ->formatStateUsing(fn($state) => number_format((float)$state, 2, '.', ''))
                                             ->live(onBlur: true)
                                             ->afterStateUpdated(function ($state, Forms\Set $set, Forms\Get $get) {
-                                                // 🆕 Si aplica ISV, calcular desglose automáticamente
                                                 $productoId = $get('producto_id');
                                                 if ($productoId && self::productoAplicaIsv((int)$productoId)) {
                                                     $precio = (float)($state ?? 0);
@@ -526,7 +604,7 @@ class CompraResource extends Resource
                                             ->columnSpan(1),
                                     ]),
 
-                                // 🆕 FILA 4: Desglose ISV (solo visible si aplica)
+                                // FILA 4: Desglose ISV (solo visible si aplica)
                                 Forms\Components\Grid::make(3)
                                     ->schema([
                                         Forms\Components\TextInput::make('precio_con_isv')
@@ -563,7 +641,7 @@ class CompraResource extends Resource
                                         return $productoId && self::productoAplicaIsv((int)$productoId);
                                     }),
 
-                                // 🆕 Indicador visual de ISV
+                                // Indicador visual de ISV
                                 Forms\Components\Placeholder::make('isv_indicator')
                                     ->label('')
                                     ->content(function (Forms\Get $get) {
@@ -586,9 +664,21 @@ class CompraResource extends Resource
                                     })
                                     ->columnSpanFull(),
 
-                                // Campo oculto para tracking
+                                // Campos ocultos para tracking
                                 Forms\Components\Hidden::make('_aplica_isv')
                                     ->default(false)
+                                    ->dehydrated(false),
+
+                                Forms\Components\Hidden::make('_tiene_formato')
+                                    ->default(false)
+                                    ->dehydrated(false),
+
+                                Forms\Components\Hidden::make('_unidades_por_bulto')
+                                    ->default(null)
+                                    ->dehydrated(false),
+
+                                Forms\Components\Hidden::make('_formato_empaque')
+                                    ->default(null)
                                     ->dehydrated(false),
                             ])
                             ->defaultItems(1)
@@ -598,7 +688,7 @@ class CompraResource extends Resource
                             ->itemLabel(
                                 fn(array $state): ?string =>
                                 $state['producto_id']
-                                    ? Producto::find($state['producto_id'])?->nombre
+                                    ? Producto::find($state['producto_id'])?->getNombreConFormato()
                                     : 'Nuevo producto'
                             )
                             ->addActionLabel('+ Agregar producto')
@@ -628,7 +718,6 @@ class CompraResource extends Resource
             ]);
     }
 
-    // Función auxiliar para calcular total
     protected static function calcularTotal(Forms\Get $get, Forms\Set $set): void
     {
         $detalles = $get('detalles') ?? [];
@@ -639,7 +728,6 @@ class CompraResource extends Resource
             $descuento = (float)($item['descuento'] ?? 0);
             $impuesto = (float)($item['impuesto'] ?? 0);
 
-            // Subtotal basado en cantidad FACTURADA (no recibida)
             $subtotal = ($cantidadFacturada * $precio) - $descuento + $impuesto;
             return $carry + $subtotal;
         }, 0);

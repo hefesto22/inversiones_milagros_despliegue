@@ -22,7 +22,7 @@ class ViewViaje extends ViewRecord
     {
         return [
             Actions\EditAction::make()
-                ->visible(fn () => !in_array($this->record->estado, [Viaje::ESTADO_CERRADO, Viaje::ESTADO_CANCELADO])),
+                ->visible(fn() => !in_array($this->record->estado, [Viaje::ESTADO_CERRADO, Viaje::ESTADO_CANCELADO])),
 
             // ========================================
             // AGREGAR CARGA (Modal con productos)
@@ -35,7 +35,7 @@ class ViewViaje extends ViewRecord
                 ->modalDescription('Seleccione los productos y cantidades a cargar en el camión.')
                 ->modalSubmitActionLabel('Cargar Productos')
                 ->modalWidth('4xl')
-                ->visible(fn () => in_array($this->record->estado, [Viaje::ESTADO_PLANIFICADO, Viaje::ESTADO_CARGANDO]))
+                ->visible(fn() => in_array($this->record->estado, [Viaje::ESTADO_PLANIFICADO, Viaje::ESTADO_CARGANDO]))
                 ->form([
                     Forms\Components\Repeater::make('productos')
                         ->label('')
@@ -77,7 +77,7 @@ class ViewViaje extends ViewRecord
 
                                     Forms\Components\Select::make('unidad_id')
                                         ->label('Unidad')
-                                        ->options(fn () => Unidad::where('activo', true)->pluck('nombre', 'id'))
+                                        ->options(fn() => Unidad::where('activo', true)->pluck('nombre', 'id'))
                                         ->required(),
                                 ]),
 
@@ -151,7 +151,8 @@ class ViewViaje extends ViewRecord
                         ->reorderable(false)
                         ->collapsible()
                         ->cloneable()
-                        ->itemLabel(fn (array $state): ?string =>
+                        ->itemLabel(
+                            fn(array $state): ?string =>
                             isset($state['producto_id']) && $state['producto_id']
                                 ? Producto::find($state['producto_id'])?->nombre ?? 'Producto'
                                 : 'Nuevo producto'
@@ -240,7 +241,6 @@ class ViewViaje extends ViewRecord
                             ->send();
 
                         $this->redirect($this->getResource()::getUrl('view', ['record' => $this->record]));
-
                     } catch (\Exception $e) {
                         DB::rollBack();
 
@@ -267,7 +267,7 @@ class ViewViaje extends ViewRecord
                     return "El viaje tiene {$totalCargas} producto(s) cargado(s) con un costo total de L " . number_format($totalCosto, 2) . ". ¿Desea iniciar la ruta?";
                 })
                 ->modalSubmitActionLabel('Iniciar Ruta')
-                ->visible(fn () => in_array($this->record->estado, [Viaje::ESTADO_PLANIFICADO, Viaje::ESTADO_CARGANDO]))
+                ->visible(fn() => in_array($this->record->estado, [Viaje::ESTADO_PLANIFICADO, Viaje::ESTADO_CARGANDO]))
                 ->action(function () {
                     if ($this->record->cargas()->count() === 0) {
                         Notification::make()
@@ -300,7 +300,7 @@ class ViewViaje extends ViewRecord
                 ->modalHeading('Iniciar Regreso')
                 ->modalDescription('El viaje cambiará a estado "Regresando".')
                 ->modalSubmitActionLabel('Confirmar Regreso')
-                ->visible(fn () => $this->record->estado === Viaje::ESTADO_EN_RUTA)
+                ->visible(fn() => $this->record->estado === Viaje::ESTADO_EN_RUTA)
                 ->action(function () {
                     $this->record->iniciarRegreso();
 
@@ -313,7 +313,7 @@ class ViewViaje extends ViewRecord
                 }),
 
             // ========================================
-            // INICIAR DESCARGA
+            // INICIAR DESCARGA (solo en Regresando)
             // ========================================
             Actions\Action::make('iniciar_descarga')
                 ->label('Descargar')
@@ -321,14 +321,40 @@ class ViewViaje extends ViewRecord
                 ->color('info')
                 ->requiresConfirmation()
                 ->modalHeading('Iniciar Descarga')
-                ->modalDescription('Podrá registrar los productos que regresan al inventario.')
+                ->modalDescription('Se generarán automáticamente las descargas de productos no vendidos. ¿Desea continuar?')
                 ->modalSubmitActionLabel('Iniciar Descarga')
-                ->visible(fn () => $this->record->estado === Viaje::ESTADO_REGRESANDO)
+                ->visible(fn() => $this->record->estado === Viaje::ESTADO_REGRESANDO)
                 ->action(function () {
-                    $this->record->iniciarDescarga();
+                    DB::transaction(function () {
+                        // Generar descargas automáticas
+                        foreach ($this->record->cargas as $carga) {
+                            $disponible = $carga->getCantidadDisponible();
+
+                            if ($disponible > 0) {
+                                \App\Models\ViajeDescarga::create([
+                                    'viaje_id' => $this->record->id,
+                                    'producto_id' => $carga->producto_id,
+                                    'unidad_id' => $carga->unidad_id,
+                                    'cantidad' => $disponible,
+                                    'costo_unitario' => $carga->costo_unitario,
+                                    'subtotal_costo' => $disponible * $carga->costo_unitario,
+                                    'estado_producto' => 'bueno',
+                                    'reingresa_stock' => true,
+                                    'cobrar_chofer' => false,
+                                    'monto_cobrar' => 0,
+                                ]);
+
+                                $carga->increment('cantidad_devuelta', $disponible);
+                            }
+                        }
+
+                        // Cambiar estado a descargando
+                        $this->record->iniciarDescarga();
+                    });
 
                     Notification::make()
-                        ->title('Descarga iniciada')
+                        ->title('Descarga generada')
+                        ->body('Se han registrado las devoluciones automáticamente.')
                         ->success()
                         ->send();
 
@@ -336,7 +362,7 @@ class ViewViaje extends ViewRecord
                 }),
 
             // ========================================
-            // LIQUIDAR
+            // LIQUIDAR (solo en Descargando Y con descargas registradas)
             // ========================================
             Actions\Action::make('liquidar')
                 ->label('Liquidar')
@@ -346,7 +372,10 @@ class ViewViaje extends ViewRecord
                 ->modalHeading('Iniciar Liquidación')
                 ->modalDescription('Se revisarán los cobros y comisiones del chofer.')
                 ->modalSubmitActionLabel('Iniciar Liquidación')
-                ->visible(fn () => in_array($this->record->estado, [Viaje::ESTADO_REGRESANDO, Viaje::ESTADO_DESCARGANDO]))
+                ->visible(fn() => 
+                    $this->record->estado === Viaje::ESTADO_DESCARGANDO 
+                    && $this->record->descargas()->exists()
+                )
                 ->action(function () {
                     $this->record->iniciarLiquidacion();
 
@@ -359,7 +388,7 @@ class ViewViaje extends ViewRecord
                 }),
 
             // ========================================
-            // CERRAR VIAJE
+            // CERRAR VIAJE (solo en Liquidando)
             // ========================================
             Actions\Action::make('cerrar')
                 ->label('Cerrar Viaje')
@@ -367,16 +396,16 @@ class ViewViaje extends ViewRecord
                 ->color('success')
                 ->requiresConfirmation()
                 ->modalHeading('Cerrar Viaje')
-                ->modalDescription('Se calcularán los totales finales. Esta acción no se puede revertir.')
+                ->modalDescription('Se calcularán los totales finales y las comisiones. Esta acción no se puede revertir.')
                 ->modalSubmitActionLabel('Cerrar Viaje')
-                ->visible(fn () => $this->record->estado === Viaje::ESTADO_LIQUIDANDO)
+                ->visible(fn() => $this->record->estado === Viaje::ESTADO_LIQUIDANDO)
                 ->action(function () {
                     try {
                         $this->record->cerrar();
 
                         Notification::make()
                             ->title('Viaje cerrado')
-                            ->body("Neto chofer: L " . number_format($this->record->neto_chofer, 2))
+                            ->body("Comisión ganada: L " . number_format($this->record->comision_ganada, 2) . " | Neto chofer: L " . number_format($this->record->neto_chofer, 2))
                             ->success()
                             ->duration(10000)
                             ->send();
@@ -406,7 +435,7 @@ class ViewViaje extends ViewRecord
                         ->label('Motivo de cancelación')
                         ->required(),
                 ])
-                ->visible(fn () => !in_array($this->record->estado, [Viaje::ESTADO_CERRADO, Viaje::ESTADO_CANCELADO]))
+                ->visible(fn() => !in_array($this->record->estado, [Viaje::ESTADO_CERRADO, Viaje::ESTADO_CANCELADO]))
                 ->action(function (array $data) {
                     $this->record->cancelar($data['motivo']);
 
@@ -419,7 +448,7 @@ class ViewViaje extends ViewRecord
                 }),
 
             Actions\DeleteAction::make()
-                ->visible(fn () => $this->record->estado === Viaje::ESTADO_PLANIFICADO),
+                ->visible(fn() => $this->record->estado === Viaje::ESTADO_PLANIFICADO),
         ];
     }
 }

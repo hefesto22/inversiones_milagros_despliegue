@@ -21,9 +21,11 @@ use Filament\Notifications\Notification;
 use Filament\Actions\Action;
 use Illuminate\Support\Collection;
 use Carbon\Carbon;
+use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 
 class PagoComisiones extends Page implements HasForms, HasTable
 {
+    use HasPageShield;
     use InteractsWithForms;
     use InteractsWithTable;
 

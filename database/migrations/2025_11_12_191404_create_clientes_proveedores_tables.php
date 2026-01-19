@@ -308,6 +308,12 @@ return new class extends Migration
                 ->restrictOnDelete()
                 ->comment('Producto final generado (ej: Cartón 30, Cartón 15)');
 
+            $table->foreignId('categoria_id')
+                ->nullable()
+                ->constrained('categorias')
+                ->nullOnDelete()
+                ->comment('Categoría destino para esta distribución');
+
             $table->foreignId('bodega_id')
                 ->constrained('bodegas')
                 ->restrictOnDelete();
