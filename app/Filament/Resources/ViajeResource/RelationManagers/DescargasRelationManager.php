@@ -279,61 +279,6 @@ class DescargasRelationManager extends RelationManager
                     ->label('Reingresa Stock'),
             ])
             ->headerActions([
-                // Acción para generar descarga automática
-                Tables\Actions\Action::make('generar_descarga')
-                    ->label('Generar Descarga Automática')
-                    ->icon('heroicon-o-calculator')
-                    ->color('warning')
-                    ->visible(fn () => in_array($this->getOwnerRecord()->estado, ['regresando', 'descargando']) 
-                        && $this->getOwnerRecord()->descargas()->count() === 0)
-                    ->requiresConfirmation()
-                    ->modalHeading('Generar Descarga Automática')
-                    ->modalDescription('Se calculará la cantidad no vendida de cada producto (Cargado - Vendido - Merma) y se creará la descarga automáticamente.')
-                    ->action(function () {
-                        $viaje = $this->getOwnerRecord();
-                        $descargasCreadas = 0;
-
-                        DB::transaction(function () use ($viaje, &$descargasCreadas) {
-                            foreach ($viaje->cargas as $carga) {
-                                $disponible = $carga->getCantidadDisponible();
-
-                                if ($disponible > 0) {
-                                    ViajeDescarga::create([
-                                        'viaje_id' => $viaje->id,
-                                        'producto_id' => $carga->producto_id,
-                                        'unidad_id' => $carga->unidad_id,
-                                        'cantidad' => $disponible,
-                                        'costo_unitario' => $carga->costo_unitario,
-                                        'subtotal_costo' => $disponible * $carga->costo_unitario,
-                                        'estado_producto' => 'bueno',
-                                        'reingresa_stock' => true,
-                                        'cobrar_chofer' => false,
-                                        'monto_cobrar' => 0,
-                                    ]);
-
-                                    // Actualizar cantidad_devuelta en la carga
-                                    $carga->increment('cantidad_devuelta', $disponible);
-                                    
-                                    $descargasCreadas++;
-                                }
-                            }
-                        });
-
-                        if ($descargasCreadas > 0) {
-                            Notification::make()
-                                ->title('Descarga generada')
-                                ->body("Se crearon {$descargasCreadas} registros de descarga")
-                                ->success()
-                                ->send();
-                        } else {
-                            Notification::make()
-                                ->title('Sin productos para descargar')
-                                ->body('Todos los productos fueron vendidos o registrados como merma')
-                                ->info()
-                                ->send();
-                        }
-                    }),
-
                 Tables\Actions\CreateAction::make()
                     ->label('Agregar Descarga Manual')
                     ->icon('heroicon-o-plus')
@@ -446,7 +391,7 @@ class DescargasRelationManager extends RelationManager
             ])
             ->defaultSort('created_at', 'desc')
             ->emptyStateHeading('Sin descargas')
-            ->emptyStateDescription('Use "Generar Descarga Automática" para calcular los productos no vendidos.')
+            ->emptyStateDescription('Las descargas se generan automáticamente al presionar "Descargar" en el viaje, o puede agregar manualmente.')
             ->emptyStateIcon('heroicon-o-archive-box');
     }
 

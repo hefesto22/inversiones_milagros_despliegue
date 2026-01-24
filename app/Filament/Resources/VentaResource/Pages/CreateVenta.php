@@ -8,14 +8,19 @@ use App\Models\Cliente;
 use Filament\Resources\Pages\CreateRecord;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\On;
+use Filament\Notifications\Notification;
 
 class CreateVenta extends CreateRecord
 {
     protected static string $resource = VentaResource::class;
 
+    /**
+     * Redirigir a la vista de la cotización después de crear
+     * para que el usuario pueda imprimirla o procesarla
+     */
     protected function getRedirectUrl(): string
     {
-        return $this->getResource()::getUrl('index');
+        return $this->getResource()::getUrl('view', ['record' => $this->record]);
     }
 
     protected function mutateFormDataBeforeCreate(array $data): array
@@ -25,6 +30,22 @@ class CreateVenta extends CreateRecord
         $data['estado_pago'] = 'pendiente';
 
         return $data;
+    }
+
+    protected function afterCreate(): void
+    {
+        Notification::make()
+            ->title('Cotización creada')
+            ->body('Puedes imprimir la cotización o procesarla como venta.')
+            ->success()
+            ->actions([
+                \Filament\Notifications\Actions\Action::make('ver_cotizacion')
+                    ->label('Ver Cotización')
+                    ->url(route('pdf.cotizacion', $this->record))
+                    ->openUrlInNewTab(),
+            ])
+            ->persistent()
+            ->send();
     }
 
     protected function getHeaderWidgets(): array

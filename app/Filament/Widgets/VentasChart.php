@@ -2,8 +2,11 @@
 
 namespace App\Filament\Widgets;
 
+use App\Models\Venta;
 use App\Models\ViajeVenta;
 use App\Models\Compra;
+use App\Models\CamionGasto;
+use App\Models\BodegaGasto;
 use App\Filament\Widgets\Concerns\HasDateFilters;
 use Filament\Widgets\ChartWidget;
 use Illuminate\Support\Carbon;
@@ -14,26 +17,22 @@ class VentasChart extends ChartWidget
     use HasWidgetShield;
     use HasDateFilters;
 
-    protected static ?string $heading = 'Ventas vs Compras';
+    protected static ?string $heading = 'Resumen Financiero';
     
-    protected static ?int $sort = 2;
+    protected static ?int $sort = 4;
 
     protected int | string | array $columnSpan = 'full';
 
     public function getHeading(): ?string
     {
         $periodoLabel = $this->getPeriodLabel();
-        return "Ventas vs Compras ({$periodoLabel})";
+        return "Resumen Financiero ({$periodoLabel})";
     }
 
     protected function getData(): array
     {
         $dateRange = $this->getFilteredDateRange();
         
-        $ventas = [];
-        $compras = [];
-        $labels = [];
-
         // Calcular días entre las fechas
         $diffDays = $dateRange['inicio']->diffInDays($dateRange['fin']);
         
@@ -46,30 +45,61 @@ class VentasChart extends ChartWidget
         }
 
         // Datos diarios
+        return $this->getDataByDay($dateRange);
+    }
+
+    protected function getDataByDay(array $dateRange): array
+    {
+        $ventasRuta = [];
+        $ventasBodega = [];
+        $compras = [];
+        $gastosCamion = [];
+        $gastosBodega = [];
+        $labels = [];
+
         $currentDate = $dateRange['inicio']->copy();
         
         while ($currentDate <= $dateRange['fin']) {
+            $fecha = $currentDate->toDateString();
             $labels[] = $currentDate->format('d/m');
 
-            $totalVentas = ViajeVenta::whereDate('fecha_venta', $currentDate->toDateString())
-                ->where('estado', 'completada')
+            // Ventas en Ruta (ViajeVenta)
+            $ventasRuta[] = (float) ViajeVenta::whereDate('fecha_venta', $fecha)
+                ->whereIn('estado', ['confirmada', 'completada'])
                 ->sum('total');
-            $ventas[] = (float) $totalVentas;
 
-            $totalCompras = Compra::whereDate('created_at', $currentDate->toDateString())
+            // Ventas en Bodega (Venta)
+            $ventasBodega[] = (float) Venta::whereDate('created_at', $fecha)
+                ->whereIn('estado', ['completada', 'pendiente_pago', 'pagada'])
                 ->sum('total');
-            $compras[] = (float) $totalCompras;
+
+            // Compras
+            $compras[] = (float) Compra::whereDate('created_at', $fecha)
+                ->sum('total');
+
+            // Gastos de Camión (aprobados)
+            $gastosCamion[] = (float) CamionGasto::whereDate('fecha', $fecha)
+                ->where('estado', 'aprobado')
+                ->sum('monto');
+
+            // Gastos de Bodega (aprobados)
+            $gastosBodega[] = (float) BodegaGasto::whereDate('fecha', $fecha)
+                ->where('estado', 'aprobado')
+                ->sum('monto');
 
             $currentDate->addDay();
         }
 
-        return $this->formatChartData($labels, $ventas, $compras);
+        return $this->formatChartData($labels, $ventasRuta, $ventasBodega, $compras, $gastosCamion, $gastosBodega);
     }
 
     protected function getDataByWeek(array $dateRange): array
     {
-        $ventas = [];
+        $ventasRuta = [];
+        $ventasBodega = [];
         $compras = [];
+        $gastosCamion = [];
+        $gastosBodega = [];
         $labels = [];
 
         $currentDate = $dateRange['inicio']->copy()->startOfWeek();
@@ -77,32 +107,49 @@ class VentasChart extends ChartWidget
         while ($currentDate <= $dateRange['fin']) {
             $weekEnd = $currentDate->copy()->endOfWeek();
             
-            // Ajustar si el fin de semana excede el rango
             if ($weekEnd > $dateRange['fin']) {
                 $weekEnd = $dateRange['fin']->copy();
             }
 
             $labels[] = 'Sem ' . $currentDate->format('d/m');
 
-            $totalVentas = ViajeVenta::whereBetween('fecha_venta', [$currentDate, $weekEnd])
-                ->where('estado', 'completada')
+            // Ventas en Ruta
+            $ventasRuta[] = (float) ViajeVenta::whereBetween('fecha_venta', [$currentDate, $weekEnd])
+                ->whereIn('estado', ['confirmada', 'completada'])
                 ->sum('total');
-            $ventas[] = (float) $totalVentas;
 
-            $totalCompras = Compra::whereBetween('created_at', [$currentDate, $weekEnd])
+            // Ventas en Bodega
+            $ventasBodega[] = (float) Venta::whereBetween('created_at', [$currentDate, $weekEnd])
+                ->whereIn('estado', ['completada', 'pendiente_pago', 'pagada'])
                 ->sum('total');
-            $compras[] = (float) $totalCompras;
+
+            // Compras
+            $compras[] = (float) Compra::whereBetween('created_at', [$currentDate, $weekEnd])
+                ->sum('total');
+
+            // Gastos de Camión
+            $gastosCamion[] = (float) CamionGasto::whereBetween('fecha', [$currentDate, $weekEnd])
+                ->where('estado', 'aprobado')
+                ->sum('monto');
+
+            // Gastos de Bodega
+            $gastosBodega[] = (float) BodegaGasto::whereBetween('fecha', [$currentDate, $weekEnd])
+                ->where('estado', 'aprobado')
+                ->sum('monto');
 
             $currentDate->addWeek();
         }
 
-        return $this->formatChartData($labels, $ventas, $compras);
+        return $this->formatChartData($labels, $ventasRuta, $ventasBodega, $compras, $gastosCamion, $gastosBodega);
     }
 
     protected function getDataByMonth(array $dateRange): array
     {
-        $ventas = [];
+        $ventasRuta = [];
+        $ventasBodega = [];
         $compras = [];
+        $gastosCamion = [];
+        $gastosBodega = [];
         $labels = [];
 
         $currentDate = $dateRange['inicio']->copy()->startOfMonth();
@@ -116,40 +163,92 @@ class VentasChart extends ChartWidget
 
             $labels[] = $currentDate->format('M Y');
 
-            $totalVentas = ViajeVenta::whereBetween('fecha_venta', [$currentDate, $monthEnd])
-                ->where('estado', 'completada')
+            // Ventas en Ruta
+            $ventasRuta[] = (float) ViajeVenta::whereBetween('fecha_venta', [$currentDate, $monthEnd])
+                ->whereIn('estado', ['confirmada', 'completada'])
                 ->sum('total');
-            $ventas[] = (float) $totalVentas;
 
-            $totalCompras = Compra::whereBetween('created_at', [$currentDate, $monthEnd])
+            // Ventas en Bodega
+            $ventasBodega[] = (float) Venta::whereBetween('created_at', [$currentDate, $monthEnd])
+                ->whereIn('estado', ['completada', 'pendiente_pago', 'pagada'])
                 ->sum('total');
-            $compras[] = (float) $totalCompras;
+
+            // Compras
+            $compras[] = (float) Compra::whereBetween('created_at', [$currentDate, $monthEnd])
+                ->sum('total');
+
+            // Gastos de Camión
+            $gastosCamion[] = (float) CamionGasto::whereBetween('fecha', [$currentDate, $monthEnd])
+                ->where('estado', 'aprobado')
+                ->sum('monto');
+
+            // Gastos de Bodega
+            $gastosBodega[] = (float) BodegaGasto::whereBetween('fecha', [$currentDate, $monthEnd])
+                ->where('estado', 'aprobado')
+                ->sum('monto');
 
             $currentDate->addMonth();
         }
 
-        return $this->formatChartData($labels, $ventas, $compras);
+        return $this->formatChartData($labels, $ventasRuta, $ventasBodega, $compras, $gastosCamion, $gastosBodega);
     }
 
-    protected function formatChartData(array $labels, array $ventas, array $compras): array
-    {
+    protected function formatChartData(
+        array $labels, 
+        array $ventasRuta, 
+        array $ventasBodega,
+        array $compras,
+        array $gastosCamion, 
+        array $gastosBodega
+    ): array {
         return [
             'datasets' => [
                 [
-                    'label' => 'Ventas',
-                    'data' => $ventas,
-                    'borderColor' => '#10b981',
+                    'label' => 'Ventas Ruta',
+                    'data' => $ventasRuta,
+                    'borderColor' => '#10b981', // Verde
                     'backgroundColor' => 'rgba(16, 185, 129, 0.1)',
-                    'fill' => true,
+                    'fill' => false,
                     'tension' => 0.4,
+                    'borderWidth' => 2,
+                ],
+                [
+                    'label' => 'Ventas Bodega',
+                    'data' => $ventasBodega,
+                    'borderColor' => '#3b82f6', // Azul
+                    'backgroundColor' => 'rgba(59, 130, 246, 0.1)',
+                    'fill' => false,
+                    'tension' => 0.4,
+                    'borderWidth' => 2,
                 ],
                 [
                     'label' => 'Compras',
                     'data' => $compras,
-                    'borderColor' => '#f59e0b',
-                    'backgroundColor' => 'rgba(245, 158, 11, 0.1)',
-                    'fill' => true,
+                    'borderColor' => '#8b5cf6', // Morado
+                    'backgroundColor' => 'rgba(139, 92, 246, 0.1)',
+                    'fill' => false,
                     'tension' => 0.4,
+                    'borderWidth' => 2,
+                ],
+                [
+                    'label' => 'Gastos Camión',
+                    'data' => $gastosCamion,
+                    'borderColor' => '#f59e0b', // Naranja
+                    'backgroundColor' => 'rgba(245, 158, 11, 0.1)',
+                    'fill' => false,
+                    'tension' => 0.4,
+                    'borderWidth' => 2,
+                    'borderDash' => [5, 5],
+                ],
+                [
+                    'label' => 'Gastos Bodega',
+                    'data' => $gastosBodega,
+                    'borderColor' => '#ef4444', // Rojo
+                    'backgroundColor' => 'rgba(239, 68, 68, 0.1)',
+                    'fill' => false,
+                    'tension' => 0.4,
+                    'borderWidth' => 2,
+                    'borderDash' => [5, 5],
                 ],
             ],
             'labels' => $labels,
@@ -169,6 +268,10 @@ class VentasChart extends ChartWidget
                     'display' => true,
                     'position' => 'top',
                 ],
+                'tooltip' => [
+                    'mode' => 'index',
+                    'intersect' => false,
+                ],
             ],
             'scales' => [
                 'y' => [
@@ -177,6 +280,11 @@ class VentasChart extends ChartWidget
                         'callback' => "function(value) { return 'L ' + value.toLocaleString(); }",
                     ],
                 ],
+            ],
+            'interaction' => [
+                'mode' => 'nearest',
+                'axis' => 'x',
+                'intersect' => false,
             ],
         ];
     }

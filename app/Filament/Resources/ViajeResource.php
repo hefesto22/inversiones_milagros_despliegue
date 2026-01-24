@@ -493,12 +493,6 @@ class ViajeResource extends Resource
                     }),
             ])
 
-            /**
-             * REEMPLAZAR LAS ACCIONES EN ViajeResource.php (líneas ~370-480)
-             * 
-             * Estas son las acciones corregidas para la tabla de viajes
-             */
-
             ->actions([
                 Tables\Actions\ViewAction::make(),
                 Tables\Actions\EditAction::make()
@@ -562,48 +556,211 @@ class ViajeResource extends Resource
                             ->send();
                     }),
 
-                // Acción: Descargar (genera descargas automáticas)
+                // Acción: Descargar (genera descargas automáticas con selección individual de cobros)
                 Tables\Actions\Action::make('iniciar_descarga')
                     ->label('Descargar')
                     ->icon('heroicon-o-archive-box-x-mark')
                     ->color('info')
-                    ->requiresConfirmation()
-                    ->modalHeading('Iniciar Descarga')
-                    ->modalDescription('Se generarán automáticamente las descargas de productos no vendidos. ¿Desea continuar?')
+                    ->modalHeading('Descarga de Productos No Vendidos')
+                    ->modalWidth('4xl')
+                    ->modalSubmitActionLabel('Confirmar Descarga')
                     ->visible(fn($record) => $record->estado === Viaje::ESTADO_REGRESANDO)
-                    ->action(function ($record) {
-                        DB::transaction(function () use ($record) {
-                            // Generar descargas automáticas
-                            foreach ($record->cargas as $carga) {
-                                $disponible = $carga->getCantidadDisponible();
-
-                                if ($disponible > 0) {
-                                    \App\Models\ViajeDescarga::create([
-                                        'viaje_id' => $record->id,
-                                        'producto_id' => $carga->producto_id,
-                                        'unidad_id' => $carga->unidad_id,
-                                        'cantidad' => $disponible,
-                                        'costo_unitario' => $carga->costo_unitario,
-                                        'subtotal_costo' => $disponible * $carga->costo_unitario,
-                                        'estado_producto' => 'bueno',
-                                        'reingresa_stock' => true,
-                                        'cobrar_chofer' => false,
-                                        'monto_cobrar' => 0,
-                                    ]);
-
-                                    $carga->increment('cantidad_devuelta', $disponible);
+                    ->form(function ($record) {
+                        // Calcular productos que regresan
+                        $productosRegresan = [];
+                        $totalCosto = 0;
+                        
+                        foreach ($record->cargas as $carga) {
+                            $disponible = $carga->getCantidadDisponible();
+                            if ($disponible > 0) {
+                                $subtotal = $disponible * $carga->costo_unitario;
+                                $productosRegresan[] = [
+                                    'carga_id' => $carga->id,
+                                    'producto_id' => $carga->producto_id,
+                                    'producto_nombre' => $carga->producto->nombre,
+                                    'cantidad' => $disponible,
+                                    'unidad_id' => $carga->unidad_id,
+                                    'unidad_nombre' => $carga->unidad->nombre ?? 'N/A',
+                                    'costo_unitario' => $carga->costo_unitario,
+                                    'subtotal' => $subtotal,
+                                    'cobrar' => false,
+                                ];
+                                $totalCosto += $subtotal;
+                            }
+                        }
+                        
+                        // Si no hay productos para descargar
+                        if (empty($productosRegresan)) {
+                            return [
+                                Forms\Components\Placeholder::make('sin_productos')
+                                    ->label('')
+                                    ->content('✅ No hay productos pendientes de descargar. Todo fue vendido o registrado como merma.')
+                                    ->columnSpanFull(),
+                            ];
+                        }
+                        
+                        return [
+                            Forms\Components\Section::make('Productos que Regresan')
+                                ->description('Total devolución: L ' . number_format($totalCosto, 2) . ' | Marque los productos que desea cobrar al chofer')
+                                ->schema([
+                                    Forms\Components\Repeater::make('productos')
+                                        ->schema([
+                                            Forms\Components\Grid::make(12)
+                                                ->schema([
+                                                    Forms\Components\Toggle::make('cobrar')
+                                                        ->label('')
+                                                        ->inline(false)
+                                                        ->columnSpan(1)
+                                                        ->live()
+                                                        ->afterStateUpdated(function (Forms\Get $get, Forms\Set $set) {
+                                                            // Recalcular total cuando cambia cualquier toggle
+                                                            $productos = $get('../../productos') ?? [];
+                                                            $total = 0;
+                                                            foreach ($productos as $prod) {
+                                                                if ($prod['cobrar'] ?? false) {
+                                                                    $total += floatval($prod['subtotal'] ?? 0);
+                                                                }
+                                                            }
+                                                            $set('../../total_cobrar', $total);
+                                                        }),
+                                                    
+                                                    Forms\Components\Placeholder::make('producto_nombre')
+                                                        ->label('')
+                                                        ->content(fn (Forms\Get $get) => $get('producto_nombre'))
+                                                        ->columnSpan(4),
+                                                    
+                                                    Forms\Components\Placeholder::make('cantidad_display')
+                                                        ->label('')
+                                                        ->content(fn (Forms\Get $get) => number_format($get('cantidad'), 2) . ' ' . $get('unidad_nombre'))
+                                                        ->columnSpan(3),
+                                                    
+                                                    Forms\Components\Placeholder::make('subtotal_display')
+                                                        ->label('')
+                                                        ->content(fn (Forms\Get $get) => new \Illuminate\Support\HtmlString(
+                                                            '<span class="font-bold ' . ($get('cobrar') ? 'text-danger-500' : '') . '">L ' . number_format($get('subtotal'), 2) . '</span>'
+                                                        ))
+                                                        ->columnSpan(4),
+                                                    
+                                                    // Campos ocultos para datos
+                                                    Forms\Components\Hidden::make('carga_id'),
+                                                    Forms\Components\Hidden::make('producto_id'),
+                                                    Forms\Components\Hidden::make('unidad_id'),
+                                                    Forms\Components\Hidden::make('cantidad'),
+                                                    Forms\Components\Hidden::make('unidad_nombre'),
+                                                    Forms\Components\Hidden::make('costo_unitario'),
+                                                    Forms\Components\Hidden::make('subtotal'),
+                                                ]),
+                                        ])
+                                        ->default($productosRegresan)
+                                        ->disabled(fn () => false)
+                                        ->addable(false)
+                                        ->deletable(false)
+                                        ->reorderable(false)
+                                        ->columnSpanFull()
+                                        ->itemLabel(fn (array $state): ?string => null),
+                                ]),
+                            
+                            // Cuadro de resumen de cobro
+                            Forms\Components\Section::make('')
+                                ->schema([
+                                    Forms\Components\Grid::make(2)
+                                        ->schema([
+                                            Forms\Components\Placeholder::make('label_total')
+                                                ->label('')
+                                                ->content(new \Illuminate\Support\HtmlString('<span class="text-lg font-bold">💰 TOTAL A COBRAR AL CHOFER:</span>')),
+                                            
+                                            Forms\Components\TextInput::make('total_cobrar')
+                                                ->label('')
+                                                ->prefix('L')
+                                                ->disabled()
+                                                ->default(0)
+                                                ->numeric()
+                                                ->extraAttributes(['class' => 'text-2xl font-bold text-danger-600']),
+                                        ]),
+                                    
+                                    Forms\Components\Textarea::make('observacion_cobro')
+                                        ->label('Motivo del Cobro (opcional)')
+                                        ->rows(2)
+                                        ->placeholder('Ej: Producto dañado por descuido, producto no entregado, etc.')
+                                        ->visible(fn (Forms\Get $get) => ($get('total_cobrar') ?? 0) > 0)
+                                        ->columnSpanFull(),
+                                ])
+                                ->extraAttributes(['class' => 'bg-gray-50 dark:bg-gray-800 border-2 border-warning-500 rounded-xl']),
+                        ];
+                    })
+                    ->action(function ($record, array $data) {
+                        $productos = $data['productos'] ?? [];
+                        
+                        if (empty($productos)) {
+                            $record->iniciarDescarga();
+                            \Filament\Notifications\Notification::make()
+                                ->title('Estado actualizado')
+                                ->body('No había productos para descargar.')
+                                ->info()
+                                ->send();
+                            return;
+                        }
+                        
+                        $observacion = $data['observacion_cobro'] ?? null;
+                        $descargasCreadas = 0;
+                        $totalCobrado = 0;
+                        $productosCobrados = [];
+                        
+                        DB::transaction(function () use ($record, $productos, $observacion, &$descargasCreadas, &$totalCobrado, &$productosCobrados) {
+                            foreach ($productos as $item) {
+                                $cobrar = $item['cobrar'] ?? false;
+                                $subtotal = floatval($item['subtotal'] ?? 0);
+                                $montoCobrar = $cobrar ? $subtotal : 0;
+                                
+                                // Obtener nombre del producto desde la carga
+                                $carga = $record->cargas()->find($item['carga_id']);
+                                $productoNombre = $carga?->producto?->nombre ?? 'Producto';
+                                
+                                if ($cobrar) {
+                                    $totalCobrado += $montoCobrar;
+                                    $productosCobrados[] = $productoNombre;
                                 }
+                                
+                                \App\Models\ViajeDescarga::create([
+                                    'viaje_id' => $record->id,
+                                    'producto_id' => $item['producto_id'],
+                                    'unidad_id' => $item['unidad_id'],
+                                    'cantidad' => $item['cantidad'],
+                                    'costo_unitario' => $item['costo_unitario'],
+                                    'subtotal_costo' => $subtotal,
+                                    'estado_producto' => 'bueno',
+                                    'reingresa_stock' => true,
+                                    'cobrar_chofer' => $cobrar,
+                                    'monto_cobrar' => $montoCobrar,
+                                    'observaciones' => $cobrar ? $observacion : null,
+                                ]);
+                                
+                                // Actualizar cantidad devuelta en la carga
+                                if ($carga) {
+                                    $carga->increment('cantidad_devuelta', $item['cantidad']);
+                                }
+                                
+                                $descargasCreadas++;
                             }
 
                             // Cambiar estado
                             $record->iniciarDescarga();
                         });
 
-                        \Filament\Notifications\Notification::make()
-                            ->title('Descarga generada')
-                            ->body('Se han registrado las devoluciones automáticamente.')
-                            ->success()
-                            ->send();
+                        if ($totalCobrado > 0) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('Descarga generada')
+                                ->body("Se crearon {$descargasCreadas} descargas.\n\n💰 Total a cobrar: L " . number_format($totalCobrado, 2) . "\nProductos: " . implode(', ', $productosCobrados))
+                                ->success()
+                                ->duration(10000)
+                                ->send();
+                        } else {
+                            \Filament\Notifications\Notification::make()
+                                ->title('Descarga generada')
+                                ->body("Se crearon {$descargasCreadas} descargas. Sin cobros al chofer.")
+                                ->success()
+                                ->send();
+                        }
                     }),
 
                 // Acción: Liquidar (solo si ya hay descargas)
@@ -705,9 +862,9 @@ class ViajeResource extends Resource
         return [
             RelationManagers\CargasRelationManager::class,
             RelationManagers\MermasRelationManager::class,
-            RelationManagers\DescargasRelationManager::class,  // NUEVO
+            RelationManagers\DescargasRelationManager::class,
             RelationManagers\VentasRelationManager::class,
-            RelationManagers\ComisionesRelationManager::class, // NUEVO
+            RelationManagers\ComisionesRelationManager::class,
         ];
     }
 

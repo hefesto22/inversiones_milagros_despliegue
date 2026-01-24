@@ -5,6 +5,8 @@ use App\Livewire\Settings\Password;
 use App\Livewire\Settings\Profile;
 use App\Models\Cliente;
 use App\Http\Controllers\ViajeVentaController;
+use App\Http\Controllers\CotizacionPdfController;
+use App\Http\Controllers\FacturaVentaController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -44,6 +46,22 @@ Route::middleware(['auth'])->group(function () {
     // Imprimir venta de viaje
     Route::get('/viaje-venta/{viajeVenta}/imprimir', [ViajeVentaController::class, 'imprimir'])
         ->name('viaje-venta.imprimir');
+
+    // =====================================================
+    // RUTAS PDF - Cotizaciones y Facturas de Ventas
+    // =====================================================
+    
+    // Cotización - Ver en navegador
+    Route::get('/pdf/cotizacion/{venta}', [CotizacionPdfController::class, 'generate'])
+        ->name('pdf.cotizacion');
+    
+    // Cotización - Descargar
+    Route::get('/pdf/cotizacion/{venta}/download', [CotizacionPdfController::class, 'download'])
+        ->name('pdf.cotizacion.download');
+
+    // Factura de Venta - Imprimir (estilo ticket)
+    Route::get('/venta/{venta}/imprimir', [FacturaVentaController::class, 'imprimir'])
+        ->name('venta.imprimir');
 });
 
 require __DIR__.'/auth.php';

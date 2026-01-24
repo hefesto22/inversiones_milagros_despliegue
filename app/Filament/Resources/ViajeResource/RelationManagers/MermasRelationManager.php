@@ -83,6 +83,8 @@ class MermasRelationManager extends RelationManager
                                                 // Reset tipo de merma
                                                 $set('tipo_merma', 'bulto_completo');
                                                 $set('cantidad_unidades', null);
+                                                $set('cantidad', null);
+                                                $set('subtotal_costo', null);
                                             }
                                         } else {
                                             $set('tiene_subunidades', false);
@@ -135,32 +137,26 @@ class MermasRelationManager extends RelationManager
                                     })
                                     ->columnSpanFull(),
 
-                                // Campo para bultos completos
+                                // Campo para bultos completos (visible cuando tipo = bulto_completo o no tiene subunidades)
                                 Forms\Components\TextInput::make('cantidad')
-                                    ->label(fn (Forms\Get $get) => $get('tipo_merma') === 'unidades_sueltas' ? 'Cantidad (calculada)' : 'Cantidad de Bultos/Cartones')
-                                    ->required(fn (Forms\Get $get) => $get('tipo_merma') !== 'unidades_sueltas')
+                                    ->label('Cantidad de Bultos/Cartones')
+                                    ->required()
                                     ->numeric()
                                     ->minValue(0.001)
                                     ->step(0.001)
                                     ->live(debounce: 300)
-                                    ->disabled(fn (Forms\Get $get) => $get('tipo_merma') === 'unidades_sueltas')
-                                    ->dehydrated()
+                                    ->visible(fn (Forms\Get $get) => !$get('tiene_subunidades') || $get('tipo_merma') === 'bulto_completo')
                                     ->afterStateUpdated(function ($state, Forms\Get $get, Forms\Set $set) {
-                                        if ($get('tipo_merma') !== 'unidades_sueltas') {
-                                            $costo = $get('costo_unitario') ?? 0;
-                                            $set('subtotal_costo', round($state * $costo, 2));
-                                            
-                                            // Mostrar equivalencia en unidades
-                                            $unidadesPorBulto = $get('unidades_por_bulto') ?? 1;
-                                            if ($unidadesPorBulto > 1) {
-                                                $totalUnidades = $state * $unidadesPorBulto;
-                                                $set('equivalencia_texto', "{$state} bultos = {$totalUnidades} unidades individuales");
-                                            }
+                                        $costo = $get('costo_unitario') ?? 0;
+                                        $set('subtotal_costo', round($state * $costo, 2));
+                                        
+                                        // Mostrar equivalencia en unidades
+                                        $unidadesPorBulto = $get('unidades_por_bulto') ?? 1;
+                                        if ($unidadesPorBulto > 1) {
+                                            $totalUnidades = $state * $unidadesPorBulto;
+                                            $set('equivalencia_texto', "{$state} bultos = {$totalUnidades} unidades individuales");
                                         }
-                                    })
-                                    ->helperText(fn (Forms\Get $get) => $get('tipo_merma') === 'unidades_sueltas' 
-                                        ? 'Se calcula automáticamente desde las unidades' 
-                                        : null),
+                                    }),
 
                                 // Campo para unidades individuales (solo visible si tipo = unidades_sueltas)
                                 Forms\Components\TextInput::make('cantidad_unidades')
@@ -169,6 +165,7 @@ class MermasRelationManager extends RelationManager
                                     ->numeric()
                                     ->minValue(1)
                                     ->step(1)
+                                    ->required(fn (Forms\Get $get) => $get('tipo_merma') === 'unidades_sueltas')
                                     ->live(debounce: 300)
                                     ->visible(fn (Forms\Get $get) => $get('tipo_merma') === 'unidades_sueltas')
                                     ->afterStateUpdated(function ($state, Forms\Get $get, Forms\Set $set) {
@@ -186,6 +183,10 @@ class MermasRelationManager extends RelationManager
                                             
                                             // Texto de equivalencia
                                             $set('equivalencia_texto', "{$state} unidades = {$cantidadBultos} bultos");
+                                        } else {
+                                            $set('cantidad', null);
+                                            $set('subtotal_costo', null);
+                                            $set('equivalencia_texto', null);
                                         }
                                     })
                                     ->helperText(fn (Forms\Get $get) => 
@@ -194,11 +195,31 @@ class MermasRelationManager extends RelationManager
                                             : null
                                     ),
 
-                                // Mostrar equivalencia
-                                Forms\Components\Placeholder::make('equivalencia_texto')
+                                // Campo oculto para almacenar cantidad cuando es unidades_sueltas
+                                Forms\Components\Hidden::make('cantidad')
+                                    ->visible(fn (Forms\Get $get) => $get('tipo_merma') === 'unidades_sueltas'),
+
+                                // Mostrar equivalencia y cantidad calculada
+                                Forms\Components\Placeholder::make('calculo_info')
+                                    ->label('Cálculo')
+                                    ->content(function (Forms\Get $get) {
+                                        $equivalencia = $get('equivalencia_texto');
+                                        $subtotal = $get('subtotal_costo');
+                                        
+                                        if (!$equivalencia) {
+                                            return 'Ingrese la cantidad de unidades';
+                                        }
+                                        
+                                        return "{$equivalencia} | Costo: L " . number_format($subtotal ?? 0, 2);
+                                    })
+                                    ->visible(fn (Forms\Get $get) => $get('tipo_merma') === 'unidades_sueltas')
+                                    ->columnSpanFull(),
+
+                                // Mostrar equivalencia para bultos completos
+                                Forms\Components\Placeholder::make('equivalencia_bultos')
                                     ->label('Equivalencia')
                                     ->content(fn (Forms\Get $get) => $get('equivalencia_texto') ?? '-')
-                                    ->visible(fn (Forms\Get $get) => !empty($get('equivalencia_texto'))),
+                                    ->visible(fn (Forms\Get $get) => $get('tipo_merma') === 'bulto_completo' && !empty($get('equivalencia_texto'))),
 
                                 Forms\Components\TextInput::make('costo_unitario')
                                     ->label('Costo por Bulto')
@@ -227,7 +248,8 @@ class MermasRelationManager extends RelationManager
                                     ->numeric()
                                     ->prefix('L')
                                     ->disabled()
-                                    ->dehydrated(),
+                                    ->dehydrated()
+                                    ->visible(fn (Forms\Get $get) => $get('tipo_merma') !== 'unidades_sueltas'),
                             ]),
 
                         Forms\Components\Textarea::make('descripcion')
@@ -243,6 +265,9 @@ class MermasRelationManager extends RelationManager
                 Forms\Components\Hidden::make('unidades_por_bulto'),
                 Forms\Components\Hidden::make('costo_por_unidad_individual'),
                 Forms\Components\Hidden::make('cantidad_disponible'),
+                Forms\Components\Hidden::make('equivalencia_texto'),
+                Forms\Components\Hidden::make('subtotal_costo')
+                    ->visible(fn (Forms\Get $get) => $get('tipo_merma') === 'unidades_sueltas'),
 
                 Forms\Components\Section::make('Cobro al Chofer')
                     ->schema([
@@ -384,6 +409,8 @@ class MermasRelationManager extends RelationManager
                         unset($data['costo_por_unidad_individual']);
                         unset($data['cantidad_disponible']);
                         unset($data['equivalencia_texto']);
+                        unset($data['calculo_info']);
+                        unset($data['equivalencia_bultos']);
                         
                         // Auto-calcular monto a cobrar si está marcado
                         if ($data['cobrar_chofer'] && empty($data['monto_cobrar'])) {

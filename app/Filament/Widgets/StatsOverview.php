@@ -4,6 +4,8 @@ namespace App\Filament\Widgets;
 
 use App\Models\Venta;
 use App\Models\ViajeVenta;
+use App\Models\ViajeMerma;
+use App\Models\Reempaque;
 use App\Models\Compra;
 use App\Filament\Widgets\Concerns\HasDateFilters;
 use Filament\Widgets\StatsOverviewWidget as BaseWidget;
@@ -24,33 +26,97 @@ class StatsOverview extends BaseWidget
         $dateRange = $this->getFilteredDateRange();
         $previousRange = $this->getPreviousPeriodDateRange();
 
-        // Ventas del período seleccionado
-        $ventasPeriodo = ViajeVenta::whereBetween('fecha_venta', [$dateRange['inicio'], $dateRange['fin']])
-            ->where('estado', 'completada')
+        // ============================================
+        // VENTAS DEL PERÍODO (BODEGA + RUTA)
+        // ============================================
+        
+        // Ventas en RUTA (ViajeVenta)
+        $ventasRutaPeriodo = ViajeVenta::whereBetween('fecha_venta', [$dateRange['inicio'], $dateRange['fin']])
+            ->whereIn('estado', ['confirmada', 'completada'])
             ->sum('total');
 
-        // Ventas del período anterior para comparación
-        $ventasPeriodoAnterior = ViajeVenta::whereBetween('fecha_venta', [$previousRange['inicio'], $previousRange['fin']])
-            ->where('estado', 'completada')
+        // Ventas en BODEGA (Venta)
+        $ventasBodegaPeriodo = Venta::whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
+            ->whereIn('estado', ['completada', 'pendiente_pago', 'pagada'])
             ->sum('total');
+
+        // TOTAL VENTAS = Ruta + Bodega
+        $ventasPeriodo = $ventasRutaPeriodo + $ventasBodegaPeriodo;
+
+        // Ventas del período anterior para comparación
+        $ventasRutaAnterior = ViajeVenta::whereBetween('fecha_venta', [$previousRange['inicio'], $previousRange['fin']])
+            ->whereIn('estado', ['confirmada', 'completada'])
+            ->sum('total');
+
+        $ventasBodegaAnterior = Venta::whereBetween('created_at', [$previousRange['inicio'], $previousRange['fin']])
+            ->whereIn('estado', ['completada', 'pendiente_pago', 'pagada'])
+            ->sum('total');
+
+        $ventasPeriodoAnterior = $ventasRutaAnterior + $ventasBodegaAnterior;
 
         // Calcular porcentaje de cambio en ventas
         $cambioVentas = $this->calculatePercentageChange($ventasPeriodo, $ventasPeriodoAnterior);
 
-        // Compras del período seleccionado
+        // ============================================
+        // COMPRAS DEL PERÍODO
+        // ============================================
+        
         $comprasPeriodo = Compra::whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
             ->sum('total');
 
-        // Compras del período anterior
         $comprasPeriodoAnterior = Compra::whereBetween('created_at', [$previousRange['inicio'], $previousRange['fin']])
             ->sum('total');
 
-        // Calcular porcentaje de cambio en compras
         $cambioCompras = $this->calculatePercentageChange($comprasPeriodo, $comprasPeriodoAnterior);
 
-        // Ganancias del período (ventas - costo de ventas)
-        $costoVentasPeriodo = ViajeVenta::whereBetween('fecha_venta', [$dateRange['inicio'], $dateRange['fin']])
-            ->where('estado', 'completada')
+        // ============================================
+        // MERMAS DEL PERÍODO (VIAJES + REEMPAQUES)
+        // ============================================
+        
+        // Mermas de VIAJES (ya tienen costo calculado)
+        $mermasViajesPeriodo = ViajeMerma::whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
+            ->sum('subtotal_costo');
+
+        // Mermas de REEMPAQUES (huevos × costo unitario)
+        $mermasReempaquesPeriodo = Reempaque::whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
+            ->where('estado', 'completado')
+            ->selectRaw('SUM(merma * costo_unitario_promedio) as costo_merma')
+            ->value('costo_merma') ?? 0;
+
+        // TOTAL MERMAS
+        $mermasPeriodo = $mermasViajesPeriodo + $mermasReempaquesPeriodo;
+
+        // Mermas del período anterior
+        $mermasViajesAnterior = ViajeMerma::whereBetween('created_at', [$previousRange['inicio'], $previousRange['fin']])
+            ->sum('subtotal_costo');
+
+        $mermasReempaquesAnterior = Reempaque::whereBetween('created_at', [$previousRange['inicio'], $previousRange['fin']])
+            ->where('estado', 'completado')
+            ->selectRaw('SUM(merma * costo_unitario_promedio) as costo_merma')
+            ->value('costo_merma') ?? 0;
+
+        $mermasPeriodoAnterior = $mermasViajesAnterior + $mermasReempaquesAnterior;
+
+        $cambioMermas = $this->calculatePercentageChange($mermasPeriodo, $mermasPeriodoAnterior);
+
+        // Contar CANTIDADES de mermas (no registros)
+        // Viajes: suma de cantidad de productos perdidos
+        $cantidadMermasViajes = (float) ViajeMerma::whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
+            ->sum('cantidad');
+        
+        // Reempaques: suma de huevos rotos
+        $cantidadMermasReempaques = (float) Reempaque::whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
+            ->where('estado', 'completado')
+            ->where('merma', '>', 0)
+            ->sum('merma');
+
+        // ============================================
+        // GANANCIAS (VENTAS - COSTO)
+        // ============================================
+        
+        // Costo de ventas en RUTA
+        $costoVentasRuta = ViajeVenta::whereBetween('fecha_venta', [$dateRange['inicio'], $dateRange['fin']])
+            ->whereIn('estado', ['confirmada', 'completada'])
             ->with('detalles')
             ->get()
             ->sum(function ($venta) {
@@ -59,11 +125,23 @@ class StatsOverview extends BaseWidget
                 });
             });
 
+        // Costo de ventas en BODEGA
+        $costoVentasBodega = Venta::whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
+            ->whereIn('estado', ['completada', 'pendiente_pago', 'pagada'])
+            ->with('detalles')
+            ->get()
+            ->sum(function ($venta) {
+                return $venta->detalles->sum(function ($detalle) {
+                    return $detalle->costo_unitario * $detalle->cantidad;
+                });
+            });
+
+        $costoVentasPeriodo = $costoVentasRuta + $costoVentasBodega;
         $gananciasPeriodo = $ventasPeriodo - $costoVentasPeriodo;
 
         // Ganancias del período anterior
-        $costoVentasPeriodoAnterior = ViajeVenta::whereBetween('fecha_venta', [$previousRange['inicio'], $previousRange['fin']])
-            ->where('estado', 'completada')
+        $costoVentasRutaAnterior = ViajeVenta::whereBetween('fecha_venta', [$previousRange['inicio'], $previousRange['fin']])
+            ->whereIn('estado', ['confirmada', 'completada'])
             ->with('detalles')
             ->get()
             ->sum(function ($venta) {
@@ -72,20 +150,45 @@ class StatsOverview extends BaseWidget
                 });
             });
 
+        $costoVentasBodegaAnterior = Venta::whereBetween('created_at', [$previousRange['inicio'], $previousRange['fin']])
+            ->whereIn('estado', ['completada', 'pendiente_pago', 'pagada'])
+            ->with('detalles')
+            ->get()
+            ->sum(function ($venta) {
+                return $venta->detalles->sum(function ($detalle) {
+                    return $detalle->costo_unitario * $detalle->cantidad;
+                });
+            });
+
+        $costoVentasPeriodoAnterior = $costoVentasRutaAnterior + $costoVentasBodegaAnterior;
         $gananciasPeriodoAnterior = $ventasPeriodoAnterior - $costoVentasPeriodoAnterior;
 
-        // Calcular porcentaje de cambio en ganancias
         $cambioGanancias = $this->calculatePercentageChange($gananciasPeriodo, $gananciasPeriodoAnterior);
 
-        // Ventas de hoy (siempre muestra hoy, independiente del filtro)
-        $ventasHoy = ViajeVenta::whereDate('fecha_venta', today())
-            ->where('estado', 'completada')
+        // ============================================
+        // VENTAS HOY (RUTA + BODEGA)
+        // ============================================
+        
+        $ventasRutaHoy = ViajeVenta::whereDate('fecha_venta', today())
+            ->whereIn('estado', ['confirmada', 'completada'])
             ->sum('total');
 
-        // Cantidad de ventas del período
-        $cantidadVentasPeriodo = ViajeVenta::whereBetween('fecha_venta', [$dateRange['inicio'], $dateRange['fin']])
-            ->where('estado', 'completada')
+        $ventasBodegaHoy = Venta::whereDate('created_at', today())
+            ->whereIn('estado', ['completada', 'pendiente_pago', 'pagada'])
+            ->sum('total');
+
+        $ventasHoy = $ventasRutaHoy + $ventasBodegaHoy;
+
+        // Cantidad de ventas del período (ambos modelos)
+        $cantidadVentasRuta = ViajeVenta::whereBetween('fecha_venta', [$dateRange['inicio'], $dateRange['fin']])
+            ->whereIn('estado', ['confirmada', 'completada'])
             ->count();
+
+        $cantidadVentasBodega = Venta::whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
+            ->whereIn('estado', ['completada', 'pendiente_pago', 'pagada'])
+            ->count();
+
+        $cantidadVentasPeriodo = $cantidadVentasRuta + $cantidadVentasBodega;
 
         $periodoLabel = $this->getPeriodLabel();
 
@@ -113,6 +216,12 @@ class StatsOverview extends BaseWidget
                 ->descriptionIcon($cambioGanancias >= 0 ? 'heroicon-m-arrow-trending-up' : 'heroicon-m-arrow-trending-down')
                 ->color($gananciasPeriodo >= 0 ? 'success' : 'danger'),
 
+            Stat::make("Mermas ({$periodoLabel})", 'L ' . number_format($mermasPeriodo, 2))
+                ->description($this->getMermasDescription($cantidadMermasViajes, $cantidadMermasReempaques, $cambioMermas))
+                ->descriptionIcon('heroicon-m-exclamation-triangle')
+                ->color($mermasPeriodo > 0 ? 'danger' : 'success')
+                ->chart($this->getMermasChartData()),
+
             Stat::make('Ventas Hoy', 'L ' . number_format($ventasHoy, 2))
                 ->description($cantidadVentasPeriodo . ' ventas en el período')
                 ->descriptionIcon('heroicon-m-shopping-cart')
@@ -121,7 +230,60 @@ class StatsOverview extends BaseWidget
     }
 
     /**
-     * Obtener datos para el mini chart de ventas
+     * Obtener descripción para el stat de mermas
+     */
+    protected function getMermasDescription(float $viajes, float $reempaques, float $cambio): string
+    {
+        $partes = [];
+        
+        if ($viajes > 0) {
+            // Viajes pueden tener cartones, medios, etc.
+            $partes[] = number_format($viajes, $viajes == floor($viajes) ? 0 : 2) . " unid. en viajes";
+        }
+        
+        if ($reempaques > 0) {
+            // Reempaques siempre son huevos
+            $partes[] = (int)$reempaques . " huevos en reempaques";
+        }
+        
+        if (empty($partes)) {
+            return 'Sin mermas en el período 🎉';
+        }
+        
+        return implode(' | ', $partes);
+    }
+
+    /**
+     * Obtener datos para el mini chart de mermas
+     */
+    protected function getMermasChartData(): array
+    {
+        $dateRange = $this->getFilteredDateRange();
+        $mermas = [];
+        
+        $diffDays = min($dateRange['inicio']->diffInDays($dateRange['fin']), 6);
+        
+        for ($i = $diffDays; $i >= 0; $i--) {
+            $fecha = $dateRange['fin']->copy()->subDays($i)->toDateString();
+            
+            // Mermas de viajes del día
+            $mermasViajes = ViajeMerma::whereDate('created_at', $fecha)
+                ->sum('subtotal_costo');
+            
+            // Mermas de reempaques del día
+            $mermasReempaques = Reempaque::whereDate('created_at', $fecha)
+                ->where('estado', 'completado')
+                ->selectRaw('SUM(merma * costo_unitario_promedio) as costo_merma')
+                ->value('costo_merma') ?? 0;
+            
+            $mermas[] = (float) ($mermasViajes + $mermasReempaques);
+        }
+
+        return $mermas;
+    }
+
+    /**
+     * Obtener datos para el mini chart de ventas (RUTA + BODEGA)
      */
     protected function getVentasChartData(): array
     {
@@ -133,10 +295,18 @@ class StatsOverview extends BaseWidget
         
         for ($i = $diffDays; $i >= 0; $i--) {
             $fecha = $dateRange['fin']->copy()->subDays($i)->toDateString();
-            $total = ViajeVenta::whereDate('fecha_venta', $fecha)
-                ->where('estado', 'completada')
+            
+            // Ventas Ruta del día
+            $totalRuta = ViajeVenta::whereDate('fecha_venta', $fecha)
+                ->whereIn('estado', ['confirmada', 'completada'])
                 ->sum('total');
-            $ventas[] = (float) $total;
+            
+            // Ventas Bodega del día
+            $totalBodega = Venta::whereDate('created_at', $fecha)
+                ->whereIn('estado', ['completada', 'pendiente_pago', 'pagada'])
+                ->sum('total');
+            
+            $ventas[] = (float) ($totalRuta + $totalBodega);
         }
 
         return $ventas;

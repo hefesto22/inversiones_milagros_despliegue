@@ -19,9 +19,10 @@ class GastosBodegaOverview extends BaseWidget
 
     protected static ?int $sort = 3;
 
-    /**
-     * Solo visible para Jefe, Encargado y Super Admin
-     */
+    protected function getHeading(): ?string
+    {
+        return 'Gastos de Bodega';
+    }
 
     protected function getStats(): array
     {
@@ -65,24 +66,24 @@ class GastosBodegaOverview extends BaseWidget
         $periodoLabel = $this->getPeriodLabel();
 
         return [
-            Stat::make('Gastos Pendientes', $gastosPendientes)
+            Stat::make('Bodega: Pendientes', $gastosPendientes)
                 ->description('Por aprobar')
                 ->descriptionIcon('heroicon-m-clock')
                 ->color($gastosPendientes > 0 ? 'warning' : 'success')
                 ->chart([0, $gastosPendientes])
                 ->url(route('filament.admin.resources.bodega-gastos.index', ['tableFilters[estado][value]' => 'pendiente'])),
 
-            Stat::make("Total Gastos Bodega ({$periodoLabel})", 'L ' . number_format($totalPeriodo, 2))
+            Stat::make("Bodega: Total ({$periodoLabel})", 'L ' . number_format($totalPeriodo, 2))
                 ->description($diferenciaPeriodo >= 0 ? "+{$diferenciaPeriodo}% vs período anterior" : "{$diferenciaPeriodo}% vs período anterior")
                 ->descriptionIcon($diferenciaPeriodo >= 0 ? 'heroicon-m-arrow-trending-up' : 'heroicon-m-arrow-trending-down')
                 ->color($diferenciaPeriodo > 10 ? 'danger' : 'success'),
 
-            Stat::make("Cartones ({$periodoLabel})", 'L ' . number_format($totalCartones, 2))
+            Stat::make("Bodega: Cartones ({$periodoLabel})", 'L ' . number_format($totalCartones, 2))
                 ->description('Cartones para reempaque')
                 ->descriptionIcon('heroicon-m-cube')
                 ->color('warning'),
 
-            Stat::make("Otros Gastos ({$periodoLabel})", 'L ' . number_format($otrosGastos, 2))
+            Stat::make("Bodega: Otros ({$periodoLabel})", 'L ' . number_format($otrosGastos, 2))
                 ->description('Limpieza, papelería, etc.')
                 ->descriptionIcon('heroicon-m-shopping-bag')
                 ->color('info'),

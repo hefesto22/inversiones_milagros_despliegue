@@ -16,14 +16,42 @@ class ViewVenta extends ViewRecord
     protected function getHeaderActions(): array
     {
         return [
-            // Editar - Solo en borrador sin pagos
+            // =====================================================
+            // IMPRIMIR COTIZACIÓN - Solo en borrador
+            // =====================================================
+            Actions\ActionGroup::make([
+                Actions\Action::make('ver_cotizacion')
+                    ->label('Ver Cotización')
+                    ->icon('heroicon-o-eye')
+                    ->color('info')
+                    ->url(fn () => route('pdf.cotizacion', $this->record))
+                    ->openUrlInNewTab(),
+
+                Actions\Action::make('descargar_cotizacion')
+                    ->label('Descargar PDF')
+                    ->icon('heroicon-o-arrow-down-tray')
+                    ->color('info')
+                    ->url(fn () => route('pdf.cotizacion.download', $this->record))
+                    ->openUrlInNewTab(),
+            ])
+            ->label('Imprimir Cotización')
+            ->icon('heroicon-o-printer')
+            ->color('info')
+            ->button()
+            ->visible(fn () => $this->record->estado === 'borrador'),
+
+            // =====================================================
+            // EDITAR - Solo en borrador sin pagos
+            // =====================================================
             Actions\EditAction::make()
                 ->visible(fn () =>
                     $this->record->estado === 'borrador' &&
                     $this->record->monto_pagado <= 0
                 ),
 
-            // Procesar Venta / Registrar Pago
+            // =====================================================
+            // PROCESAR VENTA / REGISTRAR PAGO
+            // =====================================================
             Actions\Action::make('registrar_pago')
                 ->label(fn () =>
                     $this->record->estado === 'borrador' ? 'Procesar Venta' : 'Registrar Pago'
@@ -32,7 +60,10 @@ class ViewVenta extends ViewRecord
                     $this->record->estado === 'borrador' ? 'heroicon-o-check-circle' : 'heroicon-o-banknotes'
                 )
                 ->color('success')
-                ->visible(fn () => $this->record->saldo_pendiente > 0)
+                ->visible(fn () => 
+                    $this->record->estado !== 'cancelada' && 
+                    $this->record->saldo_pendiente > 0
+                )
                 ->form([
                     // Advertencia si es primer pago (borrador)
                     Forms\Components\Placeholder::make('info_venta')
@@ -42,12 +73,13 @@ class ViewVenta extends ViewRecord
                                 return new HtmlString("
                                     <div class='rounded-lg bg-blue-50 dark:bg-blue-900/20 p-4 mb-2'>
                                         <p class='text-sm font-semibold text-blue-800 dark:text-blue-200'>
-                                            📦 Al registrar este pago:
+                                            📦 Al procesar esta venta:
                                         </p>
                                         <ul class='text-sm text-blue-700 dark:text-blue-300 mt-2 list-disc list-inside'>
-                                            <li>Se generará el número de venta</li>
+                                            <li>Se generará el número de venta oficial</li>
                                             <li>Se descontará el stock de los productos</li>
                                             <li>Ya no podrá editarse la venta</li>
+                                            <li>La cotización se convertirá en venta confirmada</li>
                                         </ul>
                                     </div>
                                 ");
@@ -166,17 +198,37 @@ class ViewVenta extends ViewRecord
                                 ? ' | Saldo restante: L ' . number_format($this->record->saldo_pendiente, 2)
                                 : ' | ✅ Completamente pagado'))
                         ->success()
+                        ->actions([
+                            \Filament\Notifications\Actions\Action::make('imprimir')
+                                ->label('Imprimir Factura')
+                                ->url(route('venta.imprimir', $this->record))
+                                ->openUrlInNewTab(),
+                        ])
+                        ->persistent()
                         ->send();
                 }),
 
-            // Cancelar - Solo en borrador sin pagos
+            // =====================================================
+            // IMPRIMIR FACTURA - Para ventas procesadas
+            // =====================================================
+            Actions\Action::make('imprimir_factura')
+                ->label('Imprimir Factura')
+                ->icon('heroicon-o-printer')
+                ->color('success')
+                ->url(fn () => route('venta.imprimir', $this->record))
+                ->openUrlInNewTab()
+                ->visible(fn () => in_array($this->record->estado, ['completada', 'pendiente_pago', 'pagada'])),
+
+            // =====================================================
+            // CANCELAR - Solo en borrador sin pagos
+            // =====================================================
             Actions\Action::make('cancelar')
-                ->label('Cancelar Venta')
+                ->label('Cancelar')
                 ->icon('heroicon-o-x-circle')
                 ->color('danger')
                 ->requiresConfirmation()
-                ->modalHeading('Cancelar Venta')
-                ->modalDescription('¿Estás seguro de cancelar esta venta?')
+                ->modalHeading('Cancelar Cotización')
+                ->modalDescription('¿Estás seguro de cancelar esta cotización? Esta acción no se puede deshacer.')
                 ->visible(fn () =>
                     $this->record->estado === 'borrador' &&
                     $this->record->monto_pagado <= 0
@@ -192,12 +244,14 @@ class ViewVenta extends ViewRecord
                     $this->refreshFormData(['estado']);
 
                     \Filament\Notifications\Notification::make()
-                        ->title('Venta cancelada')
+                        ->title('Cotización cancelada')
                         ->warning()
                         ->send();
                 }),
 
-            // Eliminar - Solo en borrador sin pagos
+            // =====================================================
+            // ELIMINAR - Solo en borrador sin pagos
+            // =====================================================
             Actions\DeleteAction::make()
                 ->visible(fn () =>
                     $this->record->estado === 'borrador' &&

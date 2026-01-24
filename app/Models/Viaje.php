@@ -249,11 +249,23 @@ class Viaje extends Model
         });
     }
 
+    /**
+     * Procesar reintegro de descargas al cerrar el viaje
+     * 
+     * 🎯 LÓGICA MEJORADA:
+     * - Unidades COMPLETAS → van a bodega_producto (stock normal)
+     * - Unidades FRACCIONADAS (sueltos) → van al lote SUELTOS-{producto_id}-{bodega_id}
+     * 
+     * Ejemplo: Si devuelven 1.2670 cartones (38 huevos):
+     * - 1 cartón completo (30 huevos) → bodega_producto
+     * - 0.2670 cartones (8 huevos) → lote SUELTOS
+     */
     protected function procesarReintegroDescargas(): void
     {
-        // Obtener descargas que deben reingresar al stock y no han sido procesadas
+        // Obtener descargas que deben reingresar al stock
         $descargas = $this->descargas()
             ->where('reingresa_stock', true)
+            ->with('producto')
             ->get();
 
         foreach ($descargas as $descarga) {
@@ -262,29 +274,156 @@ class Viaje extends Model
                 continue;
             }
 
-            // Buscar o crear el registro en bodega_producto
-            $bodegaProducto = BodegaProducto::firstOrCreate(
-                [
-                    'bodega_id' => $this->bodega_origen_id,
-                    'producto_id' => $descarga->producto_id,
-                ],
-                [
-                    'stock' => 0,
-                    'stock_reservado' => 0,
-                    'stock_minimo' => 0,
-                    'costo_promedio_actual' => $descarga->costo_unitario,
-                    'activo' => true,
-                ]
-            );
+            $producto = $descarga->producto;
+            $cantidadTotal = $descarga->cantidad;
+            $costoUnitario = $descarga->costo_unitario;
+            $unidadesPorBulto = $producto->unidades_por_bulto ?? 1;
 
-            // Reingresar stock usando el costo de la descarga
-            // Usamos actualizarCostoPromedio para mantener el weighted average
-            $bodegaProducto->actualizarCostoPromedio(
-                $descarga->cantidad,
-                $descarga->costo_unitario
-            );
+            // Si el producto no tiene subunidades (unidades_por_bulto <= 1), 
+            // todo va directo a bodega_producto
+            if ($unidadesPorBulto <= 1) {
+                $this->reintegrarABodegaProducto(
+                    $descarga->producto_id,
+                    $cantidadTotal,
+                    $costoUnitario
+                );
+                continue;
+            }
+
+            // 🎯 SEPARAR UNIDADES COMPLETAS DE SUELTOS
+            $unidadesCompletas = floor($cantidadTotal);
+            $fraccion = $cantidadTotal - $unidadesCompletas;
+
+            // Reingresar unidades completas a bodega_producto
+            if ($unidadesCompletas > 0) {
+                $this->reintegrarABodegaProducto(
+                    $descarga->producto_id,
+                    $unidadesCompletas,
+                    $costoUnitario
+                );
+            }
+
+            // Reingresar fracción (sueltos) al lote SUELTOS
+            if ($fraccion > 0.0001) { // Usar tolerancia para evitar errores de punto flotante
+                $huevosSueltos = round($fraccion * $unidadesPorBulto);
+                
+                if ($huevosSueltos > 0) {
+                    $this->reintegrarALoteSueltos(
+                        $descarga->producto_id,
+                        $huevosSueltos,
+                        $costoUnitario,
+                        $unidadesPorBulto
+                    );
+                }
+            }
         }
     }
+
+    /**
+     * Reingresar stock a bodega_producto (unidades completas)
+     */
+    protected function reintegrarABodegaProducto(int $productoId, float $cantidad, float $costoUnitario): void
+    {
+        $bodegaProducto = BodegaProducto::firstOrCreate(
+            [
+                'bodega_id' => $this->bodega_origen_id,
+                'producto_id' => $productoId,
+            ],
+            [
+                'stock' => 0,
+                'stock_reservado' => 0,
+                'stock_minimo' => 0,
+                'costo_promedio_actual' => $costoUnitario,
+                'activo' => true,
+            ]
+        );
+
+        // Reingresar stock usando el costo de la descarga
+        $bodegaProducto->actualizarCostoPromedio($cantidad, $costoUnitario);
+    }
+
+    /**
+     * Reingresar huevos sueltos al lote SUELTOS
+     * 
+     * @param int $productoId ID del producto
+     * @param int $cantidadHuevos Cantidad de huevos sueltos a agregar
+     * @param float $costoUnitarioBulto Costo por bulto/cartón
+     * @param int $unidadesPorBulto Huevos por cartón
+     */
+    protected function reintegrarALoteSueltos(
+        int $productoId, 
+        int $cantidadHuevos, 
+        float $costoUnitarioBulto,
+        int $unidadesPorBulto
+    ): void {
+        $bodegaId = $this->bodega_origen_id;
+        $numeroLote = "SUELTOS-B{$bodegaId}";
+
+        // Calcular costo por huevo individual
+        $costoPorHuevo = $costoUnitarioBulto / $unidadesPorBulto;
+
+        // Buscar lote SUELTOS existente para este producto y bodega (sin importar estado)
+        $loteSueltos = Lote::where('numero_lote', $numeroLote)
+            ->where('producto_id', $productoId)
+            ->where('bodega_id', $bodegaId)
+            ->first();
+
+        if ($loteSueltos) {
+            // 🎯 AGREGAR AL LOTE EXISTENTE
+            // Recalcular costo promedio ponderado
+            $huevosExistentes = $loteSueltos->cantidad_huevos_remanente;
+            $costoExistente = $loteSueltos->costo_por_huevo;
+
+            $totalHuevos = $huevosExistentes + $cantidadHuevos;
+            
+            // Costo promedio ponderado (solo si hay huevos existentes)
+            if ($huevosExistentes > 0) {
+                $nuevoCostoPorHuevo = (
+                    ($huevosExistentes * $costoExistente) + 
+                    ($cantidadHuevos * $costoPorHuevo)
+                ) / $totalHuevos;
+            } else {
+                $nuevoCostoPorHuevo = $costoPorHuevo;
+            }
+
+            // Actualizar lote y cambiar estado a disponible
+            $loteSueltos->update([
+                'cantidad_huevos_remanente' => $totalHuevos,
+                'cantidad_huevos_original' => $loteSueltos->cantidad_huevos_original + $cantidadHuevos,
+                'costo_por_huevo' => round($nuevoCostoPorHuevo, 4),
+                'costo_total_lote' => round($totalHuevos * $nuevoCostoPorHuevo, 2),
+                'estado' => 'disponible', // 🎯 Reactivar si estaba agotado
+            ]);
+
+        } else {
+            // 🎯 CREAR NUEVO LOTE SUELTOS
+            $producto = Producto::find($productoId);
+
+            Lote::create([
+                'numero_lote' => $numeroLote,
+                'producto_id' => $productoId,
+                'bodega_id' => $bodegaId,
+                'proveedor_id' => 10, // Proveedor interno/sistema para lotes SUELTOS
+                'compra_id' => null,
+                'compra_detalle_id' => null,
+                'reempaque_origen_id' => null,
+                // Cantidades en términos de huevos individuales
+                'cantidad_cartones_facturados' => 0,
+                'cantidad_cartones_regalo' => 0,
+                'cantidad_cartones_recibidos' => 0,
+                'huevos_por_carton' => $unidadesPorBulto,
+                'cantidad_huevos_original' => $cantidadHuevos,
+                'cantidad_huevos_remanente' => $cantidadHuevos,
+                // Costos
+                'costo_total_lote' => round($cantidadHuevos * $costoPorHuevo, 2),
+                'costo_por_carton_facturado' => 0,
+                'costo_por_huevo' => round($costoPorHuevo, 4),
+                'estado' => 'disponible',
+                'created_by' => Auth::id(),
+            ]);
+        }
+    }
+
     // ============================================
     // MÉTODOS DE VERIFICACIÓN
     // ============================================
@@ -348,9 +487,10 @@ class Viaje extends Model
         // Comisiones
         $this->comision_ganada = $this->comisionesDetalle()->sum('comision_total');
 
-        // Cobros por devoluciones
-        $this->cobros_devoluciones = $this->descargas()->where('cobrar_chofer', true)->sum('monto_cobrar')
-            + $this->mermas()->where('cobrar_chofer', true)->sum('monto_cobrar');
+        // Cobros por devoluciones (descargas + mermas)
+        $cobrosDescargas = $this->descargas()->where('cobrar_chofer', true)->sum('monto_cobrar');
+        $cobrosMermas = $this->mermas()->where('cobrar_chofer', true)->sum('monto_cobrar');
+        $this->cobros_devoluciones = $cobrosDescargas + $cobrosMermas;
 
         // Neto chofer
         $this->neto_chofer = $this->comision_ganada - $this->cobros_devoluciones;
@@ -393,42 +533,51 @@ class Viaje extends Model
     protected function calcularComisionDetalleRuta(ViajeVenta $venta, ViajeVentaDetalle $detalle): void
     {
         $producto = $detalle->producto;
-
+    
         if (!$producto) {
             return;
         }
-
+    
         $categoriaId = $producto->categoria_id;
-
+    
         // Obtener unidad desde la carga del viaje
         $carga = $this->cargas()->where('producto_id', $producto->id)->first();
         $unidadId = $carga?->unidad_id;
-
+    
         // Obtener configuración de comisión del chofer
         $comisionConfig = $this->chofer->getComisionPara($producto->id, $categoriaId, $unidadId);
-
+    
         // Si no hay comisión configurada, saltar
         if ($comisionConfig['normal'] <= 0) {
             return;
         }
-
+    
         // Obtener precio sugerido de la carga
         $precioSugerido = $carga?->precio_venta_sugerido ?? $detalle->precio_base;
-
+    
         // Determinar tipo de comisión basado en precio de venta vs precio sugerido
-        // ViajeVentaDetalle usa precio_base (sin ISV)
         $precioVendido = $detalle->precio_base;
-
+    
         $tipoComision = $precioVendido >= $precioSugerido
             ? ViajeComisionDetalle::TIPO_NORMAL
             : ViajeComisionDetalle::TIPO_REDUCIDA;
-
+    
         $comisionUnitaria = $tipoComision === ViajeComisionDetalle::TIPO_NORMAL
             ? $comisionConfig['normal']
             : ($comisionConfig['reducida'] ?? $comisionConfig['normal']);
-
-        $comisionTotal = $detalle->cantidad * $comisionUnitaria;
-
+    
+        // 🎯 OBTENER FACTOR DE LA UNIDAD (simbolo contiene el factor: 0.5, 1, etc.)
+        $unidad = $carga?->unidad;
+        $factorUnidad = 1;
+        
+        if ($unidad && is_numeric($unidad->simbolo)) {
+            $factorUnidad = (float) $unidad->simbolo;
+        }
+    
+        // 🎯 CALCULAR COMISIÓN APLICANDO EL FACTOR DE UNIDAD
+        // Ejemplo: 2 medios cartones × L1.50 × 0.5 = L1.50 (equivale a 1 cartón)
+        $comisionTotal = $detalle->cantidad * $comisionUnitaria * $factorUnidad;
+    
         // Crear registro de comisión
         ViajeComisionDetalle::create([
             'viaje_id' => $this->id,
@@ -440,7 +589,7 @@ class Viaje extends Model
             'precio_sugerido' => $precioSugerido,
             'costo' => $detalle->costo_unitario,
             'tipo_comision' => $tipoComision,
-            'comision_unitaria' => $comisionUnitaria,
+            'comision_unitaria' => $comisionUnitaria * $factorUnidad, // Guardar comisión ya con factor
             'comision_total' => $comisionTotal,
         ]);
     }
@@ -485,12 +634,18 @@ class Viaje extends Model
         ]);
     }
 
+    /**
+     * Liquidar viaje completo - calcular comisiones y cobros
+     */
     public function liquidarCompleto(): array
     {
-        // Calcular comisiones
+        // 1. Primero recalcular totales (incluye cobros de descargas y mermas)
+        $this->recalcularTotales();
+
+        // 2. Calcular comisiones
         $this->calcularComisiones();
 
-        // Recalcular totales (sin cerrar)
+        // 3. Recalcular totales finales con las comisiones
         $this->recalcularTotales();
 
         return [
@@ -500,6 +655,7 @@ class Viaje extends Model
             'total_vendido' => $this->total_vendido,
         ];
     }
+    
     // ============================================
     // MÉTODOS DE CONSULTA
     // ============================================

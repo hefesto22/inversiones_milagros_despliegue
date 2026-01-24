@@ -305,6 +305,12 @@ class CompraResource extends Resource
                                                     return [];
                                                 }
 
+                                                // Excluir productos con unidad "Medio Cartón" (no se compran, se reempaquetan)
+                                                $unidadesExcluidas = Unidad::where('activo', true)
+                                                    ->where('nombre', 'like', '%Medio%')
+                                                    ->pluck('id')
+                                                    ->toArray();
+
                                                 $esSuperAdminOJefe = DB::table('model_has_roles')
                                                     ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
                                                     ->where('model_has_roles.model_type', '=', get_class($currentUser))
@@ -314,10 +320,11 @@ class CompraResource extends Resource
 
                                                 if ($esSuperAdminOJefe) {
                                                     return Producto::where('activo', true)
+                                                        ->whereNotIn('unidad_id', $unidadesExcluidas)
                                                         ->orderBy('nombre')
                                                         ->get()
                                                         ->mapWithKeys(fn($producto) => [
-                                                            $producto->id => $producto->nombre . 
+                                                            $producto->id => $producto->nombre .
                                                                 ($producto->formato_empaque ? " [{$producto->formato_empaque}]" : '') .
                                                                 ' - ' . ($producto->sku ?? 'Sin SKU')
                                                         ])
@@ -335,6 +342,7 @@ class CompraResource extends Resource
                                                 }
 
                                                 return Producto::where('activo', true)
+                                                    ->whereNotIn('unidad_id', $unidadesExcluidas)
                                                     ->whereHas('bodegas', function ($query) use ($bodegasUsuario) {
                                                         $query->whereIn('bodega_producto.bodega_id', $bodegasUsuario)
                                                             ->where('bodega_producto.activo', true);
@@ -342,7 +350,7 @@ class CompraResource extends Resource
                                                     ->orderBy('nombre')
                                                     ->get()
                                                     ->mapWithKeys(fn($producto) => [
-                                                        $producto->id => $producto->nombre . 
+                                                        $producto->id => $producto->nombre .
                                                             ($producto->formato_empaque ? " [{$producto->formato_empaque}]" : '') .
                                                             ' - ' . ($producto->sku ?? 'Sin SKU')
                                                     ])
@@ -489,7 +497,7 @@ class CompraResource extends Resource
                                         }
 
                                         $producto = Producto::with('unidad')->find($productoId);
-                                        
+
                                         if (!$producto || !$producto->tieneFormatoEmpaque()) {
                                             return '';
                                         }
@@ -525,7 +533,7 @@ class CompraResource extends Resource
                                     ->visible(function (Forms\Get $get) {
                                         $productoId = $get('producto_id');
                                         if (!$productoId) return false;
-                                        
+
                                         $producto = Producto::find($productoId);
                                         return $producto && $producto->tieneFormatoEmpaque();
                                     }),
@@ -597,8 +605,8 @@ class CompraResource extends Resource
                                                 $subtotal = ($cantidadFacturada * $precio) - $descuento + $impuesto;
                                                 return new \Illuminate\Support\HtmlString(
                                                     '<div class="text-lg font-bold text-primary-600">L ' .
-                                                    number_format($subtotal, 2) .
-                                                    '</div>'
+                                                        number_format($subtotal, 2) .
+                                                        '</div>'
                                                 );
                                             })
                                             ->columnSpan(1),

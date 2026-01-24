@@ -19,10 +19,10 @@ class GastosCamionOverview extends BaseWidget
 
     protected static ?int $sort = 2;
 
-    /**
-     * Solo visible para Jefe, Encargado y Super Admin
-     */
-
+    protected function getHeading(): ?string
+    {
+        return 'Gastos de Camiones';
+    }
 
     protected function getStats(): array
     {
@@ -66,24 +66,24 @@ class GastosCamionOverview extends BaseWidget
         $periodoLabel = $this->getPeriodLabel();
 
         return [
-            Stat::make('Gastos Pendientes', $gastosPendientes)
+            Stat::make('Camión: Pendientes', $gastosPendientes)
                 ->description('Por aprobar')
                 ->descriptionIcon('heroicon-m-clock')
                 ->color($gastosPendientes > 0 ? 'warning' : 'success')
                 ->chart([0, $gastosPendientes])
                 ->url(route('filament.admin.resources.camion-gastos.index', ['tableFilters[estado][value]' => 'pendiente'])),
 
-            Stat::make("Total Gastos ({$periodoLabel})", 'L ' . number_format($totalPeriodo, 2))
+            Stat::make("Camión: Total ({$periodoLabel})", 'L ' . number_format($totalPeriodo, 2))
                 ->description($diferenciaPeriodo >= 0 ? "+{$diferenciaPeriodo}% vs período anterior" : "{$diferenciaPeriodo}% vs período anterior")
                 ->descriptionIcon($diferenciaPeriodo >= 0 ? 'heroicon-m-arrow-trending-up' : 'heroicon-m-arrow-trending-down')
                 ->color($diferenciaPeriodo > 10 ? 'danger' : 'success'),
 
-            Stat::make("Gasolina ({$periodoLabel})", 'L ' . number_format($totalGasolina, 2))
+            Stat::make("Camión: Gasolina ({$periodoLabel})", 'L ' . number_format($totalGasolina, 2))
                 ->description(number_format($totalLitros, 1) . ' litros')
                 ->descriptionIcon('heroicon-m-fire')
                 ->color('warning'),
 
-            Stat::make("Otros Gastos ({$periodoLabel})", 'L ' . number_format($otrosGastos, 2))
+            Stat::make("Camión: Otros ({$periodoLabel})", 'L ' . number_format($otrosGastos, 2))
                 ->description('Mantenimiento, reparaciones, etc.')
                 ->descriptionIcon('heroicon-m-wrench-screwdriver')
                 ->color('info'),

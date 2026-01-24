@@ -373,7 +373,21 @@ class ReempaqueResource extends Resource
                     Forms\Components\Grid::make(2)->schema([
                         Forms\Components\Select::make('categoria_mezcla_sueltos')
                             ->label('Categoria para mezclar sueltos')
-                            ->options(Categoria::where('activo', true)->pluck('nombre', 'id'))
+                            ->options(function () {
+                                // Solo categorías que tengan unidades tipo cartón
+                                return Categoria::where('activo', true)
+                                    ->whereHas('unidades', function ($query) {
+                                        $query->where(function ($q) {
+                                            $q->where('nombre', 'LIKE', '%carton%')
+                                              ->orWhere('nombre', 'LIKE', '%Carton%')
+                                              ->orWhere('nombre', 'LIKE', '%30%')
+                                              ->orWhere('nombre', 'LIKE', '%15%')
+                                              ->orWhere('nombre', 'LIKE', '%medio%')
+                                              ->orWhere('nombre', 'LIKE', '%Medio%');
+                                        });
+                                    })
+                                    ->pluck('nombre', 'id');
+                            })
                             ->searchable()
                             ->preload()
                             ->placeholder('Selecciona categoria...')
@@ -877,7 +891,7 @@ class ReempaqueResource extends Resource
                         ])
                         ->columns(1)
                         ->defaultItems(1)
-                        ->minItems(fn(Forms\Get $get) => $get('tipo') === 'individual' ? 1 : 2)
+                        ->minItems(1)
                         ->maxItems(fn(Forms\Get $get) => $get('tipo') === 'individual' ? 1 : 20)
                         ->addActionLabel('+ Agregar Otro Lote')
                         ->reorderable(false)
@@ -1137,7 +1151,21 @@ class ReempaqueResource extends Resource
                             Forms\Components\Grid::make(12)->schema([
                                 Forms\Components\Select::make('categoria_id')
                                     ->label('Categoria Destino')
-                                    ->options(Categoria::where('activo', true)->pluck('nombre', 'id'))
+                                    ->options(function () {
+                                        // Solo categorías que tengan unidades tipo cartón (30 o 15 huevos)
+                                        return Categoria::where('activo', true)
+                                            ->whereHas('unidades', function ($query) {
+                                                $query->where(function ($q) {
+                                                    $q->where('nombre', 'LIKE', '%carton%')
+                                                      ->orWhere('nombre', 'LIKE', '%Carton%')
+                                                      ->orWhere('nombre', 'LIKE', '%30%')
+                                                      ->orWhere('nombre', 'LIKE', '%15%')
+                                                      ->orWhere('nombre', 'LIKE', '%medio%')
+                                                      ->orWhere('nombre', 'LIKE', '%Medio%');
+                                                });
+                                            })
+                                            ->pluck('nombre', 'id');
+                                    })
                                     ->required()
                                     ->searchable()
                                     ->preload()

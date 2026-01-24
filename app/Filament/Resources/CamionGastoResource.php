@@ -118,26 +118,10 @@ class CamionGastoResource extends Resource
 
                 Forms\Components\Section::make('Comprobante')
                     ->schema([
-                        Forms\Components\Grid::make(2)
-                            ->schema([
-                                Forms\Components\Toggle::make('tiene_factura')
-                                    ->label('¿Tiene Factura?')
-                                    ->default(false)
-                                    ->inline(false),
-
-                                Forms\Components\Toggle::make('enviado_whatsapp')
-                                    ->label('¿Enviado por WhatsApp?')
-                                    ->default(false)
-                                    ->inline(false)
-                                    ->disabled()
-                                    ->dehydrated()
-                                    ->helperText(function ($record) {
-                                        if ($record && $record->enviado_whatsapp_at) {
-                                            return 'Enviado: ' . $record->enviado_whatsapp_at->format('d/m/Y h:i a');
-                                        }
-                                        return 'Se marca automáticamente al enviar';
-                                    }),
-                            ]),
+                        Forms\Components\Toggle::make('tiene_factura')
+                            ->label('¿Tiene Factura?')
+                            ->default(false)
+                            ->inline(false),
 
                         Forms\Components\Textarea::make('descripcion')
                             ->label('Descripción / Notas')
@@ -223,14 +207,6 @@ class CamionGastoResource extends Resource
                     ->trueColor('success')
                     ->falseColor('gray'),
 
-                Tables\Columns\IconColumn::make('enviado_whatsapp')
-                    ->label('WhatsApp')
-                    ->boolean()
-                    ->trueIcon('heroicon-o-chat-bubble-left-ellipsis')
-                    ->falseIcon('heroicon-o-chat-bubble-left')
-                    ->trueColor('success')
-                    ->falseColor('gray'),
-
                 Tables\Columns\TextColumn::make('estado')
                     ->label('Estado')
                     ->badge()
@@ -277,9 +253,6 @@ class CamionGastoResource extends Resource
 
                 Tables\Filters\TernaryFilter::make('tiene_factura')
                     ->label('Con Factura'),
-
-                Tables\Filters\TernaryFilter::make('enviado_whatsapp')
-                    ->label('Enviado por WhatsApp'),
 
                 Tables\Filters\Filter::make('fecha')
                     ->form([

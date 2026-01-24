@@ -27,6 +27,11 @@ class AdminPanelProvider extends PanelProvider
             ->default()
             ->id('admin')
             ->path('admin')
+            ->brandName(config("app.name"))
+            ->brandLogo(config('app.logo') ? asset(config('app.logo')) : null)
+            ->brandLogoHeight('6rem')
+            ->sidebarCollapsibleOnDesktop()
+            ->sidebarWidth('18rem')
             ->login()
             ->colors([
                 'primary' => Color::Emerald,

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Venta {{ $venta->numero_venta }}</title>
+    <title>Factura {{ $venta->numero_venta }}</title>
     <style>
         * {
             margin: 0;
@@ -111,6 +111,22 @@
             padding-top: 5px;
             margin-top: 5px;
         }
+        .pago-info {
+            background: #e8f5e9;
+            padding: 8px;
+            margin-top: 10px;
+            text-align: center;
+            font-size: 11px;
+            border: 1px dashed #4caf50;
+        }
+        .credito-info {
+            background: #fef3c7;
+            padding: 8px;
+            margin-top: 10px;
+            text-align: center;
+            font-size: 11px;
+            border: 1px dashed #f59e0b;
+        }
         .cai-section {
             margin-top: 10px;
             padding: 8px;
@@ -137,7 +153,7 @@
                 padding: 0;
             }
             .no-print {
-                display: none !important;
+                display: none;
             }
         }
         .print-button {
@@ -151,26 +167,46 @@
             border-radius: 5px;
             cursor: pointer;
             font-size: 14px;
-            display: flex;
-            align-items: center;
-            gap: 5px;
         }
         .print-button:hover {
             background: #059669;
         }
+        .back-button {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            padding: 10px 20px;
+            background: #6b7280;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+        }
+        .back-button:hover {
+            background: #4b5563;
+        }
     </style>
 </head>
 <body>
+    <a href="{{ url()->previous() }}" class="back-button no-print">← Volver</a>
     <button class="print-button no-print" onclick="window.print()">🖨️ Imprimir</button>
 
     <div class="header">
         @if ($empresa && $empresa->logo)
             <img src="{{ asset('storage/' . $empresa->logo) }}" alt="Logo" class="logo">
         @endif
-        <h1>{{ $empresa->nombre ?? '---' }}</h1>
-        <p>RTN: {{ $empresa->rtn ?? '---' }}</p>
-        <p>Tel: {{ $empresa->telefono ?? '---' }}</p>
-        <p>{{ $empresa->direccion ?? '---' }}</p>
+        <h1>{{ $empresa->nombre ?? 'Mi Empresa' }}</h1>
+        @if($empresa?->rtn)
+            <p>RTN: {{ $empresa->rtn }}</p>
+        @endif
+        @if($empresa?->telefono)
+            <p>Tel: {{ $empresa->telefono }}</p>
+        @endif
+        @if($empresa?->direccion)
+            <p>{{ $empresa->direccion }}</p>
+        @endif
         @if ($empresa && $empresa->lema)
             <p class="lema">{{ $empresa->lema }}</p>
         @endif
@@ -178,24 +214,32 @@
 
     <div class="info-section">
         <div class="info-row">
-            <span class="info-label">No. Venta:</span>
-            <span>{{ $venta->numero_venta }}</span>
+            <span class="info-label">No. Factura:</span>
+            <span>{{ $venta->numero_venta ?? 'BORRADOR' }}</span>
         </div>
         <div class="info-row">
             <span class="info-label">Fecha:</span>
-            <span>{{ $venta->fecha_venta->format('d/m/Y H:i') }}</span>
+            <span>{{ $venta->created_at->format('d/m/Y H:i') }}</span>
         </div>
         <div class="info-row">
-            <span class="info-label">Viaje:</span>
-            <span>{{ $venta->viaje?->numero_viaje ?? '---' }}</span>
+            <span class="info-label">Bodega:</span>
+            <span>{{ $venta->bodega?->nombre ?? '---' }}</span>
         </div>
         <div class="info-row">
             <span class="info-label">Vendedor:</span>
-            <span>{{ $venta->userCreador?->name ?? '---' }}</span>
+            <span>{{ $venta->creador?->name ?? '---' }}</span>
         </div>
         <div class="info-row">
-            <span class="info-label">Pago:</span>
-            <span>{{ $venta->tipo_pago === 'contado' ? 'CONTADO' : 'CRÉDITO' }}</span>
+            <span class="info-label">Forma Pago:</span>
+            <span>
+                @switch($venta->tipo_pago)
+                    @case('efectivo') EFECTIVO @break
+                    @case('transferencia') TRANSFERENCIA @break
+                    @case('tarjeta') TARJETA @break
+                    @case('credito') CRÉDITO @break
+                    @default {{ strtoupper($venta->tipo_pago) }}
+                @endswitch
+            </span>
         </div>
     </div>
 
@@ -204,7 +248,7 @@
             <span class="info-label">Cliente:</span>
             <span>{{ $venta->cliente?->nombre ?? 'Consumidor Final' }}</span>
         </div>
-        @if($venta->cliente?->rtn && $venta->cliente->rtn !== 'CF-0000000000000')
+        @if($venta->cliente?->rtn)
         <div class="info-row">
             <span class="info-label">RTN:</span>
             <span>{{ $venta->cliente->rtn }}</span>
@@ -213,7 +257,7 @@
         @if($venta->cliente?->direccion)
         <div class="info-row">
             <span class="info-label">Dir:</span>
-            <span>{{ $venta->cliente->direccion }}</span>
+            <span>{{ Str::limit($venta->cliente->direccion, 30) }}</span>
         </div>
         @endif
         @if($venta->cliente?->telefono)
@@ -237,13 +281,15 @@
             @foreach($venta->detalles as $detalle)
             <tr>
                 <td>
-                    <div class="producto-nombre">{{ $detalle->producto?->nombre ?? 'Producto' }}</div>
+                    <div class="producto-nombre">{{ Str::limit($detalle->producto?->nombre ?? 'Producto', 20) }}</div>
                     @if($detalle->aplica_isv)
-                    <div class="producto-detalle">ISV: L {{ number_format($detalle->monto_isv, 2) }}/u</div>
+                    <div class="producto-detalle">+ISV: L {{ number_format($detalle->isv_unitario, 2) }}/u</div>
+                    @else
+                    <div class="producto-detalle">Sin ISV</div>
                     @endif
                 </td>
-                <td class="qty">{{ number_format($detalle->cantidad, 0) }}</td>
-                <td class="price">L {{ number_format($detalle->precio_con_isv, 2) }}</td>
+                <td class="qty">{{ number_format($detalle->cantidad, $detalle->cantidad == intval($detalle->cantidad) ? 0 : 2) }}</td>
+                <td class="price">L {{ number_format($detalle->precio_unitario, 2) }}</td>
                 <td class="total">L {{ number_format($detalle->total_linea, 2) }}</td>
             </tr>
             @endforeach
@@ -257,7 +303,7 @@
         </div>
         <div class="total-row">
             <span>ISV (15%):</span>
-            <span>L {{ number_format($venta->impuesto, 2) }}</span>
+            <span>L {{ number_format($venta->total_isv, 2) }}</span>
         </div>
         @if($venta->descuento > 0)
         <div class="total-row">
@@ -271,10 +317,20 @@
         </div>
     </div>
 
-    @if($venta->tipo_pago === 'credito')
-    <div style="background: #fef3c7; padding: 8px; margin-top: 10px; text-align: center; font-size: 11px;">
-        <strong>⚠️ VENTA A CRÉDITO</strong><br>
+    {{-- Estado de pago --}}
+    @if($venta->estado_pago === 'pagado')
+    <div class="pago-info">
+        <strong>PAGADO</strong><br>
+        Monto: L {{ number_format($venta->monto_pagado, 2) }}
+    </div>
+    @elseif($venta->tipo_pago === 'credito' || $venta->saldo_pendiente > 0)
+    <div class="credito-info">
+        <strong>CRÉDITO</strong><br>
+        Pagado: L {{ number_format($venta->monto_pagado, 2) }}<br>
         Saldo Pendiente: L {{ number_format($venta->saldo_pendiente, 2) }}
+        @if($venta->fecha_vencimiento)
+            <br>Vence: {{ $venta->fecha_vencimiento->format('d/m/Y') }}
+        @endif
     </div>
     @endif
 
@@ -285,11 +341,15 @@
     @endif
 
     {{-- Información del CAI --}}
-    @if ($empresa && $empresa->cai)
+    @if ($empresa && $empresa->cai && $venta->numero_venta)
     <div class="cai-section">
         <p><strong>CAI:</strong> {{ $empresa->cai }}</p>
-        <p><strong>Rango:</strong> {{ $empresa->rango_desde ?? '---' }} al {{ $empresa->rango_hasta ?? '---' }}</p>
-        <p><strong>Fecha Límite:</strong> {{ $empresa->fecha_limite_emision ? $empresa->fecha_limite_emision->format('d/m/Y') : '---' }}</p>
+        @if($empresa->rango_desde && $empresa->rango_hasta)
+            <p><strong>Rango:</strong> {{ $empresa->rango_desde }} al {{ $empresa->rango_hasta }}</p>
+        @endif
+        @if($empresa->fecha_limite_emision)
+            <p><strong>Fecha Límite:</strong> {{ $empresa->fecha_limite_emision->format('d/m/Y') }}</p>
+        @endif
     </div>
     @endif
 
@@ -298,28 +358,9 @@
         @if ($empresa && $empresa->correo_electronico)
             <p>{{ $empresa->correo_electronico }}</p>
         @endif
-        <p>{{ now()->format('d/m/Y H:i:s') }}</p>
+        <p style="margin-top: 10px; font-size: 9px; color: #999;">
+            Impreso: {{ now()->format('d/m/Y H:i:s') }}
+        </p>
     </div>
-
-    {{-- Auto-imprimir solo si NO está dentro de un iframe --}}
-    <script>
-        window.onload = function() {
-            // Solo auto-imprimir si la página se abre directamente (no en iframe)
-            if (window.self === window.top) {
-                setTimeout(function() {
-                    window.print();
-                }, 300);
-            }
-        };
-        
-        // Opcional: cerrar la pestaña después de imprimir o cancelar
-        window.onafterprint = function() {
-            // Solo cerrar si es ventana directa, no iframe
-            if (window.self === window.top) {
-                // Descomentar la siguiente línea si quieres que cierre automáticamente
-                // window.close();
-            }
-        };
-    </script>
 </body>
 </html>
