@@ -54,6 +54,20 @@ class PuntoVentaRuta extends Page implements HasTable
     public bool $mostrarConfirmacion = false;
 
     /**
+     * Obtener cantidad en carrito para una carga específica
+     */
+    public function getCantidadEnCarrito(int $cargaId): float
+    {
+        $cantidad = 0;
+        foreach ($this->carrito as $item) {
+            if ($item['carga_id'] === $cargaId) {
+                $cantidad += $item['cantidad'];
+            }
+        }
+        return $cantidad;
+    }
+
+    /**
      * Obtener el cliente seleccionado
      */
     #[Computed]
@@ -326,9 +340,23 @@ class PuntoVentaRuta extends Page implements HasTable
 
                 TextColumn::make('disponible')
                     ->label('Disponible')
-                    ->getStateUsing(fn ($record) => number_format($record->getCantidadDisponible(), 2))
+                    ->getStateUsing(function ($record) {
+                        $disponibleReal = $record->getCantidadDisponible();
+                        $enCarrito = $this->getCantidadEnCarrito($record->id);
+                        return $disponibleReal - $enCarrito;
+                    })
+                    ->formatStateUsing(function ($state, $record) {
+                        $enCarrito = $this->getCantidadEnCarrito($record->id);
+                        if ($enCarrito > 0) {
+                            return number_format($state, 2) . ' (🛒' . number_format($enCarrito, 0) . ')';
+                        }
+                        return number_format($state, 2);
+                    })
                     ->badge()
-                    ->color('success'),
+                    ->color(function ($record) {
+                        $enCarrito = $this->getCantidadEnCarrito($record->id);
+                        return $enCarrito > 0 ? 'warning' : 'success';
+                    }),
 
                 TextColumn::make('precio_venta_sugerido')
                     ->label('Precio (sin ISV)')
@@ -433,16 +461,13 @@ class PuntoVentaRuta extends Page implements HasTable
         $disponible = $carga->getCantidadDisponible();
         
         // Verificar cuánto ya está en el carrito para este producto
-        $cantidadEnCarrito = 0;
+        $cantidadEnCarrito = $this->getCantidadEnCarrito($carga->id);
         $indiceExistente = null;
         
         foreach ($this->carrito as $key => $item) {
-            if ($item['carga_id'] === $carga->id) {
-                $cantidadEnCarrito += $item['cantidad'];
-                // Guardar el índice si tiene el mismo precio base (para acumular)
-                if ($item['precio_base'] == $precioBase) {
-                    $indiceExistente = $key;
-                }
+            if ($item['carga_id'] === $carga->id && $item['precio_base'] == $precioBase) {
+                $indiceExistente = $key;
+                break;
             }
         }
 

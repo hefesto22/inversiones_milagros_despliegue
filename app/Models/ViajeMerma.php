@@ -200,18 +200,31 @@ class ViajeMerma extends Model
 
         static::saved(function ($merma) {
             // Actualizar cantidad_merma en la carga correspondiente
-            $carga = ViajeCarga::where('viaje_id', $merma->viaje_id)
-                ->where('producto_id', $merma->producto_id)
-                ->first();
-
-            if ($carga) {
-                $totalMerma = ViajeMerma::where('viaje_id', $merma->viaje_id)
-                    ->where('producto_id', $merma->producto_id)
-                    ->sum('cantidad');
-
-                $carga->cantidad_merma = $totalMerma;
-                $carga->save();
-            }
+            static::actualizarCargaMerma($merma->viaje_id, $merma->producto_id);
         });
+
+        static::deleted(function ($merma) {
+            // Recalcular cantidad_merma cuando se borra una merma
+            static::actualizarCargaMerma($merma->viaje_id, $merma->producto_id);
+        });
+    }
+
+    /**
+     * Actualizar cantidad_merma en la carga correspondiente
+     */
+    protected static function actualizarCargaMerma(int $viajeId, int $productoId): void
+    {
+        $carga = ViajeCarga::where('viaje_id', $viajeId)
+            ->where('producto_id', $productoId)
+            ->first();
+
+        if ($carga) {
+            $totalMerma = ViajeMerma::where('viaje_id', $viajeId)
+                ->where('producto_id', $productoId)
+                ->sum('cantidad');
+
+            $carga->cantidad_merma = $totalMerma ?? 0;
+            $carga->save();
+        }
     }
 }

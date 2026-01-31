@@ -12,10 +12,15 @@ class ChoferComisionConfig extends Model
 
     protected $table = 'chofer_comision_config';
 
+    // Constantes para tipos de comisión
+    public const TIPO_FIJO = 'fijo';
+    public const TIPO_PORCENTAJE = 'porcentaje';
+
     protected $fillable = [
         'user_id',
         'categoria_id',
         'unidad_id',
+        'tipo_comision',
         'comision_normal',
         'comision_reducida',
         'vigente_desde',
@@ -88,6 +93,22 @@ class ChoferComisionConfig extends Model
     // ============================================
 
     /**
+     * Verificar si es comisión por porcentaje
+     */
+    public function esPorcentaje(): bool
+    {
+        return $this->tipo_comision === self::TIPO_PORCENTAJE;
+    }
+
+    /**
+     * Verificar si es comisión fija
+     */
+    public function esFijo(): bool
+    {
+        return $this->tipo_comision === self::TIPO_FIJO;
+    }
+
+    /**
      * Verificar si está vigente
      */
     public function estaVigente(): bool
@@ -105,6 +126,31 @@ class ChoferComisionConfig extends Model
 
     /**
      * Obtener comisión según precio de venta
+     * 
+     * @param float $precioVenta - Precio al que vendió el chofer
+     * @param float $precioSugerido - Precio sugerido/mínimo
+     * @param float $cantidad - Cantidad vendida (para comisión fija)
+     * @return float
+     */
+    public function calcularComision(float $precioVenta, float $precioSugerido, float $cantidad = 1): float
+    {
+        // Determinar qué tasa usar (normal o reducida)
+        $tasaComision = $precioVenta >= $precioSugerido 
+            ? $this->comision_normal 
+            : $this->comision_reducida;
+
+        if ($this->esPorcentaje()) {
+            // Porcentaje sobre el total vendido
+            $totalVenta = $precioVenta * $cantidad;
+            return round($totalVenta * ($tasaComision / 100), 2);
+        }
+
+        // Fijo: monto por unidad × cantidad
+        return round($tasaComision * $cantidad, 2);
+    }
+
+    /**
+     * Obtener comisión base (sin cantidad) - retrocompatibilidad
      */
     public function getComision(float $precioVenta, float $precioSugerido): float
     {
@@ -127,5 +173,40 @@ class ChoferComisionConfig extends Model
         }
 
         return $desc;
+    }
+
+    /**
+     * Obtener etiqueta del tipo de comisión
+     */
+    public function getTipoComisionLabel(): string
+    {
+        return match($this->tipo_comision) {
+            self::TIPO_FIJO => 'Fijo (L)',
+            self::TIPO_PORCENTAJE => 'Porcentaje (%)',
+            default => 'Fijo (L)',
+        };
+    }
+
+    /**
+     * Formatear valor de comisión para mostrar
+     */
+    public function formatearComision(float $valor): string
+    {
+        if ($this->esPorcentaje()) {
+            return number_format($valor, 2) . '%';
+        }
+
+        return 'L ' . number_format($valor, 2);
+    }
+
+    /**
+     * Opciones para select de tipo comisión
+     */
+    public static function getTiposComision(): array
+    {
+        return [
+            self::TIPO_FIJO => 'Fijo (Lempiras)',
+            self::TIPO_PORCENTAJE => 'Porcentaje (%)',
+        ];
     }
 }

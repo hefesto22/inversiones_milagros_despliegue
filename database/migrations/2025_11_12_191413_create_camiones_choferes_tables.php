@@ -107,40 +107,45 @@ return new class extends Migration
         // =====================================================
         Schema::create('chofer_comision_config', function (Blueprint $table) {
             $table->id();
-
+        
             $table->foreignId('user_id')
                 ->constrained('users')
                 ->cascadeOnDelete()
                 ->comment('Chofer');
-
+        
             // Por categoría + unidad
             $table->foreignId('categoria_id')
                 ->constrained('categorias')
                 ->cascadeOnDelete();
-
+        
             $table->foreignId('unidad_id')
                 ->nullable()
                 ->constrained('unidades')
                 ->nullOnDelete()
                 ->comment('Si NULL, aplica a cualquier presentación de la categoría');
-
+        
+            // Tipo de comisión
+            $table->enum('tipo_comision', ['fijo', 'porcentaje'])
+                ->default('fijo')
+                ->comment('fijo = monto en Lempiras, porcentaje = % sobre precio de venta');
+        
             // Comisiones
             $table->decimal('comision_normal', 12, 2)
                 ->comment('Comisión cuando vende >= precio sugerido');
-
+        
             $table->decimal('comision_reducida', 12, 2)->default(0.50)
                 ->comment('Comisión cuando vende < precio sugerido pero > costo');
-
+        
             // Vigencia
             $table->date('vigente_desde');
             $table->date('vigente_hasta')->nullable();
             $table->boolean('activo')->default(true);
-
+        
             // Auditoría
             $table->foreignId('created_by')->nullable()->constrained('users')->nullOnDelete();
-
+        
             $table->timestamps();
-
+        
             $table->index(['user_id', 'activo']);
             $table->index(['categoria_id', 'unidad_id']);
         });

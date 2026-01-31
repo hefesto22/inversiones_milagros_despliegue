@@ -5,6 +5,7 @@ namespace App\Filament\Resources\UserResource\RelationManagers;
 use App\Models\ChoferComisionConfig;
 use Filament\Forms;
 use Filament\Forms\Form;
+use Filament\Forms\Get;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Tables;
 use Filament\Tables\Table;
@@ -43,25 +44,43 @@ class ComisionesConfigRelationManager extends RelationManager
                             ->required()
                             ->searchable()
                             ->preload()
+                            ->columnSpanFull(),
+
+                        Forms\Components\ToggleButtons::make('tipo_comision')
+                            ->label('Tipo de Comisión')
+                            ->options(ChoferComisionConfig::getTiposComision())
+                            ->icons([
+                                ChoferComisionConfig::TIPO_FIJO => 'heroicon-o-currency-dollar',
+                                ChoferComisionConfig::TIPO_PORCENTAJE => 'heroicon-o-receipt-percent',
+                            ])
+                            ->default(ChoferComisionConfig::TIPO_FIJO)
+                            ->inline()
+                            ->required()
+                            ->live()
                             ->columnSpanFull()
-                            ->helperText('La comisión aplica a todas las unidades de esta categoría. El factor de cada unidad (símbolo) se usa para calcular.'),
+                            ->helperText(fn (Get $get) => match($get('tipo_comision')) {
+                                ChoferComisionConfig::TIPO_PORCENTAJE => 'El porcentaje se calcula sobre el precio de venta.',
+                                default => 'Monto fijo en Lempiras por unidad vendida.',
+                            }),
 
                         Forms\Components\TextInput::make('comision_normal')
                             ->label('Comisión Normal')
                             ->required()
                             ->numeric()
-                            ->prefix('L')
+                            ->prefix(fn (Get $get) => $get('tipo_comision') === ChoferComisionConfig::TIPO_PORCENTAJE ? '%' : 'L')
                             ->step(0.01)
                             ->minValue(0)
+                            ->maxValue(fn (Get $get) => $get('tipo_comision') === ChoferComisionConfig::TIPO_PORCENTAJE ? 100 : null)
                             ->helperText('Cuando vende ≥ precio sugerido'),
 
                         Forms\Components\TextInput::make('comision_reducida')
                             ->label('Comisión Reducida')
                             ->required()
                             ->numeric()
-                            ->prefix('L')
+                            ->prefix(fn (Get $get) => $get('tipo_comision') === ChoferComisionConfig::TIPO_PORCENTAJE ? '%' : 'L')
                             ->step(0.01)
                             ->minValue(0)
+                            ->maxValue(fn (Get $get) => $get('tipo_comision') === ChoferComisionConfig::TIPO_PORCENTAJE ? 100 : null)
                             ->default(0.50)
                             ->helperText('Cuando vende < precio sugerido'),
 
@@ -96,16 +115,32 @@ class ComisionesConfigRelationManager extends RelationManager
                     ->badge()
                     ->color('primary'),
 
+                Tables\Columns\TextColumn::make('tipo_comision')
+                    ->label('Tipo')
+                    ->badge()
+                    ->formatStateUsing(fn (string $state) => match($state) {
+                        ChoferComisionConfig::TIPO_PORCENTAJE => '%',
+                        default => 'L',
+                    })
+                    ->color(fn (string $state) => match($state) {
+                        ChoferComisionConfig::TIPO_PORCENTAJE => 'info',
+                        default => 'gray',
+                    }),
+
                 Tables\Columns\TextColumn::make('comision_normal')
                     ->label('Normal')
-                    ->money('HNL')
+                    ->formatStateUsing(fn ($state, $record) => $record->esPorcentaje() 
+                        ? number_format($state, 2) . '%' 
+                        : 'L ' . number_format($state, 2))
                     ->sortable()
                     ->color('success')
                     ->weight('bold'),
 
                 Tables\Columns\TextColumn::make('comision_reducida')
                     ->label('Reducida')
-                    ->money('HNL')
+                    ->formatStateUsing(fn ($state, $record) => $record->esPorcentaje() 
+                        ? number_format($state, 2) . '%' 
+                        : 'L ' . number_format($state, 2))
                     ->sortable()
                     ->color('warning'),
 
@@ -131,6 +166,10 @@ class ComisionesConfigRelationManager extends RelationManager
                     ->label('Categoría')
                     ->relationship('categoria', 'nombre'),
 
+                Tables\Filters\SelectFilter::make('tipo_comision')
+                    ->label('Tipo')
+                    ->options(ChoferComisionConfig::getTiposComision()),
+
                 Tables\Filters\TernaryFilter::make('activo')
                     ->label('Estado'),
             ])
@@ -139,7 +178,7 @@ class ComisionesConfigRelationManager extends RelationManager
                     ->label('Agregar Comisión')
                     ->mutateFormDataUsing(function (array $data): array {
                         $data['created_by'] = Auth::id();
-                        $data['unidad_id'] = null; // Ya no usamos unidad específica
+                        $data['unidad_id'] = null;
                         return $data;
                     }),
 
@@ -166,7 +205,6 @@ class ComisionesConfigRelationManager extends RelationManager
 
                         $copiadas = 0;
                         foreach ($comisionesOrigen as $comision) {
-                            // Verificar si ya existe para esta categoría
                             $existe = ChoferComisionConfig::where('user_id', $this->getOwnerRecord()->id)
                                 ->where('categoria_id', $comision->categoria_id)
                                 ->exists();
@@ -176,6 +214,7 @@ class ComisionesConfigRelationManager extends RelationManager
                                     'user_id' => $this->getOwnerRecord()->id,
                                     'categoria_id' => $comision->categoria_id,
                                     'unidad_id' => null,
+                                    'tipo_comision' => $comision->tipo_comision,
                                     'comision_normal' => $comision->comision_normal,
                                     'comision_reducida' => $comision->comision_reducida,
                                     'vigente_desde' => now(),
@@ -210,7 +249,7 @@ class ComisionesConfigRelationManager extends RelationManager
             ])
             ->defaultSort('categoria.nombre')
             ->emptyStateHeading('Sin comisiones configuradas')
-            ->emptyStateDescription('Configure las comisiones que ganará este chofer por categoría de producto. El cálculo usará el factor (símbolo) de cada unidad.')
+            ->emptyStateDescription('Configure las comisiones que ganará este chofer por categoría de producto.')
             ->emptyStateIcon('heroicon-o-currency-dollar');
     }
 }

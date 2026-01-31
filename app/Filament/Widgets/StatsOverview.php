@@ -77,10 +77,11 @@ class StatsOverview extends BaseWidget
         $mermasViajesPeriodo = ViajeMerma::whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
             ->sum('subtotal_costo');
 
-        // Mermas de REEMPAQUES (huevos × costo unitario)
+        // Mermas de REEMPAQUES (huevos × costo ORIGINAL, no inflado)
         $mermasReempaquesPeriodo = Reempaque::whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
             ->where('estado', 'completado')
-            ->selectRaw('SUM(merma * costo_unitario_promedio) as costo_merma')
+            ->where('total_huevos_usados', '>', 0)
+            ->selectRaw('SUM(merma * (costo_total / total_huevos_usados)) as costo_merma')
             ->value('costo_merma') ?? 0;
 
         // TOTAL MERMAS
@@ -92,19 +93,26 @@ class StatsOverview extends BaseWidget
 
         $mermasReempaquesAnterior = Reempaque::whereBetween('created_at', [$previousRange['inicio'], $previousRange['fin']])
             ->where('estado', 'completado')
-            ->selectRaw('SUM(merma * costo_unitario_promedio) as costo_merma')
+            ->where('total_huevos_usados', '>', 0)
+            ->selectRaw('SUM(merma * (costo_total / total_huevos_usados)) as costo_merma')
             ->value('costo_merma') ?? 0;
 
         $mermasPeriodoAnterior = $mermasViajesAnterior + $mermasReempaquesAnterior;
 
         $cambioMermas = $this->calculatePercentageChange($mermasPeriodo, $mermasPeriodoAnterior);
 
-        // Contar CANTIDADES de mermas (no registros)
-        // Viajes: suma de cantidad de productos perdidos
-        $cantidadMermasViajes = (float) ViajeMerma::whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
-            ->sum('cantidad');
+        // ============================================
+        // CANTIDADES DE MERMAS EN UNIDADES INDIVIDUALES
+        // ============================================
         
-        // Reempaques: suma de huevos rotos
+        // Viajes: convertir a unidades individuales (huevos)
+        // Multiplicar cantidad × unidades_por_bulto del producto
+        $cantidadMermasViajes = (float) ViajeMerma::whereBetween('viaje_mermas.created_at', [$dateRange['inicio'], $dateRange['fin']])
+            ->join('productos', 'viaje_mermas.producto_id', '=', 'productos.id')
+            ->selectRaw('SUM(viaje_mermas.cantidad * COALESCE(productos.unidades_por_bulto, 1)) as total_unidades')
+            ->value('total_unidades') ?? 0;
+        
+        // Reempaques: ya son huevos individuales
         $cantidadMermasReempaques = (float) Reempaque::whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
             ->where('estado', 'completado')
             ->where('merma', '>', 0)
@@ -217,7 +225,12 @@ class StatsOverview extends BaseWidget
                 ->color($gananciasPeriodo >= 0 ? 'success' : 'danger'),
 
             Stat::make("Mermas ({$periodoLabel})", 'L ' . number_format($mermasPeriodo, 2))
-                ->description($this->getMermasDescription($cantidadMermasViajes, $cantidadMermasReempaques, $cambioMermas))
+                ->description($this->getMermasDescription(
+                    $mermasViajesPeriodo, 
+                    $cantidadMermasViajes, 
+                    $mermasReempaquesPeriodo, 
+                    $cantidadMermasReempaques
+                ))
                 ->descriptionIcon('heroicon-m-exclamation-triangle')
                 ->color($mermasPeriodo > 0 ? 'danger' : 'success')
                 ->chart($this->getMermasChartData()),
@@ -231,19 +244,24 @@ class StatsOverview extends BaseWidget
 
     /**
      * Obtener descripción para el stat de mermas
+     * Muestra: Viajes: L X (Y huevos) | Reempaques: L X (Y huevos)
      */
-    protected function getMermasDescription(float $viajes, float $reempaques, float $cambio): string
-    {
+    protected function getMermasDescription(
+        float $costoViajes, 
+        float $unidadesViajes, 
+        float $costoReempaques, 
+        float $unidadesReempaques
+    ): string {
         $partes = [];
         
-        if ($viajes > 0) {
-            // Viajes pueden tener cartones, medios, etc.
-            $partes[] = number_format($viajes, $viajes == floor($viajes) ? 0 : 2) . " unid. en viajes";
+        if ($costoViajes > 0 || $unidadesViajes > 0) {
+            $unidadesFormateadas = (int) round($unidadesViajes);
+            $partes[] = "Viajes: L " . number_format($costoViajes, 2) . " ({$unidadesFormateadas} huevos)";
         }
         
-        if ($reempaques > 0) {
-            // Reempaques siempre son huevos
-            $partes[] = (int)$reempaques . " huevos en reempaques";
+        if ($costoReempaques > 0 || $unidadesReempaques > 0) {
+            $unidadesFormateadas = (int) round($unidadesReempaques);
+            $partes[] = "Reempaques: L " . number_format($costoReempaques, 2) . " ({$unidadesFormateadas} huevos)";
         }
         
         if (empty($partes)) {
@@ -270,10 +288,11 @@ class StatsOverview extends BaseWidget
             $mermasViajes = ViajeMerma::whereDate('created_at', $fecha)
                 ->sum('subtotal_costo');
             
-            // Mermas de reempaques del día
+            // Mermas de reempaques del día (usando costo ORIGINAL)
             $mermasReempaques = Reempaque::whereDate('created_at', $fecha)
                 ->where('estado', 'completado')
-                ->selectRaw('SUM(merma * costo_unitario_promedio) as costo_merma')
+                ->where('total_huevos_usados', '>', 0)
+                ->selectRaw('SUM(merma * (costo_total / total_huevos_usados)) as costo_merma')
                 ->value('costo_merma') ?? 0;
             
             $mermas[] = (float) ($mermasViajes + $mermasReempaques);

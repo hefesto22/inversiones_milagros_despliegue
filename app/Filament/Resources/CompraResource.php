@@ -521,9 +521,9 @@ class CompraResource extends Resource
                                                         </p>
                                                     </div>
                                                     <div class='text-right'>
-                                                        <p class='text-lg font-bold text-{$colorClass}-600 dark:text-{$colorClass}-400'>
-                                                            " . number_format($cantidadTotal, 0) . " {$unidadNombre}
-                                                        </p>
+                                                    <p class='text-lg font-bold text-{$colorClass}-600 dark:text-{$colorClass}-400'>
+                                                        " . number_format($cantidadTotal, 2) . " {$unidadNombre}
+                                                     </p>
                                                     </div>
                                                 </div>
                                             </div>

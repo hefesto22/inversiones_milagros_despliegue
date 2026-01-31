@@ -29,9 +29,9 @@ class CompraDetalle extends Model
     ];
 
     protected $casts = [
-        'cantidad_facturada' => 'decimal:3',
-        'cantidad_regalo' => 'decimal:3',
-        'cantidad_recibida' => 'decimal:3',
+        'cantidad_facturada' => 'decimal:2',
+        'cantidad_regalo' => 'decimal:2',
+        'cantidad_recibida' => 'decimal:2',
         'precio_unitario' => 'decimal:4',
         'precio_con_isv' => 'decimal:4',    // 🆕
         'costo_sin_isv' => 'decimal:4',     // 🆕

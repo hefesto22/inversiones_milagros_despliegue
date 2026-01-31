@@ -174,6 +174,88 @@ class Lote extends Model
     }
 
     // ============================================
+    // 🆕 METODOS DE MERMA ACUMULADA Y REGALO DISPONIBLE
+    // ============================================
+
+    /**
+     * Obtener la merma acumulada de todos los reempaques que usaron este lote
+     * La merma se distribuye proporcionalmente según los huevos usados de cada lote
+     */
+    public function getMermaAcumulada(): float
+    {
+        // Obtener todos los reempaque_lotes de este lote con reempaques completados
+        $reempaqueLotes = $this->reempaqueLotes()
+            ->whereHas('reempaque', function ($query) {
+                $query->where('estado', 'completado');
+            })
+            ->with('reempaque')
+            ->get();
+
+        $mermaAcumulada = 0;
+
+        foreach ($reempaqueLotes as $reempaqueLote) {
+            $reempaque = $reempaqueLote->reempaque;
+            
+            if (!$reempaque || $reempaque->total_huevos_usados <= 0) {
+                continue;
+            }
+
+            // Calcular la proporción de huevos que este lote aportó al reempaque
+            $proporcion = $reempaqueLote->cantidad_huevos_usados / $reempaque->total_huevos_usados;
+            
+            // La merma proporcional de este lote en ese reempaque
+            $mermaProporcional = $reempaque->merma * $proporcion;
+            
+            $mermaAcumulada += $mermaProporcional;
+        }
+
+        return round($mermaAcumulada, 2);
+    }
+
+    /**
+     * Obtener los huevos de regalo disponibles (total - merma acumulada)
+     * Este es el "buffer" que aún puede absorber mermas sin afectar el costo
+     */
+    public function getHuevosRegaloDisponibles(): float
+    {
+        // Lotes SUELTOS no tienen regalo
+        if ($this->esLoteSueltos()) {
+            return 0;
+        }
+
+        $regaloTotal = ($this->cantidad_cartones_regalo ?? 0) * ($this->huevos_por_carton ?? 30);
+        $mermaAcumulada = $this->getMermaAcumulada();
+        
+        return max(0, $regaloTotal - $mermaAcumulada);
+    }
+
+    /**
+     * Verificar si el lote aún tiene buffer de regalo disponible
+     */
+    public function tieneRegaloDisponible(): bool
+    {
+        return $this->getHuevosRegaloDisponibles() > 0;
+    }
+
+    /**
+     * Obtener el resumen del estado del regalo del lote
+     */
+    public function getResumenRegalo(): array
+    {
+        $regaloTotal = ($this->cantidad_cartones_regalo ?? 0) * ($this->huevos_por_carton ?? 30);
+        $mermaAcumulada = $this->getMermaAcumulada();
+        $regaloDisponible = $this->getHuevosRegaloDisponibles();
+
+        return [
+            'regalo_total_huevos' => $regaloTotal,
+            'merma_acumulada' => $mermaAcumulada,
+            'regalo_disponible' => $regaloDisponible,
+            'regalo_consumido' => min($regaloTotal, $mermaAcumulada),
+            'merma_pagada' => max(0, $mermaAcumulada - $regaloTotal),
+        ];
+    }
+
+    // ============================================
     // SCOPES
     // ============================================
 

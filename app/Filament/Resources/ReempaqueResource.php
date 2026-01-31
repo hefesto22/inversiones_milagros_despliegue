@@ -58,8 +58,11 @@ class ReempaqueResource extends Resource
     /**
      * CALCULO CORRECTO DE COSTO UNITARIO
      *
-     * Regla: Si merma <= huevos de regalo, el costo por carton NO cambia
-     * porque solo perdiste huevos gratis.
+     * REGLA DE NEGOCIO:
+     * - El regalo es un "buffer" exclusivo para mermas
+     * - Si NO hay merma → Costo = precio factura exacto
+     * - Si merma <= regalo → Costo = precio factura (solo perdiste gratis)
+     * - Si merma > regalo → Costo sube (perdiste huevos pagados)
      */
     public static function calcularCostoUnitario(
         float $costoTotalPagado,
@@ -76,18 +79,21 @@ class ReempaqueResource extends Resource
             ];
         }
 
+        // REGLA CLAVE: Si merma <= regalo, el costo NO cambia
+        // porque solo perdiste huevos gratis
         if ($merma <= $huevosRegalo) {
             $costoPorHuevo = $costoTotalPagado / $huevosFacturados;
             $costoPorCarton = $costoTotalPagado / ($huevosFacturados / 30);
 
             return [
-                'costo_por_huevo' => round($costoPorHuevo, 2),
+                'costo_por_huevo' => round($costoPorHuevo, 4),
                 'costo_por_carton' => round($costoPorCarton, 2),
                 'huevos_base' => $huevosFacturados,
                 'tipo_calculo' => 'sin_perdida',
             ];
         }
 
+        // Si merma > regalo, perdiste huevos pagados
         $mermaPagada = $merma - $huevosRegalo;
         $huevosUtilesPagados = $huevosFacturados - $mermaPagada;
 
@@ -104,10 +110,58 @@ class ReempaqueResource extends Resource
         $costoPorCarton = $costoPorHuevo * 30;
 
         return [
-            'costo_por_huevo' => round($costoPorHuevo, 2),
+            'costo_por_huevo' => round($costoPorHuevo, 4),
             'costo_por_carton' => round($costoPorCarton, 2),
             'huevos_base' => $huevosUtilesPagados,
             'tipo_calculo' => 'con_perdida',
+        ];
+    }
+
+    /**
+     * NUEVA FUNCION: Calcular costo parcial de un lote
+     * 
+     * La lógica es simple:
+     * - Siempre usas huevos al precio de factura
+     * - El regalo NO afecta el costo, solo sirve como buffer de merma
+     */
+    public static function calcularCostoParcialLote(Lote $lote, int $huevosAUsar): array
+    {
+        $esLoteSueltos = str_starts_with($lote->numero_lote ?? '', 'SUELTOS-');
+        
+        if ($esLoteSueltos) {
+            // Lote consolidado de sueltos - usar costo promedio almacenado
+            $costoParcial = ($lote->costo_por_huevo ?? 0) * $huevosAUsar;
+            
+            return [
+                'costo_parcial' => round($costoParcial, 2),
+                'huevos_facturados_usados' => $huevosAUsar,
+                'huevos_regalo_disponibles' => 0,
+                'costo_por_huevo' => $lote->costo_por_huevo ?? 0,
+            ];
+        }
+        
+        // Lote normal - calcular basado en precio de factura
+        $costoTotalLote = (float) ($lote->costo_total_lote ?? 0);
+        $cartonesFacturados = (int) ($lote->cantidad_cartones_facturados ?? 0);
+        $cartonesRegalo = (int) ($lote->cantidad_cartones_regalo ?? 0);
+        
+        $huevosFacturadosLote = $cartonesFacturados * 30;
+        $huevosRegaloLote = $cartonesRegalo * 30;
+        
+        // Costo por huevo basado SOLO en facturados
+        $costoPorHuevoFacturado = $huevosFacturadosLote > 0 
+            ? $costoTotalLote / $huevosFacturadosLote 
+            : 0;
+        
+        // El costo parcial es simplemente: huevos × costo por huevo facturado
+        // El regalo NO reduce el costo - solo sirve como buffer de merma
+        $costoParcial = $huevosAUsar * $costoPorHuevoFacturado;
+        
+        return [
+            'costo_parcial' => round($costoParcial, 2),
+            'huevos_facturados_usados' => $huevosAUsar,
+            'huevos_regalo_disponibles' => $huevosRegaloLote,
+            'costo_por_huevo' => $costoPorHuevoFacturado,
         ];
     }
 
@@ -448,46 +502,22 @@ class ReempaqueResource extends Resource
                                         $huevos = (int) $lote->cantidad_huevos_remanente;
                                         $totalHuevos += $huevos;
 
-                                        $esLoteSueltos = str_starts_with($lote->numero_lote ?? '', 'SUELTOS-');
-
-                                        if ($esLoteSueltos) {
-                                            $costoParcial = ($lote->costo_por_huevo ?? 0) * $huevos;
-                                            if (($lote->costo_por_huevo ?? 0) > 0) {
-                                                $huevosFacturadosUsados = $huevos;
-                                                $huevosRegaloUsados = 0;
-                                            } else {
-                                                $huevosFacturadosUsados = 0;
-                                                $huevosRegaloUsados = 0;
-                                            }
-                                        } else {
-                                            $huevosFacturadosLote = (int) (($lote->cantidad_cartones_facturados ?? 0) * 30);
-                                            $huevosRegaloLote = (int) (($lote->cantidad_cartones_regalo ?? 0) * 30);
-                                            $proporcion = $lote->cantidad_huevos_original > 0
-                                                ? $huevos / $lote->cantidad_huevos_original
-                                                : 0;
-
-                                            $huevosFacturadosUsados = round($huevosFacturadosLote * $proporcion, 2);
-                                            $huevosRegaloUsados = round($huevosRegaloLote * $proporcion, 2);
-                                            $costoParcial = round(($lote->costo_total_lote ?? 0) * $proporcion, 2);
-                                        }
+                                        // Usar la nueva función de cálculo
+                                        $calculo = self::calcularCostoParcialLote($lote, $huevos);
 
                                         $lotesSeleccionados[] = [
                                             'lote_id' => $lote->id,
                                             'cantidad_c30' => 0,
                                             'cantidad_c15' => 0,
                                             'cantidad_huevos' => $huevos,
-                                            'huevos_facturados_usados' => $huevosFacturadosUsados,
-                                            'huevos_regalo_usados' => $huevosRegaloUsados,
-                                            'costo_unitario' => $lote->costo_por_huevo,
-                                            'costo_parcial' => round($costoParcial, 2),
-                                            'costo_por_carton_facturado' => $lote->costo_por_carton_facturado ?? 0,
+                                            'huevos_facturados_usados' => $calculo['huevos_facturados_usados'],
+                                            'huevos_regalo_disponibles' => $calculo['huevos_regalo_disponibles'],
+                                            'costo_unitario' => $calculo['costo_por_huevo'],
+                                            'costo_parcial' => $calculo['costo_parcial'],
+                                            'costo_por_carton_facturado' => $lote->costo_por_carton_facturado ?? ($calculo['costo_por_huevo'] * 30),
                                             'disponible_c30' => 0,
                                             'disponible_c15' => 0,
                                             'disponible_sueltos' => $huevos,
-                                            'lote_huevos_original' => $lote->cantidad_huevos_original,
-                                            'lote_costo_total' => $lote->costo_total_lote,
-                                            'lote_cartones_facturados' => $lote->cantidad_cartones_facturados,
-                                            'lote_cartones_regalo' => $lote->cantidad_cartones_regalo,
                                         ];
                                     }
 
@@ -613,20 +643,21 @@ class ReempaqueResource extends Resource
                                         $esLoteSueltos = str_starts_with($lote->numero_lote, 'SUELTOS-');
                                         $prefijo = $esLoteSueltos ? '[CONSOLIDADO] ' : '';
 
+                                        // Mostrar costo por cartón de factura (sin afectar por regalo)
                                         $costoPorCarton = ($lote->costo_por_carton_facturado ?? 0) > 0
                                             ? $lote->costo_por_carton_facturado
                                             : ($lote->costo_por_huevo * 30);
 
-                                            $opciones[$lote->id] = sprintf(
-                                                '%s%s | %s | %s | %s%s | L%s/carton',
-                                                $prefijo,
-                                                $lote->numero_lote,
-                                                $lote->proveedor->nombre ?? 'Sin proveedor',
-                                                $lote->producto->nombre ?? 'Sin producto',
-                                                $disponible,
-                                                $infoCompra,
-                                                number_format($costoPorCarton, 2)
-                                            );
+                                        $opciones[$lote->id] = sprintf(
+                                            '%s%s | %s | %s | %s%s | L%s/carton',
+                                            $prefijo,
+                                            $lote->numero_lote,
+                                            $lote->proveedor->nombre ?? 'Sin proveedor',
+                                            $lote->producto->nombre ?? 'Sin producto',
+                                            $disponible,
+                                            $infoCompra,
+                                            number_format($costoPorCarton, 2)
+                                        );
                                     }
 
                                     return $opciones;
@@ -650,13 +681,23 @@ class ReempaqueResource extends Resource
                                     $set('disponible_c15', $c15);
                                     $set('disponible_sueltos', $sueltos);
                                     $set('huevos_totales_lote', $total);
-                                    $set('costo_unitario', $lote->costo_por_huevo);
-                                    $set('costo_por_carton_facturado', $lote->costo_por_carton_facturado ?? 0);
-
-                                    $set('lote_huevos_original', $lote->cantidad_huevos_original);
-                                    $set('lote_costo_total', $lote->costo_total_lote);
-                                    $set('lote_cartones_facturados', $lote->cantidad_cartones_facturados ?? 0);
-                                    $set('lote_cartones_regalo', $lote->cantidad_cartones_regalo ?? 0);
+                                    
+                                    // Calcular costo por huevo de factura
+                                    $esLoteSueltos = str_starts_with($lote->numero_lote ?? '', 'SUELTOS-');
+                                    if ($esLoteSueltos) {
+                                        $costoPorHuevo = $lote->costo_por_huevo ?? 0;
+                                    } else {
+                                        $huevosFacturados = ($lote->cantidad_cartones_facturados ?? 0) * 30;
+                                        $costoPorHuevo = $huevosFacturados > 0 
+                                            ? ($lote->costo_total_lote ?? 0) / $huevosFacturados 
+                                            : 0;
+                                    }
+                                    
+                                    $set('costo_unitario', $costoPorHuevo);
+                                    $set('costo_por_carton_facturado', $costoPorHuevo * 30);
+                                    
+                                    // Guardar info del regalo disponible en el lote
+                                    $set('huevos_regalo_disponibles', ($lote->cantidad_cartones_regalo ?? 0) * 30);
 
                                     // Iniciar en 0 para que el usuario defina cuánto sacar
                                     $set('cantidad_c30', 0);
@@ -664,7 +705,6 @@ class ReempaqueResource extends Resource
                                     $set('cantidad_huevos', 0);
                                     $set('costo_parcial', 0);
                                     $set('huevos_facturados_usados', 0);
-                                    $set('huevos_regalo_usados', 0);
                                 })
                                 ->disabled(fn(string $operation) => $operation === 'edit')
                                 ->dehydrated()
@@ -706,43 +746,13 @@ class ReempaqueResource extends Resource
                                             $huevos = ($c30 * 30) + ($c15 * 15);
                                             $set('cantidad_huevos', $huevos);
 
-                                            // Usar cantidad_huevos_remanente para proporción correcta
-                                            $loteId = $get('lote_id');
-                                            $lote = $loteId ? Lote::find($loteId) : null;
+                                            // LOGICA CORREGIDA: Costo = huevos × costo por huevo facturado
+                                            // El regalo NO afecta el costo
+                                            $costoPorHuevo = (float)($get('costo_unitario') ?? 0);
+                                            $costoParcial = $huevos * $costoPorHuevo;
                                             
-                                            if ($lote) {
-                                                $loteHuevosOriginal = $lote->cantidad_huevos_original;
-                                                $loteCostoTotal = $lote->costo_total_lote;
-                                                $loteCartonesFacturados = $lote->cantidad_cartones_facturados ?? 0;
-                                                $loteCartonesRegalo = $lote->cantidad_cartones_regalo ?? 0;
-                                                
-                                                $esLoteSueltos = str_starts_with($lote->numero_lote ?? '', 'SUELTOS-');
-                                                
-                                                if ($esLoteSueltos) {
-                                                    $costoParcial = ($lote->costo_por_huevo ?? 0) * $huevos;
-                                                    $set('costo_parcial', round($costoParcial, 2));
-                                                    
-                                                    if (($lote->costo_por_huevo ?? 0) > 0) {
-                                                        $set('huevos_facturados_usados', $huevos);
-                                                        $set('huevos_regalo_usados', 0);
-                                                    } else {
-                                                        $set('huevos_facturados_usados', 0);
-                                                        $set('huevos_regalo_usados', 0);
-                                                    }
-                                                } else {
-                                                    $proporcion = $loteHuevosOriginal > 0
-                                                        ? $huevos / $loteHuevosOriginal
-                                                        : 0;
-                                                    
-                                                    $costoParcial = $loteCostoTotal * $proporcion;
-                                                    $set('costo_parcial', round($costoParcial, 2));
-
-                                                    $huevosFacturadosLote = $loteCartonesFacturados * 30;
-                                                    $huevosRegaloLote = $loteCartonesRegalo * 30;
-                                                    $set('huevos_facturados_usados', round($huevosFacturadosLote * $proporcion, 2));
-                                                    $set('huevos_regalo_usados', round($huevosRegaloLote * $proporcion, 2));
-                                                }
-                                            }
+                                            $set('costo_parcial', round($costoParcial, 2));
+                                            $set('huevos_facturados_usados', $huevos);
                                         })
                                         ->helperText('Solo cartones completos')
                                         ->disabled(fn(string $operation) => $operation === 'edit')
@@ -784,43 +794,12 @@ class ReempaqueResource extends Resource
                                             $huevos = ($c30 * 30) + ($c15 * 15);
                                             $set('cantidad_huevos', $huevos);
 
-                                            // Usar lote directamente para proporción correcta
-                                            $loteId = $get('lote_id');
-                                            $lote = $loteId ? Lote::find($loteId) : null;
+                                            // LOGICA CORREGIDA: Costo = huevos × costo por huevo facturado
+                                            $costoPorHuevo = (float)($get('costo_unitario') ?? 0);
+                                            $costoParcial = $huevos * $costoPorHuevo;
                                             
-                                            if ($lote) {
-                                                $loteHuevosOriginal = $lote->cantidad_huevos_original;
-                                                $loteCostoTotal = $lote->costo_total_lote;
-                                                $loteCartonesFacturados = $lote->cantidad_cartones_facturados ?? 0;
-                                                $loteCartonesRegalo = $lote->cantidad_cartones_regalo ?? 0;
-                                                
-                                                $esLoteSueltos = str_starts_with($lote->numero_lote ?? '', 'SUELTOS-');
-                                                
-                                                if ($esLoteSueltos) {
-                                                    $costoParcial = ($lote->costo_por_huevo ?? 0) * $huevos;
-                                                    $set('costo_parcial', round($costoParcial, 2));
-                                                    
-                                                    if (($lote->costo_por_huevo ?? 0) > 0) {
-                                                        $set('huevos_facturados_usados', $huevos);
-                                                        $set('huevos_regalo_usados', 0);
-                                                    } else {
-                                                        $set('huevos_facturados_usados', 0);
-                                                        $set('huevos_regalo_usados', 0);
-                                                    }
-                                                } else {
-                                                    $proporcion = $loteHuevosOriginal > 0
-                                                        ? $huevos / $loteHuevosOriginal
-                                                        : 0;
-                                                    
-                                                    $costoParcial = $loteCostoTotal * $proporcion;
-                                                    $set('costo_parcial', round($costoParcial, 2));
-
-                                                    $huevosFacturadosLote = $loteCartonesFacturados * 30;
-                                                    $huevosRegaloLote = $loteCartonesRegalo * 30;
-                                                    $set('huevos_facturados_usados', round($huevosFacturadosLote * $proporcion, 2));
-                                                    $set('huevos_regalo_usados', round($huevosRegaloLote * $proporcion, 2));
-                                                }
-                                            }
+                                            $set('costo_parcial', round($costoParcial, 2));
+                                            $set('huevos_facturados_usados', $huevos);
                                         })
                                         ->helperText('Solo medios cartones')
                                         ->disabled(fn(string $operation) => $operation === 'edit')
@@ -881,12 +860,8 @@ class ReempaqueResource extends Resource
                             Forms\Components\Hidden::make('disponible_c15')->dehydrated(false),
                             Forms\Components\Hidden::make('disponible_sueltos')->dehydrated(false),
                             Forms\Components\Hidden::make('huevos_totales_lote')->dehydrated(false),
-                            Forms\Components\Hidden::make('lote_huevos_original')->dehydrated(false),
-                            Forms\Components\Hidden::make('lote_costo_total')->dehydrated(false),
-                            Forms\Components\Hidden::make('lote_cartones_facturados')->dehydrated(false),
-                            Forms\Components\Hidden::make('lote_cartones_regalo')->dehydrated(false),
                             Forms\Components\Hidden::make('huevos_facturados_usados')->dehydrated(),
-                            Forms\Components\Hidden::make('huevos_regalo_usados')->dehydrated(),
+                            Forms\Components\Hidden::make('huevos_regalo_disponibles')->dehydrated(),
                             Forms\Components\Hidden::make('costo_unitario')->dehydrated(),
                         ])
                         ->columns(1)
@@ -954,12 +929,12 @@ class ReempaqueResource extends Resource
                 ->visible(fn(Forms\Get $get) => !empty($get('lotes_seleccionados'))),
 
             // =====================================================
-            // 🆕 DISTRIBUCION DE HUEVOS - DISEÑO UX MEJORADO
+            // DISTRIBUCION DE HUEVOS
             // =====================================================
             Forms\Components\Section::make('Distribucion de Huevos')
                 ->description('')
                 ->schema([
-                    // ========== HEADER INFORMATIVO ==========
+                    // HEADER INFORMATIVO
                     Forms\Components\Placeholder::make('distribucion_info_header')
                         ->label('')
                         ->content(function (Forms\Get $get) {
@@ -976,7 +951,6 @@ class ReempaqueResource extends Resource
                                 ");
                             }
 
-                            // Calcular maximos posibles
                             $maxC30 = floor($disponibles / 30);
                             $maxC15 = floor($disponibles / 15);
 
@@ -1002,7 +976,7 @@ class ReempaqueResource extends Resource
                             ");
                         }),
 
-                    // ========== BARRA DE PROGRESO Y ESTADO ==========
+                    // BARRA DE PROGRESO
                     Forms\Components\Placeholder::make('distribucion_progreso')
                         ->label('')
                         ->content(function (Forms\Get $get) {
@@ -1015,7 +989,6 @@ class ReempaqueResource extends Resource
                                 return '';
                             }
 
-                            // Calcular asignados
                             $distribuciones = $get('distribuciones') ?? [];
                             $asignados = 0;
                             $c30Total = 0;
@@ -1036,10 +1009,8 @@ class ReempaqueResource extends Resource
                             $totalAsignado = $asignados + $sueltos;
                             $pendientes = $disponibles - $totalAsignado;
 
-                            // Calcular porcentaje
                             $porcentaje = $disponibles > 0 ? min(100, ($totalAsignado / $disponibles) * 100) : 0;
 
-                            // Determinar colores segun estado
                             if ($pendientes === 0) {
                                 $bgCard = 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800';
                                 $barColor = 'bg-green-500';
@@ -1061,7 +1032,6 @@ class ReempaqueResource extends Resource
                                 $colorEstado = 'text-red-600 dark:text-red-400';
                             }
 
-                            // Sugerencia inteligente
                             $sugerencia = '';
                             if ($pendientes > 0) {
                                 $sugerenciaC30 = floor($pendientes / 30);
@@ -1089,7 +1059,6 @@ class ReempaqueResource extends Resource
 
                             return new \Illuminate\Support\HtmlString("
                                 <div class='rounded-xl border-2 {$bgCard} p-4 mt-4'>
-                                    <!-- Barra de progreso -->
                                     <div class='mb-4'>
                                         <div class='flex justify-between text-sm mb-1'>
                                             <span class='font-medium text-gray-700 dark:text-gray-300'>Progreso de distribucion</span>
@@ -1100,7 +1069,6 @@ class ReempaqueResource extends Resource
                                         </div>
                                     </div>
 
-                                    <!-- Stats en fila -->
                                     <div class='grid grid-cols-4 gap-3 text-center'>
                                         <div class='bg-white/60 dark:bg-gray-800/60 rounded-lg p-3'>
                                             <p class='text-xs text-gray-500 dark:text-gray-400'>Asignados</p>
@@ -1124,7 +1092,6 @@ class ReempaqueResource extends Resource
                                         </div>
                                     </div>
 
-                                    <!-- Mensaje de estado -->
                                     <div class='mt-3 text-center'>
                                         <p class='font-semibold {$colorEstado}'>{$iconEstado} {$textoEstado}</p>
                                     </div>
@@ -1134,7 +1101,7 @@ class ReempaqueResource extends Resource
                             ");
                         }),
 
-                    // ========== LINEAS DE DISTRIBUCION ==========
+                    // LINEAS DE DISTRIBUCION
                     Forms\Components\Placeholder::make('distribucion_titulo_lineas')
                         ->label('')
                         ->content(new \Illuminate\Support\HtmlString("
@@ -1144,7 +1111,6 @@ class ReempaqueResource extends Resource
                             </div>
                         ")),
 
-                    // Repeater de distribuciones
                     Forms\Components\Repeater::make('distribuciones')
                         ->label('')
                         ->schema([
@@ -1152,7 +1118,6 @@ class ReempaqueResource extends Resource
                                 Forms\Components\Select::make('categoria_id')
                                     ->label('Categoria Destino')
                                     ->options(function () {
-                                        // Solo categorías que tengan unidades tipo cartón (30 o 15 huevos)
                                         return Categoria::where('activo', true)
                                             ->whereHas('unidades', function ($query) {
                                                 $query->where(function ($q) {
@@ -1243,7 +1208,7 @@ class ReempaqueResource extends Resource
                         ->disabled(fn(string $operation) => $operation === 'edit')
                         ->dehydrated(),
 
-                    // ========== HUEVOS SUELTOS ==========
+                    // HUEVOS SUELTOS
                     Forms\Components\Placeholder::make('sueltos_titulo')
                         ->label('')
                         ->content(new \Illuminate\Support\HtmlString("
@@ -1286,7 +1251,7 @@ class ReempaqueResource extends Resource
                         return $total > 0;
                     }),
 
-                    // NOTA DE SUELTOS CON LOGICA DE COSTO
+                    // NOTA DE SUELTOS
                     Forms\Components\Placeholder::make('info_sueltos_nota')
                         ->label('')
                         ->content(function (Forms\Get $get) {
@@ -1298,14 +1263,14 @@ class ReempaqueResource extends Resource
 
                             $huevosRegaloTotales = 0;
                             foreach ($lotes as $loteData) {
-                                $huevosRegaloTotales += (int)($loteData['huevos_regalo_usados'] ?? 0);
+                                $huevosRegaloTotales += (int)($loteData['huevos_regalo_disponibles'] ?? 0);
                             }
 
                             if ($merma <= $huevosRegaloTotales) {
                                 return new \Illuminate\Support\HtmlString("
                                     <div class='rounded-lg bg-green-50 dark:bg-green-900/20 p-3 mt-2'>
                                         <p class='text-sm text-green-900 dark:text-green-100'>
-                                            <strong>💰 Costo de sueltos:</strong> L 0.00 (huevos gratis - la merma no supera los huevos de regalo)
+                                            <strong>💰 Costo de sueltos:</strong> Se guardaran al costo de factura (sin afectar por regalo)
                                         </p>
                                     </div>
                                 ");
@@ -1313,7 +1278,7 @@ class ReempaqueResource extends Resource
                                 return new \Illuminate\Support\HtmlString("
                                     <div class='rounded-lg bg-amber-50 dark:bg-amber-900/20 p-3 mt-2'>
                                         <p class='text-sm text-amber-900 dark:text-amber-100'>
-                                            <strong>💰 Costo de sueltos:</strong> Se guardaran con costo recalculado (huevos pagados)
+                                            <strong>💰 Costo de sueltos:</strong> Se guardaran con costo recalculado (huevos pagados perdidos)
                                         </p>
                                     </div>
                                 ");
@@ -1325,7 +1290,7 @@ class ReempaqueResource extends Resource
                 ->collapsible()
                 ->collapsed(false),
 
-            // RESUMEN DE COSTOS
+            // RESUMEN DE COSTOS - LOGICA CORREGIDA
             Forms\Components\Section::make('Resumen de Costos')
                 ->schema([
                     Forms\Components\Grid::make(3)->schema([
@@ -1335,11 +1300,11 @@ class ReempaqueResource extends Resource
                                 $lotes = $get('lotes_seleccionados') ?? [];
 
                                 $costoTotal = 0;
-                                $huevosFacturadosTotales = 0;
+                                $huevosUsados = 0;
 
                                 foreach ($lotes as $loteData) {
                                     $costoTotal += (float)($loteData['costo_parcial'] ?? 0);
-                                    $huevosFacturadosTotales += (int)($loteData['huevos_facturados_usados'] ?? 0);
+                                    $huevosUsados += (int)($loteData['cantidad_huevos'] ?? 0);
                                 }
 
                                 return new \Illuminate\Support\HtmlString("
@@ -1347,7 +1312,7 @@ class ReempaqueResource extends Resource
                                         L " . number_format($costoTotal, 2) . "
                                     </div>
                                     <div class='text-xs text-gray-500 mt-1'>
-                                        / " . number_format($huevosFacturadosTotales, 0) . " huevos facturados
+                                        / " . number_format($huevosUsados, 0) . " huevos usados
                                     </div>
                                 ");
                             }),
@@ -1359,40 +1324,52 @@ class ReempaqueResource extends Resource
                                 $merma = (int)($get('merma') ?? 0);
 
                                 $costoTotal = 0;
-                                $huevosFacturadosTotales = 0;
+                                $huevosUsados = 0;
                                 $huevosRegaloTotales = 0;
 
                                 foreach ($lotes as $loteData) {
                                     $costoTotal += (float)($loteData['costo_parcial'] ?? 0);
-                                    $huevosFacturadosTotales += (int)($loteData['huevos_facturados_usados'] ?? 0);
-                                    $huevosRegaloTotales += (int)($loteData['huevos_regalo_usados'] ?? 0);
+                                    $huevosUsados += (int)($loteData['cantidad_huevos'] ?? 0);
+                                    $huevosRegaloTotales += (int)($loteData['huevos_regalo_disponibles'] ?? 0);
                                 }
 
-                                if ($huevosFacturadosTotales <= 0) {
+                                if ($huevosUsados <= 0) {
                                     return new \Illuminate\Support\HtmlString("
                                         <div class='text-2xl font-bold text-gray-400'>L 0.00</div>
-                                        <div class='text-xs text-gray-500 mt-1'>Sin huevos facturados</div>
+                                        <div class='text-xs text-gray-500 mt-1'>Sin huevos seleccionados</div>
                                     ");
                                 }
 
-                                $calculo = self::calcularCostoUnitario(
-                                    $costoTotal,
-                                    $huevosFacturadosTotales,
-                                    $huevosRegaloTotales,
-                                    $merma
-                                );
-
-                                $costoPorCarton = $calculo['costo_por_carton'];
-                                $tipoCalculo = $calculo['tipo_calculo'];
-
-                                $mensaje = match($tipoCalculo) {
-                                    'sin_perdida' => 'Sin perdida (merma <= regalo)',
-                                    'con_perdida' => 'Con perdida en facturados',
-                                    'perdida_total' => 'Perdida total',
-                                    default => '',
-                                };
-
-                                $colorClass = $tipoCalculo === 'sin_perdida' ? 'text-green-600' : 'text-amber-600';
+                                // LOGICA CORREGIDA:
+                                // - Si merma = 0 → Costo = precio factura exacto
+                                // - Si merma <= regalo → Costo = precio factura (solo perdiste gratis)
+                                // - Si merma > regalo → Costo sube (perdiste huevos pagados)
+                                
+                                if ($merma <= $huevosRegaloTotales) {
+                                    // Sin pérdida económica - costo = precio factura
+                                    $costoPorHuevo = $costoTotal / $huevosUsados;
+                                    $costoPorCarton = $costoPorHuevo * 30;
+                                    $tipoCalculo = 'sin_perdida';
+                                    $mensaje = 'Precio de factura';
+                                    $colorClass = 'text-green-600';
+                                } else {
+                                    // Pérdida económica - costo sube
+                                    $mermaPagada = $merma - $huevosRegaloTotales;
+                                    $huevosUtiles = $huevosUsados - $mermaPagada;
+                                    
+                                    if ($huevosUtiles <= 0) {
+                                        return new \Illuminate\Support\HtmlString("
+                                            <div class='text-2xl font-bold text-red-600'>ERROR</div>
+                                            <div class='text-xs text-red-500 mt-1'>Pérdida total</div>
+                                        ");
+                                    }
+                                    
+                                    $costoPorHuevo = $costoTotal / $huevosUtiles;
+                                    $costoPorCarton = $costoPorHuevo * 30;
+                                    $tipoCalculo = 'con_perdida';
+                                    $mensaje = 'Ajustado por pérdida';
+                                    $colorClass = 'text-amber-600';
+                                }
 
                                 return new \Illuminate\Support\HtmlString("
                                     <div class='text-2xl font-bold {$colorClass}'>
@@ -1410,10 +1387,24 @@ class ReempaqueResource extends Resource
 
                                 $huevosRegaloTotales = 0;
                                 foreach ($lotes as $loteData) {
-                                    $huevosRegaloTotales += (int)($loteData['huevos_regalo_usados'] ?? 0);
+                                    $huevosRegaloTotales += (int)($loteData['huevos_regalo_disponibles'] ?? 0);
                                 }
 
-                                if ($merma <= $huevosRegaloTotales) {
+                                if ($merma == 0) {
+                                    return new \Illuminate\Support\HtmlString("
+                                        <div class='rounded-lg bg-green-50 dark:bg-green-900/20 p-3'>
+                                            <p class='text-sm font-bold text-green-700 dark:text-green-300'>
+                                                Sin merma
+                                            </p>
+                                            <p class='text-xs text-green-600 dark:text-green-400 mt-1'>
+                                                Costo = precio factura exacto<br>
+                                                Regalo disponible: {$huevosRegaloTotales} huevos<br>
+                                                <em>(buffer intacto para futuras mermas)</em>
+                                            </p>
+                                        </div>
+                                    ");
+                                } elseif ($merma <= $huevosRegaloTotales) {
+                                    $regaloRestante = $huevosRegaloTotales - $merma;
                                     return new \Illuminate\Support\HtmlString("
                                         <div class='rounded-lg bg-green-50 dark:bg-green-900/20 p-3'>
                                             <p class='text-sm font-bold text-green-700 dark:text-green-300'>
@@ -1421,7 +1412,7 @@ class ReempaqueResource extends Resource
                                             </p>
                                             <p class='text-xs text-green-600 dark:text-green-400 mt-1'>
                                                 Merma: {$merma} huevos<br>
-                                                Regalo: {$huevosRegaloTotales} huevos<br>
+                                                Regalo usado: {$merma} huevos<br>
                                                 Solo perdiste huevos gratis
                                             </p>
                                         </div>
@@ -1435,7 +1426,7 @@ class ReempaqueResource extends Resource
                                             </p>
                                             <p class='text-xs text-red-600 dark:text-red-400 mt-1'>
                                                 Merma total: {$merma} huevos<br>
-                                                Huevos regalo: {$huevosRegaloTotales} huevos<br>
+                                                Regalo usado: {$huevosRegaloTotales} huevos<br>
                                                 <strong>Huevos PAGADOS perdidos: {$perdidaPagada}</strong>
                                             </p>
                                         </div>

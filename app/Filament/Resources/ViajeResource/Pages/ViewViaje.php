@@ -10,6 +10,7 @@ use Filament\Infolists\Infolist;
 use Filament\Infolists\Components\Section;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Infolists\Components\Grid;
+use Filament\Infolists\Components\Fieldset;
 use Filament\Support\Enums\FontWeight;
 
 class ViewViaje extends ViewRecord
@@ -26,29 +27,12 @@ class ViewViaje extends ViewRecord
         return $infolist
             ->schema([
                 // ==========================================
-                // ESTADÍSTICAS DEL VIAJE
-                // ==========================================
-                Section::make('Resumen del Viaje')
-                    ->icon('heroicon-o-chart-bar')
-                    ->schema([
-                        Grid::make(5)
-                            ->schema([
-                                $this->statEntry('total_cargado_costo', 'Cargado', 'heroicon-o-archive-box-arrow-down', 'primary'),
-                                $this->statEntry('total_vendido', 'Vendido', 'heroicon-o-banknotes', 'success'),
-                                $this->statEntry('total_merma_costo', 'Mermas', 'heroicon-o-exclamation-triangle', 'danger'),
-                                $this->statEntryCustom('gastos_viaje', 'Gastos', 'heroicon-o-credit-card', 'warning'),
-                                $this->statEntry('neto_chofer', 'Neto Chofer', 'heroicon-o-user', 'info'),
-                            ]),
-                    ])
-                    ->collapsible(),
-
-                // ==========================================
-                // INFORMACIÓN DEL VIAJE
+                // INFORMACIÓN DEL VIAJE (Colapsado por defecto)
                 // ==========================================
                 Section::make('Información del Viaje')
                     ->icon('heroicon-o-truck')
                     ->schema([
-                        Grid::make(3)
+                        Grid::make(4)
                             ->schema([
                                 TextEntry::make('numero_viaje')
                                     ->label('No. Viaje')
@@ -86,155 +70,489 @@ class ViewViaje extends ViewRecord
                                     ->label('Camión')
                                     ->badge()
                                     ->color('info'),
-                            ]),
 
-                        Grid::make(3)
-                            ->schema([
                                 TextEntry::make('chofer.name')
                                     ->label('Chofer')
                                     ->icon('heroicon-o-user'),
+                            ]),
 
+                        Grid::make(4)
+                            ->schema([
                                 TextEntry::make('bodegaOrigen.nombre')
                                     ->label('Bodega Origen')
                                     ->icon('heroicon-o-building-storefront'),
 
                                 TextEntry::make('fecha_salida')
-                                    ->label('Fecha Salida')
+                                    ->label('Salida')
                                     ->dateTime('d/m/Y H:i')
                                     ->icon('heroicon-o-calendar')
                                     ->placeholder('Sin iniciar'),
-                            ]),
 
-                        Grid::make(3)
-                            ->schema([
                                 TextEntry::make('fecha_regreso')
-                                    ->label('Fecha Regreso')
+                                    ->label('Regreso')
                                     ->dateTime('d/m/Y H:i')
                                     ->icon('heroicon-o-calendar')
-                                    ->placeholder('En curso')
-                                    ->visible(fn($record) => $record->fecha_regreso !== null),
+                                    ->placeholder('En curso'),
 
-                                TextEntry::make('km_salida')
-                                    ->label('Km Salida')
-                                    ->suffix(' km')
-                                    ->placeholder('-')
-                                    ->visible(fn($record) => $record->km_salida !== null),
-
-                                TextEntry::make('km_regreso')
-                                    ->label('Km Regreso')
-                                    ->suffix(' km')
-                                    ->placeholder('-')
-                                    ->visible(fn($record) => $record->km_regreso !== null),
+                                TextEntry::make('km_recorridos')
+                                    ->label('Km Recorridos')
+                                    ->state(fn($record) => $record->getKilometrosRecorridos() 
+                                        ? number_format($record->getKilometrosRecorridos()) . ' km'
+                                        : '-'),
                             ]),
+                    ])
+                    ->collapsible()
+                    ->collapsed(),
 
-                        TextEntry::make('observaciones')
-                            ->label('Observaciones')
-                            ->placeholder('Sin observaciones')
-                            ->columnSpanFull()
-                            ->visible(fn($record) => !empty($record->observaciones)),
+                // ==========================================
+                // 📦 CARGA INICIAL
+                // ==========================================
+                Section::make('📦 Carga Inicial')
+                    ->description('Producto que salió en el camión')
+                    ->schema([
+                        Grid::make(3)
+                            ->schema([
+                                TextEntry::make('total_cargado_costo')
+                                    ->label('Costo de la Carga')
+                                    ->money('HNL')
+                                    ->size(TextEntry\TextEntrySize::Large)
+                                    ->weight(FontWeight::Bold)
+                                    ->color('gray')
+                                    ->helperText('Lo que costó la mercadería'),
+
+                                TextEntry::make('total_cargado_venta')
+                                    ->label('Venta Esperada')
+                                    ->money('HNL')
+                                    ->size(TextEntry\TextEntrySize::Large)
+                                    ->weight(FontWeight::Bold)
+                                    ->color('info')
+                                    ->helperText('Si todo se vendiera al precio sugerido'),
+
+                                TextEntry::make('ganancia_esperada')
+                                    ->label('Ganancia Esperada')
+                                    ->state(fn($record) => 'L ' . number_format(
+                                        ($record->total_cargado_venta ?? 0) - ($record->total_cargado_costo ?? 0), 
+                                        2
+                                    ))
+                                    ->size(TextEntry\TextEntrySize::Large)
+                                    ->weight(FontWeight::Bold)
+                                    ->color('success')
+                                    ->helperText('Venta Esperada - Costo'),
+                            ]),
                     ])
                     ->collapsible(),
 
                 // ==========================================
-                // EFECTIVO (solo si aplica)
+                // 💰 RESULTADO DE VENTAS
                 // ==========================================
-                Section::make('Control de Efectivo')
-                    ->icon('heroicon-o-currency-dollar')
+                Section::make('💰 Resultado de Ventas')
+                    ->description('Lo que realmente se vendió')
                     ->schema([
                         Grid::make(4)
                             ->schema([
-                                TextEntry::make('efectivo_inicial')
-                                    ->label('Efectivo Inicial')
-                                    ->money('HNL')
-                                    ->placeholder('L 0.00'),
+                                TextEntry::make('venta_realizada')
+                                    ->label('Total Vendido')
+                                    ->state(fn($record) => 'L ' . number_format($this->calcularVentaRealizada($record), 2))
+                                    ->size(TextEntry\TextEntrySize::Large)
+                                    ->weight(FontWeight::Bold)
+                                    ->color('success')
+                                    ->helperText('Contado + Crédito'),
 
-                                TextEntry::make('efectivo_esperado')
-                                    ->label('Efectivo Esperado')
+                                TextEntry::make('total_devuelto_costo')
+                                    ->label('No Vendido (Devuelto)')
                                     ->money('HNL')
-                                    ->placeholder('L 0.00'),
+                                    ->color('warning')
+                                    ->helperText('Producto que regresó'),
+
+                                TextEntry::make('descuentos_dados')
+                                    ->label('Descuentos Otorgados')
+                                    ->state(fn($record) => 'L ' . number_format($this->calcularDescuentosOtorgados($record), 2))
+                                    ->color('danger')
+                                    ->helperText('Vendió más barato del precio sugerido'),
+
+                                TextEntry::make('total_merma_costo')
+                                    ->label('Mermas')
+                                    ->money('HNL')
+                                    ->color('danger')
+                                    ->helperText('Producto dañado/perdido'),
+                            ]),
+
+                        // Desglose: Contado vs Crédito
+                        Fieldset::make('Desglose de Ventas')
+                            ->schema([
+                                Grid::make(4)
+                                    ->schema([
+                                        TextEntry::make('ventas_contado')
+                                            ->label('💵 Ventas de Contado')
+                                            ->state(fn($record) => 'L ' . number_format($this->calcularVentasContado($record), 2))
+                                            ->weight(FontWeight::Bold)
+                                            ->color('success')
+                                            ->helperText('Efectivo a entregar'),
+
+                                        TextEntry::make('ventas_credito')
+                                            ->label('📋 Ventas a Crédito')
+                                            ->state(fn($record) => 'L ' . number_format($this->calcularVentasCredito($record), 2))
+                                            ->weight(FontWeight::Bold)
+                                            ->color('info')
+                                            ->helperText('Pendiente de cobro'),
+
+                                        TextEntry::make('efectividad_precio')
+                                            ->label('Efectividad de Precio')
+                                            ->state(fn($record) => $this->calcularEfectividadPrecio($record))
+                                            ->helperText('100% = vendió al precio sugerido'),
+
+                                        TextEntry::make('porcentaje_vendido')
+                                            ->label('% de Carga Vendida')
+                                            ->state(fn($record) => $this->calcularPorcentajeVendido($record))
+                                            ->helperText('Del total cargado'),
+                                    ]),
+                            ]),
+                    ])
+                    ->collapsible(),
+
+                // ==========================================
+                // 💵 ENTREGA DE EFECTIVO
+                // ==========================================
+                Section::make('💵 Entrega de Efectivo')
+                    ->description('Dinero que debe entregar el chofer')
+                    ->schema([
+                        Grid::make(4)
+                            ->schema([
+                                TextEntry::make('efectivo_debe_entregar')
+                                    ->label('Debe Entregar')
+                                    ->state(fn($record) => 'L ' . number_format($this->calcularVentasContado($record), 2))
+                                    ->size(TextEntry\TextEntrySize::Large)
+                                    ->weight(FontWeight::Bold)
+                                    ->color('info')
+                                    ->helperText('Total de ventas de contado'),
 
                                 TextEntry::make('efectivo_entregado')
-                                    ->label('Efectivo Entregado')
+                                    ->label('Entregó')
                                     ->money('HNL')
-                                    ->placeholder('L 0.00'),
+                                    ->size(TextEntry\TextEntrySize::Large)
+                                    ->weight(FontWeight::Bold)
+                                    ->helperText('Lo que entregó el chofer'),
 
                                 TextEntry::make('diferencia_efectivo')
                                     ->label('Diferencia')
                                     ->money('HNL')
-                                    ->color(fn($state) => $state < 0 ? 'danger' : ($state > 0 ? 'warning' : 'success'))
-                                    ->placeholder('L 0.00'),
+                                    ->size(TextEntry\TextEntrySize::Large)
+                                    ->weight(FontWeight::Bold)
+                                    ->color(fn($state) => match(true) {
+                                        $state > 0 => 'success',
+                                        $state < 0 => 'danger',
+                                        default => 'success',
+                                    })
+                                    ->helperText(fn($record) => match(true) {
+                                        ($record->diferencia_efectivo ?? 0) > 0 => 'Sobrante',
+                                        ($record->diferencia_efectivo ?? 0) < 0 => 'Faltante',
+                                        default => 'Cuadrado',
+                                    }),
+
+                                TextEntry::make('estado_efectivo')
+                                    ->label('Estado')
+                                    ->state(fn($record) => $this->getEstadoEfectivo($record))
+                                    ->size(TextEntry\TextEntrySize::Large)
+                                    ->color(fn($record) => $this->getColorEstadoEfectivo($record)),
                             ]),
                     ])
                     ->collapsible()
-                    ->collapsed()
                     ->visible(fn($record) => in_array($record->estado, [
                         Viaje::ESTADO_LIQUIDANDO,
                         Viaje::ESTADO_CERRADO,
                     ])),
 
                 // ==========================================
-                // COMISIONES (solo si cerrado)
+                // 🧮 RENTABILIDAD DEL VIAJE
                 // ==========================================
-                Section::make('Liquidación del Chofer')
-                    ->icon('heroicon-o-calculator')
+                Section::make('🧮 Rentabilidad del Viaje')
+                    ->description('Análisis de ganancias')
+                    ->schema([
+                        Grid::make(4)
+                            ->schema([
+                                TextEntry::make('margen_bruto')
+                                    ->label('Margen Bruto')
+                                    ->state(fn($record) => 'L ' . number_format($this->calcularMargenBruto($record), 2))
+                                    ->size(TextEntry\TextEntrySize::Large)
+                                    ->weight(FontWeight::Bold)
+                                    ->color(fn($record) => $this->calcularMargenBruto($record) >= 0 ? 'success' : 'danger')
+                                    ->helperText('Venta - Costo de lo vendido'),
+
+                                TextEntry::make('gastos_operativos')
+                                    ->label('(-) Gastos y Mermas')
+                                    ->state(fn($record) => 'L ' . number_format(
+                                        $this->calcularGastosViaje($record) + ($record->total_merma_costo ?? 0),
+                                        2
+                                    ))
+                                    ->color('warning')
+                                    ->helperText('Gastos aprobados + Mermas'),
+
+                                TextEntry::make('comision_viaje')
+                                    ->label('(-) Comisión Chofer')
+                                    ->money('HNL', true, 'comision_ganada')
+                                    ->state(fn($record) => $record->comision_ganada ?? 0)
+                                    ->formatStateUsing(fn($state) => 'L ' . number_format($state, 2))
+                                    ->color('warning')
+                                    ->helperText('Pago por comisiones'),
+
+                                TextEntry::make('utilidad_neta')
+                                    ->label('= Utilidad Neta')
+                                    ->state(fn($record) => 'L ' . number_format($this->calcularUtilidadNeta($record), 2))
+                                    ->size(TextEntry\TextEntrySize::Large)
+                                    ->weight(FontWeight::Bold)
+                                    ->color(fn($record) => $this->calcularUtilidadNeta($record) >= 0 ? 'success' : 'danger')
+                                    ->helperText('Ganancia final del viaje'),
+                            ]),
+                    ])
+                    ->collapsible(),
+
+                // ==========================================
+                // 📊 GASTOS DEL VIAJE (Detalle colapsado)
+                // ==========================================
+                Section::make('📊 Detalle de Gastos')
+                    ->description('Gastos operativos del viaje')
                     ->schema([
                         Grid::make(3)
                             ->schema([
-                                TextEntry::make('comision_ganada')
-                                    ->label('Comisión Ganada')
-                                    ->money('HNL')
-                                    ->color('success')
-                                    ->weight(FontWeight::Bold),
-
-                                TextEntry::make('cobros_devoluciones')
-                                    ->label('Cobros/Descuentos')
-                                    ->money('HNL')
-                                    ->color('danger'),
-
-                                TextEntry::make('neto_chofer')
-                                    ->label('Neto a Pagar')
-                                    ->money('HNL')
-                                    ->color('info')
+                                TextEntry::make('gastos_aprobados')
+                                    ->label('Gastos Aprobados')
+                                    ->state(fn($record) => 'L ' . number_format($this->calcularGastosViaje($record), 2))
+                                    ->color('warning')
                                     ->weight(FontWeight::Bold)
-                                    ->size(TextEntry\TextEntrySize::Large),
+                                    ->helperText('Combustible, viáticos, etc.'),
+
+                                TextEntry::make('total_merma_costo')
+                                    ->label('Mermas')
+                                    ->money('HNL')
+                                    ->color('danger')
+                                    ->helperText('Producto perdido/dañado'),
+
+                                TextEntry::make('total_costos')
+                                    ->label('Total Costos')
+                                    ->state(fn($record) => 'L ' . number_format(
+                                        $this->calcularGastosViaje($record) + ($record->total_merma_costo ?? 0),
+                                        2
+                                    ))
+                                    ->color('danger')
+                                    ->weight(FontWeight::Bold),
                             ]),
                     ])
                     ->collapsible()
-                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_CERRADO),
+                    ->collapsed(),
+
+                // ==========================================
+                // OBSERVACIONES
+                // ==========================================
+                Section::make('Observaciones')
+                    ->schema([
+                        TextEntry::make('observaciones')
+                            ->label('')
+                            ->placeholder('Sin observaciones')
+                            ->columnSpanFull(),
+                    ])
+                    ->collapsible()
+                    ->collapsed()
+                    ->visible(fn($record) => !empty($record->observaciones)),
             ]);
     }
 
+    // ============================================================
+    // MÉTODOS DE CÁLCULO
+    // ============================================================
+
     /**
-     * Helper para crear un stat entry con formato de moneda
+     * Calcular venta realizada total (contado + crédito)
      */
-    protected function statEntry(string $field, string $label, string $icon, string $color): TextEntry
+    protected function calcularVentaRealizada(Viaje $viaje): float
     {
-        return TextEntry::make($field)
-            ->label($label)
-            ->money('HNL')
-            ->icon($icon)
-            ->color($color)
-            ->weight(FontWeight::Bold)
-            ->placeholder('L 0.00');
+        return (float) $viaje->ventasRuta()
+            ->whereIn('estado', ['confirmada', 'completada'])
+            ->sum('total');
     }
 
     /**
-     * Helper para crear un stat entry con valor calculado (gastos del viaje)
+     * Calcular ventas de contado (efectivo a entregar)
      */
-    protected function statEntryCustom(string $name, string $label, string $icon, string $color): TextEntry
+    protected function calcularVentasContado(Viaje $viaje): float
     {
-        return TextEntry::make($name)
-            ->label($label)
-            ->icon($icon)
-            ->color($color)
-            ->weight(FontWeight::Bold)
-            ->state(function ($record) {
-                // Calcular total de gastos del viaje
-                $totalGastos = CamionGasto::where('viaje_id', $record->id)
-                    ->where('estado', 'aprobado')
-                    ->sum('monto');
+        return (float) $viaje->ventasRuta()
+            ->whereIn('estado', ['confirmada', 'completada'])
+            ->where('tipo_pago', '!=', 'credito')
+            ->sum('total');
+    }
+
+    /**
+     * Calcular ventas a crédito
+     */
+    protected function calcularVentasCredito(Viaje $viaje): float
+    {
+        return (float) $viaje->ventasRuta()
+            ->whereIn('estado', ['confirmada', 'completada'])
+            ->where('tipo_pago', 'credito')
+            ->sum('total');
+    }
+
+    /**
+     * Calcular descuentos otorgados
+     */
+    protected function calcularDescuentosOtorgados(Viaje $viaje): float
+    {
+        $descuentoTotal = 0;
+
+        $ventas = $viaje->ventasRuta()
+            ->whereIn('estado', ['confirmada', 'completada'])
+            ->with(['detalles.viajeCarga'])
+            ->get();
+
+        foreach ($ventas as $venta) {
+            foreach ($venta->detalles as $detalle) {
+                $precioSugerido = $detalle->viajeCarga?->precio_venta_sugerido ?? $detalle->precio_base;
+                $precioVendido = $detalle->precio_base;
                 
-                return 'L ' . number_format($totalGastos, 2);
-            });
+                if ($precioVendido < $precioSugerido) {
+                    $descuento = ($precioSugerido - $precioVendido) * $detalle->cantidad;
+                    $descuentoTotal += $descuento;
+                }
+            }
+        }
+
+        return $descuentoTotal;
+    }
+
+    /**
+     * Calcular total de gastos del viaje (aprobados)
+     */
+    protected function calcularGastosViaje(Viaje $viaje): float
+    {
+        return (float) CamionGasto::where('viaje_id', $viaje->id)
+            ->where('estado', 'aprobado')
+            ->sum('monto');
+    }
+
+    /**
+     * Calcular margen bruto (Venta Realizada - Costo de lo vendido)
+     */
+    protected function calcularMargenBruto(Viaje $viaje): float
+    {
+        $ventaRealizada = $this->calcularVentaRealizada($viaje);
+        
+        $costoVendido = 0;
+        $ventas = $viaje->ventasRuta()
+            ->whereIn('estado', ['confirmada', 'completada'])
+            ->with('detalles')
+            ->get();
+
+        foreach ($ventas as $venta) {
+            foreach ($venta->detalles as $detalle) {
+                $costoVendido += $detalle->costo_unitario * $detalle->cantidad;
+            }
+        }
+
+        return $ventaRealizada - $costoVendido;
+    }
+
+    /**
+     * Calcular utilidad neta
+     */
+    protected function calcularUtilidadNeta(Viaje $viaje): float
+    {
+        $margenBruto = $this->calcularMargenBruto($viaje);
+        $gastos = $this->calcularGastosViaje($viaje);
+        $comisiones = (float) ($viaje->comision_ganada ?? 0);
+        $mermas = (float) ($viaje->total_merma_costo ?? 0);
+
+        return $margenBruto - $gastos - $comisiones - $mermas;
+    }
+
+    /**
+     * Calcular porcentaje vendido
+     */
+    protected function calcularPorcentajeVendido(Viaje $viaje): string
+    {
+        $totalCargado = (float) $viaje->cargas()->sum('cantidad');
+        $totalVendido = (float) $viaje->cargas()->sum('cantidad_vendida');
+
+        if ($totalCargado <= 0) {
+            return '0%';
+        }
+
+        $porcentaje = ($totalVendido / $totalCargado) * 100;
+        return number_format($porcentaje, 1) . '%';
+    }
+
+    /**
+     * Calcular efectividad del precio
+     */
+    protected function calcularEfectividadPrecio(Viaje $viaje): string
+    {
+        $totalEsperado = 0;
+        $totalRealizado = 0;
+
+        $ventas = $viaje->ventasRuta()
+            ->whereIn('estado', ['confirmada', 'completada'])
+            ->with(['detalles.viajeCarga'])
+            ->get();
+
+        foreach ($ventas as $venta) {
+            foreach ($venta->detalles as $detalle) {
+                $precioSugerido = $detalle->viajeCarga?->precio_venta_sugerido ?? $detalle->precio_base;
+                
+                $totalEsperado += $precioSugerido * $detalle->cantidad;
+                $totalRealizado += $detalle->precio_base * $detalle->cantidad;
+            }
+        }
+
+        if ($totalEsperado <= 0) {
+            return 'N/A';
+        }
+
+        $efectividad = ($totalRealizado / $totalEsperado) * 100;
+        return number_format($efectividad, 1) . '%';
+    }
+
+    /**
+     * Obtener estado del efectivo
+     */
+    protected function getEstadoEfectivo(Viaje $viaje): string
+    {
+        $debeEntregar = $this->calcularVentasContado($viaje);
+        $entregado = (float) ($viaje->efectivo_entregado ?? 0);
+        
+        if ($entregado == 0 && $debeEntregar > 0) {
+            return '⏳ Pendiente';
+        }
+        
+        $diferencia = $entregado - $debeEntregar;
+        
+        if (abs($diferencia) < 0.01) {
+            return '✅ Cuadrado';
+        } elseif ($diferencia > 0) {
+            return '💰 Sobrante';
+        } else {
+            return '⚠️ Faltante';
+        }
+    }
+
+    /**
+     * Obtener color del estado del efectivo
+     */
+    protected function getColorEstadoEfectivo(Viaje $viaje): string
+    {
+        $debeEntregar = $this->calcularVentasContado($viaje);
+        $entregado = (float) ($viaje->efectivo_entregado ?? 0);
+        
+        if ($entregado == 0 && $debeEntregar > 0) {
+            return 'warning';
+        }
+        
+        $diferencia = $entregado - $debeEntregar;
+        
+        if (abs($diferencia) < 0.01) {
+            return 'success';
+        } elseif ($diferencia > 0) {
+            return 'success';
+        } else {
+            return 'danger';
+        }
     }
 }

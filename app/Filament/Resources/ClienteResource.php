@@ -60,7 +60,6 @@ class ClienteResource extends Resource
 
                                 Forms\Components\TextInput::make('rtn')
                                     ->label('RTN')
-                                    ->unique(ignoreRecord: true)
                                     ->maxLength(30)
                                     ->placeholder('0000-0000-000000'),
 

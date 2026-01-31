@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\DB;
 
 class Cliente extends Model
 {
@@ -239,8 +240,8 @@ class Cliente extends Model
                 'ultimo_precio_con_isv' => $precioConIsv,
                 'cantidad_ultima_venta' => $cantidad,
                 'fecha_ultima_venta' => now(),
-                'total_ventas' => \DB::raw('total_ventas + 1'),
-                'cantidad_total_vendida' => \DB::raw("cantidad_total_vendida + {$cantidad}"),
+                'total_ventas' => DB::raw('total_ventas + 1'),
+                'cantidad_total_vendida' => DB::raw("cantidad_total_vendida + {$cantidad}"),
             ]);
         } else {
             $this->productos()->attach($productoId, [

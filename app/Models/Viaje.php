@@ -15,7 +15,7 @@ use App\Models\Traits\CalculaComisionesViaje;
 class Viaje extends Model
 {
     use HasFactory;
-    use CalculaComisionesViaje;
+
 
     protected $table = 'viajes';
 
@@ -357,7 +357,8 @@ class Viaje extends Model
         int $unidadesPorBulto
     ): void {
         $bodegaId = $this->bodega_origen_id;
-        $numeroLote = "SUELTOS-B{$bodegaId}";
+        $numeroLote = "SUELTOS-P{$productoId}-B{$bodegaId}";
+
 
         // Calcular costo por huevo individual
         $costoPorHuevo = $costoUnitarioBulto / $unidadesPorBulto;
@@ -403,7 +404,7 @@ class Viaje extends Model
                 'numero_lote' => $numeroLote,
                 'producto_id' => $productoId,
                 'bodega_id' => $bodegaId,
-                'proveedor_id' => 10, // Proveedor interno/sistema para lotes SUELTOS
+                'proveedor_id' => 1, // Proveedor interno/sistema para lotes SUELTOS
                 'compra_id' => null,
                 'compra_detalle_id' => null,
                 'reempaque_origen_id' => null,
@@ -562,11 +563,11 @@ class Viaje extends Model
             ? ViajeComisionDetalle::TIPO_NORMAL
             : ViajeComisionDetalle::TIPO_REDUCIDA;
     
-        $comisionUnitaria = $tipoComision === ViajeComisionDetalle::TIPO_NORMAL
+        $tasaComision = $tipoComision === ViajeComisionDetalle::TIPO_NORMAL
             ? $comisionConfig['normal']
             : ($comisionConfig['reducida'] ?? $comisionConfig['normal']);
     
-        // 🎯 OBTENER FACTOR DE LA UNIDAD (simbolo contiene el factor: 0.5, 1, etc.)
+        // 🎯 OBTENER FACTOR DE LA UNIDAD
         $unidad = $carga?->unidad;
         $factorUnidad = 1;
         
@@ -574,9 +575,20 @@ class Viaje extends Model
             $factorUnidad = (float) $unidad->simbolo;
         }
     
-        // 🎯 CALCULAR COMISIÓN APLICANDO EL FACTOR DE UNIDAD
-        // Ejemplo: 2 medios cartones × L1.50 × 0.5 = L1.50 (equivale a 1 cartón)
-        $comisionTotal = $detalle->cantidad * $comisionUnitaria * $factorUnidad;
+        // 🎯 CALCULAR COMISIÓN SEGÚN TIPO (FIJO O PORCENTAJE)
+        $esPorcentaje = ($comisionConfig['tipo_comision'] ?? ChoferComisionConfig::TIPO_FIJO) === ChoferComisionConfig::TIPO_PORCENTAJE;
+    
+        if ($esPorcentaje) {
+            // PORCENTAJE: comisión = precio_venta × cantidad × (tasa / 100)
+            // El factor de unidad NO aplica en porcentaje (ya está implícito en el precio)
+            $comisionUnitaria = $precioVendido * ($tasaComision / 100);
+            $comisionTotal = $detalle->cantidad * $comisionUnitaria;
+        } else {
+            // FIJO: comisión = tasa × cantidad × factor de unidad
+            // Ejemplo: 2 medios cartones × L1.50 × 0.5 = L1.50
+            $comisionUnitaria = $tasaComision * $factorUnidad;
+            $comisionTotal = $detalle->cantidad * $comisionUnitaria;
+        }
     
         // Crear registro de comisión
         ViajeComisionDetalle::create([
@@ -589,8 +601,8 @@ class Viaje extends Model
             'precio_sugerido' => $precioSugerido,
             'costo' => $detalle->costo_unitario,
             'tipo_comision' => $tipoComision,
-            'comision_unitaria' => $comisionUnitaria * $factorUnidad, // Guardar comisión ya con factor
-            'comision_total' => $comisionTotal,
+            'comision_unitaria' => round($comisionUnitaria, 4),
+            'comision_total' => round($comisionTotal, 2),
         ]);
     }
 

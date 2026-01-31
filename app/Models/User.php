@@ -230,6 +230,7 @@ class User extends Authenticatable
 
     /**
      * Obtener comisión configurada para un producto/categoría
+     * CORREGIDO: Ahora devuelve tipo_comision (fijo/porcentaje)
      */
     public function getComisionPara(int $productoId, int $categoriaId, ?int $unidadId = null): array
     {
@@ -246,9 +247,11 @@ class User extends Authenticatable
 
         if ($comisionProducto) {
             return [
-                'normal' => $comisionProducto->comision_normal,
-                'reducida' => $comisionProducto->comision_reducida,
-                'tipo' => 'producto',
+                'normal' => (float) $comisionProducto->comision_normal,
+                'reducida' => (float) $comisionProducto->comision_reducida,
+                'fuente' => 'producto',
+                // ChoferComisionProducto NO tiene tipo_comision, asumir fijo
+                'tipo_comision' => $comisionProducto->tipo_comision ?? ChoferComisionConfig::TIPO_FIJO,
             ];
         }
 
@@ -256,7 +259,6 @@ class User extends Authenticatable
         $comisionConfig = $this->comisionesConfig()
             ->where('categoria_id', $categoriaId)
             ->where('activo', true)
-            ->where('vigente_desde', '<=', now())
             ->where(function ($q) {
                 $q->whereNull('vigente_hasta')
                     ->orWhere('vigente_hasta', '>=', now());
@@ -270,9 +272,10 @@ class User extends Authenticatable
 
         if ($comisionConfig) {
             return [
-                'normal' => $comisionConfig->comision_normal,
-                'reducida' => $comisionConfig->comision_reducida,
-                'tipo' => 'categoria',
+                'normal' => (float) $comisionConfig->comision_normal,
+                'reducida' => (float) $comisionConfig->comision_reducida,
+                'fuente' => 'categoria',
+                'tipo_comision' => $comisionConfig->tipo_comision ?? ChoferComisionConfig::TIPO_FIJO,
             ];
         }
 
@@ -280,7 +283,8 @@ class User extends Authenticatable
         return [
             'normal' => 0,
             'reducida' => 0,
-            'tipo' => 'ninguna',
+            'fuente' => 'ninguna',
+            'tipo_comision' => ChoferComisionConfig::TIPO_FIJO,
         ];
     }
 

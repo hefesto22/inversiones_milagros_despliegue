@@ -83,7 +83,6 @@ class ViajeResource extends Resource
             Viaje::ESTADO_CANCELADO
         ])->whereNotNull('chofer_id');
 
-        // Si estamos editando, excluir el viaje actual
         if ($viajeActualId) {
             $query->where('id', '!=', $viajeActualId);
         }
@@ -100,12 +99,10 @@ class ViajeResource extends Resource
             return $query->whereRaw('1 = 0');
         }
 
-        // Super Admin y Jefe ven todos los viajes
         if (static::esSuperAdminOJefe()) {
             return $query;
         }
 
-        // Otros usuarios solo ven viajes de su bodega
         $bodegaId = static::getBodegaUsuario();
 
         if ($bodegaId) {
@@ -137,7 +134,6 @@ class ViajeResource extends Resource
                                                 ]);
                                             });
 
-                                        // Si no es Super Admin/Jefe, filtrar por su bodega
                                         if (!$puedeSeleccionarBodega && $bodegaUsuario) {
                                             $query->where('bodega_id', $bodegaUsuario);
                                         }
@@ -152,7 +148,6 @@ class ViajeResource extends Resource
                                             $camion = Camion::find($state);
                                             $chofer = $camion?->getChoferActual();
                                             if ($chofer) {
-                                                // Solo auto-seleccionar si el chofer está disponible
                                                 $choferesOcupados = static::getChoferesOcupados();
                                                 if (!in_array($chofer->id, $choferesOcupados)) {
                                                     $set('chofer_id', $chofer->id);
@@ -165,7 +160,6 @@ class ViajeResource extends Resource
                                 Forms\Components\Select::make('chofer_id')
                                     ->label('Chofer')
                                     ->options(function (Forms\Get $get, $record) {
-                                        // Obtener choferes ocupados (excluyendo el viaje actual si estamos editando)
                                         $viajeActualId = $record?->id;
                                         $choferesOcupados = static::getChoferesOcupados($viajeActualId);
 
@@ -461,7 +455,6 @@ class ViajeResource extends Resource
                         Viaje::ESTADO_CANCELADO => 'Cancelado',
                     ]),
 
-                // Filtro de bodega solo visible para Super Admin y Jefe
                 Tables\Filters\SelectFilter::make('bodega_origen_id')
                     ->label('Bodega')
                     ->relationship('bodegaOrigen', 'nombre')
@@ -556,7 +549,7 @@ class ViajeResource extends Resource
                             ->send();
                     }),
 
-                // Acción: Descargar (genera descargas automáticas con selección individual de cobros)
+                // Acción: Descargar
                 Tables\Actions\Action::make('iniciar_descarga')
                     ->label('Descargar')
                     ->icon('heroicon-o-archive-box-x-mark')
@@ -566,7 +559,6 @@ class ViajeResource extends Resource
                     ->modalSubmitActionLabel('Confirmar Descarga')
                     ->visible(fn($record) => $record->estado === Viaje::ESTADO_REGRESANDO)
                     ->form(function ($record) {
-                        // Calcular productos que regresan
                         $productosRegresan = [];
                         $totalCosto = 0;
                         
@@ -589,13 +581,23 @@ class ViajeResource extends Resource
                             }
                         }
                         
-                        // Si no hay productos para descargar
+                        // Si no hay productos para descargar - mostrar mensaje y permitir continuar
                         if (empty($productosRegresan)) {
                             return [
                                 Forms\Components\Placeholder::make('sin_productos')
                                     ->label('')
-                                    ->content('✅ No hay productos pendientes de descargar. Todo fue vendido o registrado como merma.')
+                                    ->content(new \Illuminate\Support\HtmlString(
+                                        '<div class="text-center py-4">
+                                            <div class="text-success-500 text-4xl mb-2">✓</div>
+                                            <div class="text-lg font-bold">Excelente</div>
+                                            <div class="text-gray-500">Se vendió todo el inventario. No hay productos para descargar.</div>
+                                            <div class="mt-2 text-sm text-gray-400">Al confirmar, el viaje pasará directamente a liquidación.</div>
+                                        </div>'
+                                    ))
                                     ->columnSpanFull(),
+                                
+                                Forms\Components\Hidden::make('sin_descargas')
+                                    ->default(true),
                             ];
                         }
                         
@@ -613,7 +615,6 @@ class ViajeResource extends Resource
                                                         ->columnSpan(1)
                                                         ->live()
                                                         ->afterStateUpdated(function (Forms\Get $get, Forms\Set $set) {
-                                                            // Recalcular total cuando cambia cualquier toggle
                                                             $productos = $get('../../productos') ?? [];
                                                             $total = 0;
                                                             foreach ($productos as $prod) {
@@ -641,7 +642,6 @@ class ViajeResource extends Resource
                                                         ))
                                                         ->columnSpan(4),
                                                     
-                                                    // Campos ocultos para datos
                                                     Forms\Components\Hidden::make('carga_id'),
                                                     Forms\Components\Hidden::make('producto_id'),
                                                     Forms\Components\Hidden::make('unidad_id'),
@@ -660,14 +660,13 @@ class ViajeResource extends Resource
                                         ->itemLabel(fn (array $state): ?string => null),
                                 ]),
                             
-                            // Cuadro de resumen de cobro
                             Forms\Components\Section::make('')
                                 ->schema([
                                     Forms\Components\Grid::make(2)
                                         ->schema([
                                             Forms\Components\Placeholder::make('label_total')
                                                 ->label('')
-                                                ->content(new \Illuminate\Support\HtmlString('<span class="text-lg font-bold">💰 TOTAL A COBRAR AL CHOFER:</span>')),
+                                                ->content(new \Illuminate\Support\HtmlString('<span class="text-lg font-bold">TOTAL A COBRAR AL CHOFER:</span>')),
                                             
                                             Forms\Components\TextInput::make('total_cobrar')
                                                 ->label('')
@@ -689,6 +688,22 @@ class ViajeResource extends Resource
                         ];
                     })
                     ->action(function ($record, array $data) {
+                        // Si no hay productos para descargar, pasar directo a liquidación
+                        if (isset($data['sin_descargas']) && $data['sin_descargas']) {
+                            DB::transaction(function () use ($record) {
+                                $record->iniciarDescarga();
+                                $record->iniciarLiquidacion();
+                                $record->liquidarCompleto();
+                            });
+                            
+                            \Filament\Notifications\Notification::make()
+                                ->title('Viaje listo para cerrar')
+                                ->body("Todo vendido. Comisión: L " . number_format($record->comision_ganada, 2))
+                                ->success()
+                                ->send();
+                            return;
+                        }
+                        
                         $productos = $data['productos'] ?? [];
                         
                         if (empty($productos)) {
@@ -712,7 +727,6 @@ class ViajeResource extends Resource
                                 $subtotal = floatval($item['subtotal'] ?? 0);
                                 $montoCobrar = $cobrar ? $subtotal : 0;
                                 
-                                // Obtener nombre del producto desde la carga
                                 $carga = $record->cargas()->find($item['carga_id']);
                                 $productoNombre = $carga?->producto?->nombre ?? 'Producto';
                                 
@@ -735,7 +749,6 @@ class ViajeResource extends Resource
                                     'observaciones' => $cobrar ? $observacion : null,
                                 ]);
                                 
-                                // Actualizar cantidad devuelta en la carga
                                 if ($carga) {
                                     $carga->increment('cantidad_devuelta', $item['cantidad']);
                                 }
@@ -743,14 +756,13 @@ class ViajeResource extends Resource
                                 $descargasCreadas++;
                             }
 
-                            // Cambiar estado
                             $record->iniciarDescarga();
                         });
 
                         if ($totalCobrado > 0) {
                             \Filament\Notifications\Notification::make()
                                 ->title('Descarga generada')
-                                ->body("Se crearon {$descargasCreadas} descargas.\n\n💰 Total a cobrar: L " . number_format($totalCobrado, 2) . "\nProductos: " . implode(', ', $productosCobrados))
+                                ->body("Se crearon {$descargasCreadas} descargas.\n\nTotal a cobrar: L " . number_format($totalCobrado, 2) . "\nProductos: " . implode(', ', $productosCobrados))
                                 ->success()
                                 ->duration(10000)
                                 ->send();
@@ -763,18 +775,14 @@ class ViajeResource extends Resource
                         }
                     }),
 
-                // Acción: Liquidar (solo si ya hay descargas)
+                // Acción: Liquidar
                 Tables\Actions\Action::make('liquidar')
                     ->label('Liquidar')
                     ->icon('heroicon-o-calculator')
                     ->color('warning')
                     ->requiresConfirmation()
                     ->modalDescription('Se calcularán comisiones, cobros y totales del viaje.')
-                    ->visible(
-                        fn($record) =>
-                        $record->estado === Viaje::ESTADO_DESCARGANDO
-                            && $record->descargas()->exists()
-                    )
+                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_DESCARGANDO && $record->descargas()->exists())
                     ->action(function ($record) {
                         try {
                             $resultado = $record->liquidarCompleto();
@@ -797,7 +805,7 @@ class ViajeResource extends Resource
                         }
                     }),
 
-                // Acción: Cerrar Viaje (con reintegro de stock)
+                // Acción: Cerrar Viaje
                 Tables\Actions\Action::make('cerrar')
                     ->label('Cerrar Viaje')
                     ->icon('heroicon-o-check-circle')
@@ -891,7 +899,6 @@ class ViajeResource extends Resource
             Viaje::ESTADO_CANCELADO
         ]);
 
-        // Si no es Super Admin o Jefe, filtrar por su bodega
         if (!static::esSuperAdminOJefe()) {
             $bodegaId = static::getBodegaUsuario();
             if ($bodegaId) {

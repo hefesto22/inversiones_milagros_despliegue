@@ -1,132 +1,153 @@
 <div class="space-y-6">
-    {{-- Información del Cliente --}}
-    <div class="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div>
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase">Cliente</p>
-                <p class="font-semibold text-gray-900 dark:text-white">{{ $venta->cliente?->nombre ?? 'Consumidor Final' }}</p>
+    {{-- Encabezado con datos del cliente y fecha --}}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {{-- Cliente --}}
+        <div class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+            <div class="bg-gray-50 dark:bg-gray-800 px-4 py-2 border-b border-gray-200 dark:border-gray-700">
+                <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Cliente</span>
             </div>
-            <div>
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase">RTN</p>
-                <p class="font-medium text-gray-700 dark:text-gray-300">{{ $venta->cliente?->rtn ?? '-' }}</p>
+            <div class="bg-white dark:bg-gray-900 p-4">
+                <p class="text-base font-semibold text-gray-900 dark:text-white">{{ $venta->cliente?->nombre ?? 'Consumidor Final' }}</p>
+                @if($venta->cliente?->rtn)
+                    <p class="text-sm text-gray-600 dark:text-gray-400 mt-1">RTN: {{ $venta->cliente->rtn }}</p>
+                @endif
+                @if($venta->cliente?->telefono)
+                    <p class="text-sm text-gray-600 dark:text-gray-400">Tel: {{ $venta->cliente->telefono }}</p>
+                @endif
             </div>
-            <div>
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase">Teléfono</p>
-                <p class="font-medium text-gray-700 dark:text-gray-300">{{ $venta->cliente?->telefono ?? '-' }}</p>
+        </div>
+
+        {{-- Datos de la venta --}}
+        <div class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+            <div class="bg-gray-50 dark:bg-gray-800 px-4 py-2 border-b border-gray-200 dark:border-gray-700">
+                <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Datos de Venta</span>
             </div>
-            <div>
-                <p class="text-xs text-gray-500 dark:text-gray-400 uppercase">Fecha</p>
-                <p class="font-medium text-gray-700 dark:text-gray-300">{{ $venta->fecha_venta->format('d/m/Y H:i') }}</p>
+            <div class="bg-white dark:bg-gray-900 p-4">
+                <div class="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                        <span class="text-gray-500 dark:text-gray-400">Fecha:</span>
+                        <span class="ml-2 text-gray-900 dark:text-white font-medium">{{ $venta->fecha_venta->format('d/m/Y') }}</span>
+                    </div>
+                    <div>
+                        <span class="text-gray-500 dark:text-gray-400">Hora:</span>
+                        <span class="ml-2 text-gray-900 dark:text-white font-medium">{{ $venta->fecha_venta->format('H:i') }}</span>
+                    </div>
+                    <div>
+                        <span class="text-gray-500 dark:text-gray-400">Vendedor:</span>
+                        <span class="ml-2 text-gray-900 dark:text-white font-medium">{{ $venta->userCreador?->name ?? '-' }}</span>
+                    </div>
+                    <div>
+                        <span class="text-gray-500 dark:text-gray-400">Factura:</span>
+                        <span class="ml-2 text-gray-900 dark:text-white font-medium">{{ $venta->numero_factura ?? 'Pendiente' }}</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
-    {{-- Tabla de Productos --}}
-    <div class="overflow-x-auto">
-        <table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-            <thead class="bg-gray-50 dark:bg-gray-800">
-                <tr>
-                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Producto</th>
-                    <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Cantidad</th>
-                    <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Precio Base</th>
-                    <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">ISV</th>
-                    <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Precio Cliente</th>
-                    <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Total</th>
-                </tr>
-            </thead>
-            <tbody class="bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700">
-                @foreach($venta->detalles as $detalle)
-                    <tr>
-                        <td class="px-4 py-3 text-sm font-medium text-gray-900 dark:text-white">
-                            {{ $detalle->producto?->nombre ?? 'Producto eliminado' }}
-                        </td>
-                        <td class="px-4 py-3 text-center text-sm text-gray-700 dark:text-gray-300">
-                            {{ number_format($detalle->cantidad, 2) }}
-                        </td>
-                        <td class="px-4 py-3 text-right text-sm text-gray-700 dark:text-gray-300">
-                            L {{ number_format($detalle->precio_base, 2) }}
-                        </td>
-                        <td class="px-4 py-3 text-right text-sm text-gray-700 dark:text-gray-300">
-                            @if($detalle->aplica_isv)
-                                <span class="text-green-600 dark:text-green-400">
-                                    +L {{ number_format($detalle->monto_isv, 2) }}
-                                </span>
-                            @else
-                                <span class="text-gray-400">—</span>
-                            @endif
-                        </td>
-                        <td class="px-4 py-3 text-right text-sm font-medium text-gray-900 dark:text-white">
-                            L {{ number_format($detalle->precio_con_isv, 2) }}
-                        </td>
-                        <td class="px-4 py-3 text-right text-sm font-semibold text-primary-600 dark:text-primary-400">
-                            L {{ number_format($detalle->total_linea, 2) }}
-                        </td>
+    {{-- Detalle de productos --}}
+    <div class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+        <div class="bg-gray-50 dark:bg-gray-800 px-4 py-2 border-b border-gray-200 dark:border-gray-700">
+            <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Detalle de Productos</span>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full">
+                <thead>
+                    <tr class="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                        <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">Descripción</th>
+                        <th class="px-4 py-3 text-center text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">Cant.</th>
+                        <th class="px-4 py-3 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">P. Unit.</th>
+                        <th class="px-4 py-3 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">ISV</th>
+                        <th class="px-4 py-3 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">Importe</th>
                     </tr>
-                @endforeach
-            </tbody>
-        </table>
+                </thead>
+                <tbody class="bg-white dark:bg-gray-900 divide-y divide-gray-100 dark:divide-gray-800">
+                    @foreach($venta->detalles as $detalle)
+                        <tr>
+                            <td class="px-4 py-3 text-sm text-gray-900 dark:text-white">
+                                {{ $detalle->producto?->nombre ?? 'Producto eliminado' }}
+                            </td>
+                            <td class="px-4 py-3 text-sm text-center text-gray-700 dark:text-gray-300">
+                                {{ number_format($detalle->cantidad, 2) }}
+                            </td>
+                            <td class="px-4 py-3 text-sm text-right text-gray-700 dark:text-gray-300">
+                                {{ number_format($detalle->precio_base, 2) }}
+                            </td>
+                            <td class="px-4 py-3 text-sm text-right text-gray-700 dark:text-gray-300">
+                                {{ $detalle->aplica_isv ? number_format($detalle->monto_isv * $detalle->cantidad, 2) : '0.00' }}
+                            </td>
+                            <td class="px-4 py-3 text-sm text-right font-medium text-gray-900 dark:text-white">
+                                {{ number_format($detalle->total_linea, 2) }}
+                            </td>
+                        </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        </div>
     </div>
 
     {{-- Totales --}}
-    <div class="bg-gray-50 dark:bg-gray-800 rounded-lg p-4">
-        <div class="flex justify-end">
-            <div class="w-full max-w-xs space-y-2">
-                <div class="flex justify-between text-sm text-gray-600 dark:text-gray-400">
-                    <span>Subtotal (sin ISV)</span>
-                    <span>L {{ number_format($venta->subtotal, 2) }}</span>
+    <div class="flex justify-end">
+        <div class="w-full max-w-sm border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+            <div class="bg-white dark:bg-gray-900 divide-y divide-gray-100 dark:divide-gray-800">
+                <div class="flex justify-between px-4 py-2 text-sm">
+                    <span class="text-gray-600 dark:text-gray-400">Subtotal</span>
+                    <span class="text-gray-900 dark:text-white">L {{ number_format($venta->subtotal, 2) }}</span>
                 </div>
-                <div class="flex justify-between text-sm text-gray-600 dark:text-gray-400">
-                    <span>ISV (15%)</span>
-                    <span>L {{ number_format($venta->impuesto, 2) }}</span>
+                <div class="flex justify-between px-4 py-2 text-sm">
+                    <span class="text-gray-600 dark:text-gray-400">ISV (15%)</span>
+                    <span class="text-gray-900 dark:text-white">L {{ number_format($venta->impuesto, 2) }}</span>
                 </div>
                 @if($venta->descuento > 0)
-                    <div class="flex justify-between text-sm text-red-600 dark:text-red-400">
-                        <span>Descuento</span>
-                        <span>- L {{ number_format($venta->descuento, 2) }}</span>
+                    <div class="flex justify-between px-4 py-2 text-sm">
+                        <span class="text-gray-600 dark:text-gray-400">Descuento</span>
+                        <span class="text-red-600 dark:text-red-400">- L {{ number_format($venta->descuento, 2) }}</span>
                     </div>
                 @endif
-                <div class="pt-2 border-t border-gray-200 dark:border-gray-700 flex justify-between">
-                    <span class="text-lg font-bold text-gray-900 dark:text-white">Total</span>
-                    <span class="text-lg font-bold text-primary-600 dark:text-primary-400">
-                        L {{ number_format($venta->total, 2) }}
-                    </span>
+                <div class="flex justify-between px-4 py-3 bg-gray-50 dark:bg-gray-800">
+                    <span class="text-base font-semibold text-gray-900 dark:text-white">TOTAL</span>
+                    <span class="text-base font-bold text-gray-900 dark:text-white">L {{ number_format($venta->total, 2) }}</span>
                 </div>
             </div>
         </div>
     </div>
 
-    {{-- Información adicional --}}
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-        <div class="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase">Tipo de Pago</p>
-            <p class="font-semibold {{ $venta->tipo_pago === 'contado' ? 'text-green-600 dark:text-green-400' : 'text-orange-600 dark:text-orange-400' }}">
-                {{ $venta->tipo_pago === 'contado' ? 'Contado' : 'Crédito' }}
-            </p>
+    {{-- Estado y tipo de pago --}}
+    <div class="grid grid-cols-2 gap-4">
+        <div class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+            <div class="bg-white dark:bg-gray-900 p-4 flex items-center justify-between">
+                <span class="text-sm text-gray-600 dark:text-gray-400">Tipo de Pago</span>
+                <span class="text-sm font-semibold px-3 py-1 rounded-full 
+                    {{ $venta->tipo_pago === 'contado' 
+                        ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400' 
+                        : 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400' }}">
+                    {{ ucfirst($venta->tipo_pago) }}
+                </span>
+            </div>
         </div>
-        <div class="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase">Estado</p>
-            <p class="font-semibold 
-                @if($venta->estado === 'completada') text-green-600 dark:text-green-400
-                @elseif($venta->estado === 'cancelada') text-red-600 dark:text-red-400
-                @else text-gray-700 dark:text-gray-300
-                @endif">
-                {{ ucfirst($venta->estado) }}
-            </p>
-        </div>
-        <div class="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase">Vendedor</p>
-            <p class="font-medium text-gray-700 dark:text-gray-300">{{ $venta->userCreador?->name ?? '-' }}</p>
-        </div>
-        <div class="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
-            <p class="text-xs text-gray-500 dark:text-gray-400 uppercase">No. Factura</p>
-            <p class="font-medium text-gray-700 dark:text-gray-300">{{ $venta->numero_factura ?? 'Pendiente' }}</p>
+        <div class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+            <div class="bg-white dark:bg-gray-900 p-4 flex items-center justify-between">
+                <span class="text-sm text-gray-600 dark:text-gray-400">Estado</span>
+                <span class="text-sm font-semibold px-3 py-1 rounded-full 
+                    @if($venta->estado === 'completada') bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400
+                    @elseif($venta->estado === 'cancelada') bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400
+                    @else bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300
+                    @endif">
+                    {{ ucfirst($venta->estado) }}
+                </span>
+            </div>
         </div>
     </div>
 
+    {{-- Notas --}}
     @if($venta->nota)
-        <div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
-            <p class="text-xs text-yellow-600 dark:text-yellow-400 uppercase mb-1">Notas</p>
-            <p class="text-sm text-yellow-800 dark:text-yellow-200">{{ $venta->nota }}</p>
+        <div class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+            <div class="bg-gray-50 dark:bg-gray-800 px-4 py-2 border-b border-gray-200 dark:border-gray-700">
+                <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Observaciones</span>
+            </div>
+            <div class="bg-white dark:bg-gray-900 p-4">
+                <p class="text-sm text-gray-700 dark:text-gray-300">{{ $venta->nota }}</p>
+            </div>
         </div>
     @endif
 </div>
