@@ -300,7 +300,18 @@ class VentaResource extends Resource
                                                     ->first();
 
                                                 if ($bp) {
-                                                    $set('precio_unitario', number_format($bp->precio_venta_sugerido ?? 0, 2, '.', ''));
+                                                    // El precio_venta_sugerido YA incluye ISV
+                                                    $precioConIsv = $bp->precio_venta_sugerido ?? 0;
+                                                    $set('precio_con_isv', $precioConIsv);
+                                                    
+                                                    // Calcular precio sin ISV para mostrar
+                                                    if ($producto->aplica_isv && $precioConIsv > 0) {
+                                                        $precioSinIsv = round($precioConIsv / 1.15, 2);
+                                                    } else {
+                                                        $precioSinIsv = $precioConIsv;
+                                                    }
+                                                    $set('precio_unitario', number_format($precioSinIsv, 2, '.', ''));
+                                                    
                                                     $set('costo_unitario', $bp->costo_promedio_actual ?? 0);
                                                     $set('stock_disponible', $bp->stock ?? 0);
                                                 }
@@ -332,6 +343,7 @@ class VentaResource extends Resource
                                 Forms\Components\Hidden::make('unidad_id'),
                                 Forms\Components\Hidden::make('costo_unitario')->default(0),
                                 Forms\Components\Hidden::make('aplica_isv')->default(false),
+                                Forms\Components\Hidden::make('precio_con_isv')->default(0),
 
                                 Forms\Components\TextInput::make('cantidad')
                                     ->label('Cantidad')
@@ -387,7 +399,6 @@ class VentaResource extends Resource
                                     ),
 
                                 Forms\Components\Hidden::make('isv_unitario')->default(0),
-                                Forms\Components\Hidden::make('precio_con_isv'),
                                 Forms\Components\Hidden::make('subtotal')->default(0),
                                 Forms\Components\Hidden::make('total_isv')->default(0),
                                 Forms\Components\Hidden::make('total_linea')->default(0),
@@ -472,11 +483,12 @@ class VentaResource extends Resource
 
     /**
      * Calcular valores de una línea de detalle
+     * IMPORTANTE: El precio_unitario es SIN ISV, el ISV se calcula aparte
      */
     protected static function calcularLineaDetalle(Forms\Get $get, Forms\Set $set): void
     {
         $cantidad = floatval($get('cantidad') ?? 0);
-        $precioUnitario = floatval($get('precio_unitario') ?? 0);
+        $precioUnitario = floatval($get('precio_unitario') ?? 0); // Precio SIN ISV
         $aplicaIsv = $get('aplica_isv') ?? false;
 
         // Subtotal sin ISV
@@ -487,7 +499,7 @@ class VentaResource extends Resource
         $totalIsv = $cantidad * $isvUnitario;
         $precioConIsv = $precioUnitario + $isvUnitario;
 
-        // Total línea
+        // Total línea = subtotal + ISV
         $totalLinea = $subtotal + $totalIsv;
 
         $set('subtotal', round($subtotal, 2));
@@ -600,7 +612,7 @@ class VentaResource extends Resource
                     ->weight(fn ($state) => $state > 0 ? 'bold' : 'normal')
                     ->description(function (Venta $record): ?string {
                         if ($record->saldo_pendiente <= 0) return null;
-                        if ($record->estaVencida()) return '⚠️ Vencida';
+                        if ($record->estaVencida()) return 'Vencida';
                         return null;
                     }),
 

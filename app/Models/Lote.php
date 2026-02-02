@@ -21,14 +21,16 @@ class Lote extends Model
         'proveedor_id',
         'bodega_id',
         'numero_lote',
-        // CAMPOS DE CANTIDADES
         'cantidad_cartones_facturados',
         'cantidad_cartones_regalo',
         'cantidad_cartones_recibidos',
         'huevos_por_carton',
         'cantidad_huevos_original',
         'cantidad_huevos_remanente',
-        // CAMPOS DE COSTOS
+        'huevos_facturados_acumulados',
+        'huevos_regalo_acumulados',
+        'merma_total_acumulada',
+        'costo_total_acumulado',
         'costo_total_lote',
         'costo_por_carton_facturado',
         'costo_por_huevo',
@@ -43,9 +45,13 @@ class Lote extends Model
         'huevos_por_carton' => 'integer',
         'cantidad_huevos_original' => 'decimal:2',
         'cantidad_huevos_remanente' => 'decimal:2',
+        'huevos_facturados_acumulados' => 'decimal:2',
+        'huevos_regalo_acumulados' => 'decimal:2',
+        'merma_total_acumulada' => 'decimal:2',
+        'costo_total_acumulado' => 'decimal:2',
         'costo_total_lote' => 'decimal:2',
         'costo_por_carton_facturado' => 'decimal:2',
-        'costo_por_huevo' => 'decimal:2',
+        'costo_por_huevo' => 'decimal:4',
     ];
 
     // ============================================
@@ -92,216 +98,214 @@ class Lote extends Model
         return $this->hasMany(ReempaqueLote::class, 'lote_id');
     }
 
-    // ============================================
-    // EVENTOS (Boot)
-    // ============================================
-
-    protected static function boot()
+    public function historialCompras(): HasMany
     {
-        parent::boot();
+        return $this->hasMany(HistorialCompraLote::class, 'lote_id');
+    }
 
-        static::saving(function ($lote) {
-            // IMPORTANTE: Los lotes SUELTOS-* ya vienen con sus valores calculados
-            // desde consolidarSueltos(), NO deben ser recalculados aqui
-            $esLoteSueltos = str_starts_with($lote->numero_lote ?? '', 'SUELTOS-');
-
-            if ($esLoteSueltos) {
-                // Para lotes SUELTOS: solo validar que los valores existan
-                // NO recalcular nada, los valores vienen correctos desde CreateReempaque
-                if (is_null($lote->cantidad_cartones_recibidos)) {
-                    $lote->cantidad_cartones_recibidos = 0;
-                }
-                return; // Salir sin recalcular
-            }
-
-            // === LOGICA NORMAL PARA LOTES DE COMPRA (L-*) ===
-
-            $facturados = $lote->cantidad_cartones_facturados ?? 0;
-            $regalo = $lote->cantidad_cartones_regalo ?? 0;
-
-            if (is_null($lote->cantidad_cartones_recibidos)) {
-                $lote->cantidad_cartones_recibidos = $facturados + $regalo;
-            }
-
-            if (is_null($lote->cantidad_huevos_original)) {
-                $lote->cantidad_huevos_original = $lote->cantidad_cartones_recibidos * $lote->huevos_por_carton;
-            }
-
-            if (is_null($lote->cantidad_huevos_remanente)) {
-                $lote->cantidad_huevos_remanente = $lote->cantidad_huevos_original;
-            }
-
-            // Calcular costo_por_huevo SOLO para lotes normales
-            if (is_null($lote->costo_por_huevo) || $lote->isDirty('costo_total_lote')) {
-                $lote->costo_por_huevo = self::calcularCostoPorHuevo(
-                    $lote->costo_total_lote ?? 0,
-                    $facturados,
-                    $lote->huevos_por_carton ?? 30
-                );
-            }
-
-            // Calcular costo por carton facturado
-            if (is_null($lote->costo_por_carton_facturado) && $facturados > 0) {
-                $lote->costo_por_carton_facturado = round(($lote->costo_total_lote ?? 0) / $facturados, 2);
-            }
-        });
+    public function mermas(): HasMany
+    {
+        return $this->hasMany(Merma::class, 'lote_id');
     }
 
     // ============================================
-    // METODOS ESTATICOS DE CALCULO
+    // MÉTODOS ESTÁTICOS
     // ============================================
 
     /**
-     * CALCULAR COSTO POR HUEVO
-     *
-     * CRITICO: El costo se divide SOLO entre huevos FACTURADOS, NO los regalos.
-     * Los huevos de regalo tienen costo CERO y son ganancia pura.
+     * Buscar o crear lote único para un producto en una bodega
      */
-    public static function calcularCostoPorHuevo(
-        float $costoTotal,
+    public static function obtenerOCrearLoteUnico(
+        int $productoId,
+        int $bodegaId,
+        int $huevosPorCarton = 30,
+        ?int $createdBy = null
+    ): Lote {
+        $lote = self::where('producto_id', $productoId)
+            ->where('bodega_id', $bodegaId)
+            ->where('estado', 'disponible')
+            ->where('numero_lote', 'LIKE', 'LU-%')
+            ->first();
+
+        if ($lote) {
+            return $lote;
+        }
+
+        return self::create([
+            'producto_id' => $productoId,
+            'bodega_id' => $bodegaId,
+            'numero_lote' => "LU-B{$bodegaId}-P{$productoId}",
+            'huevos_por_carton' => $huevosPorCarton,
+            'cantidad_cartones_facturados' => 0,
+            'cantidad_cartones_regalo' => 0,
+            'cantidad_cartones_recibidos' => 0,
+            'cantidad_huevos_original' => 0,
+            'cantidad_huevos_remanente' => 0,
+            'huevos_facturados_acumulados' => 0,
+            'huevos_regalo_acumulados' => 0,
+            'merma_total_acumulada' => 0,
+            'costo_total_acumulado' => 0,
+            'costo_total_lote' => 0,
+            'costo_por_carton_facturado' => 0,
+            'costo_por_huevo' => 0,
+            'estado' => 'disponible',
+            'created_by' => $createdBy,
+        ]);
+    }
+
+    // ============================================
+    // MÉTODOS DE COMPRAS
+    // ============================================
+
+    /**
+     * Agregar una compra al lote único con costo promedio ponderado
+     */
+    public function agregarCompra(
         float $cartonesFacturados,
-        int $huevosPorCarton = 30
-    ): float {
-        $huevosFacturados = $cartonesFacturados * $huevosPorCarton;
+        float $cartonesRegalo,
+        float $costoCompra,
+        int $compraId,
+        int $compraDetalleId,
+        int $proveedorId
+    ): array {
+        $huevosPorCarton = $this->huevos_por_carton ?? 30;
 
-        if ($huevosFacturados <= 0) {
-            return 0;
-        }
+        $huevosFacturadosNuevos = $cartonesFacturados * $huevosPorCarton;
+        $huevosRegaloNuevos = $cartonesRegalo * $huevosPorCarton;
+        $huevosTotalesNuevos = $huevosFacturadosNuevos + $huevosRegaloNuevos;
 
-        $costoPorHuevo = $costoTotal / $huevosFacturados;
+        $costoPorHuevoCompra = $huevosFacturadosNuevos > 0
+            ? $costoCompra / $huevosFacturadosNuevos
+            : 0;
 
-        return ceil($costoPorHuevo * 100) / 100;
-    }
+        // Cálculo del costo promedio ponderado
+        $huevosFacturadosActuales = $this->huevos_facturados_acumulados ?? 0;
+        $costoActual = $this->costo_total_acumulado ?? 0;
 
-    // ============================================
-    // 🆕 METODOS DE MERMA ACUMULADA Y REGALO DISPONIBLE
-    // ============================================
+        $costoTotalNuevo = $costoActual + $costoCompra;
+        $huevosFacturadosTotales = $huevosFacturadosActuales + $huevosFacturadosNuevos;
 
-    /**
-     * Obtener la merma acumulada de todos los reempaques que usaron este lote
-     * La merma se distribuye proporcionalmente según los huevos usados de cada lote
-     */
-    public function getMermaAcumulada(): float
-    {
-        // Obtener todos los reempaque_lotes de este lote con reempaques completados
-        $reempaqueLotes = $this->reempaqueLotes()
-            ->whereHas('reempaque', function ($query) {
-                $query->where('estado', 'completado');
-            })
-            ->with('reempaque')
-            ->get();
+        $nuevoCostoPorHuevo = $huevosFacturadosTotales > 0
+            ? $costoTotalNuevo / $huevosFacturadosTotales
+            : 0;
 
-        $mermaAcumulada = 0;
+        // Actualizar lote
+        $this->cantidad_cartones_facturados += $cartonesFacturados;
+        $this->cantidad_cartones_regalo += $cartonesRegalo;
+        $this->cantidad_cartones_recibidos += ($cartonesFacturados + $cartonesRegalo);
+        $this->cantidad_huevos_original += $huevosTotalesNuevos;
+        $this->cantidad_huevos_remanente += $huevosTotalesNuevos;
+        $this->huevos_facturados_acumulados = $huevosFacturadosTotales;
+        $this->huevos_regalo_acumulados += $huevosRegaloNuevos;
+        $this->costo_total_acumulado = $costoTotalNuevo;
+        $this->costo_total_lote = $costoTotalNuevo;
+        $this->costo_por_huevo = round($nuevoCostoPorHuevo, 4);
+        $this->costo_por_carton_facturado = round($nuevoCostoPorHuevo * $huevosPorCarton, 2);
+        $this->proveedor_id = $proveedorId;
+        $this->compra_id = $compraId;
+        $this->compra_detalle_id = $compraDetalleId;
 
-        foreach ($reempaqueLotes as $reempaqueLote) {
-            $reempaque = $reempaqueLote->reempaque;
-            
-            if (!$reempaque || $reempaque->total_huevos_usados <= 0) {
-                continue;
-            }
+        $this->save();
 
-            // Calcular la proporción de huevos que este lote aportó al reempaque
-            $proporcion = $reempaqueLote->cantidad_huevos_usados / $reempaque->total_huevos_usados;
-            
-            // La merma proporcional de este lote en ese reempaque
-            $mermaProporcional = $reempaque->merma * $proporcion;
-            
-            $mermaAcumulada += $mermaProporcional;
-        }
-
-        return round($mermaAcumulada, 2);
-    }
-
-    /**
-     * Obtener los huevos de regalo disponibles (total - merma acumulada)
-     * Este es el "buffer" que aún puede absorber mermas sin afectar el costo
-     */
-    public function getHuevosRegaloDisponibles(): float
-    {
-        // Lotes SUELTOS no tienen regalo
-        if ($this->esLoteSueltos()) {
-            return 0;
-        }
-
-        $regaloTotal = ($this->cantidad_cartones_regalo ?? 0) * ($this->huevos_por_carton ?? 30);
-        $mermaAcumulada = $this->getMermaAcumulada();
-        
-        return max(0, $regaloTotal - $mermaAcumulada);
-    }
-
-    /**
-     * Verificar si el lote aún tiene buffer de regalo disponible
-     */
-    public function tieneRegaloDisponible(): bool
-    {
-        return $this->getHuevosRegaloDisponibles() > 0;
-    }
-
-    /**
-     * Obtener el resumen del estado del regalo del lote
-     */
-    public function getResumenRegalo(): array
-    {
-        $regaloTotal = ($this->cantidad_cartones_regalo ?? 0) * ($this->huevos_por_carton ?? 30);
-        $mermaAcumulada = $this->getMermaAcumulada();
-        $regaloDisponible = $this->getHuevosRegaloDisponibles();
+        // Registrar en historial
+        HistorialCompraLote::create([
+            'lote_id' => $this->id,
+            'compra_id' => $compraId,
+            'compra_detalle_id' => $compraDetalleId,
+            'proveedor_id' => $proveedorId,
+            'cartones_facturados' => $cartonesFacturados,
+            'cartones_regalo' => $cartonesRegalo,
+            'huevos_agregados' => $huevosTotalesNuevos,
+            'costo_compra' => $costoCompra,
+            'costo_por_huevo_compra' => $costoPorHuevoCompra,
+            'costo_promedio_resultante' => $nuevoCostoPorHuevo,
+            'huevos_totales_resultante' => $this->cantidad_huevos_remanente,
+        ]);
 
         return [
-            'regalo_total_huevos' => $regaloTotal,
-            'merma_acumulada' => $mermaAcumulada,
-            'regalo_disponible' => $regaloDisponible,
-            'regalo_consumido' => min($regaloTotal, $mermaAcumulada),
-            'merma_pagada' => max(0, $mermaAcumulada - $regaloTotal),
+            'huevos_agregados' => $huevosTotalesNuevos,
+            'costo_compra' => $costoCompra,
+            'nuevo_costo_promedio' => $nuevoCostoPorHuevo,
+            'nuevo_total_huevos' => $this->cantidad_huevos_remanente,
         ];
     }
 
     // ============================================
-    // SCOPES
+    // MÉTODOS DE BUFFER Y MERMAS
     // ============================================
 
-    public function scopeDisponible($query)
+    /**
+     * Obtener el buffer de regalo disponible
+     */
+    public function getBufferRegaloDisponible(): float
     {
-        return $query->where('estado', 'disponible');
+        $regaloTotal = $this->huevos_regalo_acumulados ?? 0;
+        $mermaTotal = $this->merma_total_acumulada ?? 0;
+
+        return max(0, $regaloTotal - $mermaTotal);
     }
 
-    public function scopeAgotado($query)
+    /**
+     * Alias para compatibilidad con CreateReempaque
+     */
+    public function getHuevosRegaloDisponibles(): float
     {
-        return $query->where('estado', 'agotado');
+        return $this->getBufferRegaloDisponible();
     }
 
-    public function scopePorBodega($query, int $bodegaId)
-    {
-        return $query->where('bodega_id', $bodegaId);
-    }
+    /**
+     * Registrar una merma
+     */
+    public function registrarMerma(
+        float $cantidadHuevos,
+        string $motivo = 'rotos',
+        ?string $descripcion = null,
+        ?int $createdBy = null
+    ): Merma {
+        $bufferAntes = $this->getBufferRegaloDisponible();
 
-    public function scopePorProveedor($query, int $proveedorId)
-    {
-        return $query->where('proveedor_id', $proveedorId);
-    }
+        $cubiertoBuffer = min($cantidadHuevos, $bufferAntes);
+        $perdidaReal = max(0, $cantidadHuevos - $bufferAntes);
+        $perdidaLempiras = $perdidaReal * ($this->costo_por_huevo ?? 0);
 
-    public function scopeConRemanente($query)
-    {
-        return $query->where('cantidad_huevos_remanente', '>', 0);
-    }
+        // Actualizar lote
+        $this->cantidad_huevos_remanente -= $cantidadHuevos;
+        $this->merma_total_acumulada += $cantidadHuevos;
 
-    public function scopeSueltos($query)
-    {
-        return $query->where('numero_lote', 'LIKE', 'SUELTOS-%');
-    }
+        if ($perdidaReal > 0) {
+            $this->huevos_facturados_acumulados = max(0, $this->huevos_facturados_acumulados - $perdidaReal);
+            if ($this->huevos_facturados_acumulados > 0) {
+                $this->costo_por_huevo = round($this->costo_total_acumulado / $this->huevos_facturados_acumulados, 4);
+                $this->costo_por_carton_facturado = round($this->costo_por_huevo * ($this->huevos_por_carton ?? 30), 2);
+            }
+        }
 
-    public function scopeNormales($query)
-    {
-        return $query->where('numero_lote', 'LIKE', 'L-%')
-                    ->where('numero_lote', 'NOT LIKE', 'SUELTOS-%');
-    }
+        if ($this->cantidad_huevos_remanente <= 0) {
+            $this->cantidad_huevos_remanente = 0;
+            $this->estado = 'agotado';
+        }
 
-    public function scopePorReempaqueOrigen($query, int $reempaqueId)
-    {
-        return $query->where('reempaque_origen_id', $reempaqueId);
+        $this->save();
+
+        return Merma::create([
+            'lote_id' => $this->id,
+            'bodega_id' => $this->bodega_id,
+            'producto_id' => $this->producto_id,
+            'numero_merma' => Merma::generarNumeroMerma($this->bodega_id),
+            'cantidad_huevos' => $cantidadHuevos,
+            'cubierto_por_regalo' => $cubiertoBuffer,
+            'perdida_real_huevos' => $perdidaReal,
+            'perdida_real_lempiras' => round($perdidaLempiras, 2),
+            'motivo' => $motivo,
+            'descripcion' => $descripcion,
+            'buffer_antes' => $bufferAntes,
+            'buffer_despues' => $this->getBufferRegaloDisponible(),
+            'created_by' => $createdBy,
+        ]);
     }
 
     // ============================================
-    // METODOS DE NEGOCIO
+    // MÉTODOS DE NEGOCIO
     // ============================================
 
     /**
@@ -320,152 +324,7 @@ class Lote extends Model
     }
 
     /**
-     * Verificar si el lote esta disponible
-     */
-    public function estaDisponible(): bool
-    {
-        return $this->estado === 'disponible' && $this->cantidad_huevos_remanente > 0;
-    }
-
-    /**
-     * Obtener el porcentaje usado del lote
-     */
-    public function getPorcentajeUsado(): float
-    {
-        if ($this->cantidad_huevos_original <= 0) {
-            return 0;
-        }
-
-        $usado = $this->cantidad_huevos_original - $this->cantidad_huevos_remanente;
-        return round(($usado / $this->cantidad_huevos_original) * 100, 2);
-    }
-
-    /**
-     * Calcular costo total del lote
-     */
-    public function getCostoTotal(): float
-    {
-        return $this->costo_total_lote ?? 0;
-    }
-
-    /**
-     * Calcular costo del remanente
-     */
-    public function getCostoRemanente(): float
-    {
-        return $this->calcularCostoDeHuevos($this->cantidad_huevos_remanente);
-    }
-
-    /**
-     * Obtener cartones totales (facturados + regalo)
-     */
-    public function getCartonesTotales(): float
-    {
-        return ($this->cantidad_cartones_facturados ?? 0) + ($this->cantidad_cartones_regalo ?? 0);
-    }
-
-    /**
-     * Obtener huevos facturados restantes en el remanente
-     */
-    public function getHuevosFacturadosRestantes(): float
-    {
-        $huevosFacturadosOriginales = ($this->cantidad_cartones_facturados ?? 0) * ($this->huevos_por_carton ?? 30);
-        $huevosUsados = ($this->cantidad_huevos_original ?? 0) - ($this->cantidad_huevos_remanente ?? 0);
-
-        $facturadosRestantes = max(0, $huevosFacturadosOriginales - $huevosUsados);
-
-        return min($facturadosRestantes, $this->cantidad_huevos_remanente ?? 0);
-    }
-
-    /**
-     * Obtener huevos de regalo restantes en el remanente
-     */
-    public function getHuevosRegaloRestantes(): float
-    {
-        $huevosFacturadosRestantes = $this->getHuevosFacturadosRestantes();
-        return max(0, ($this->cantidad_huevos_remanente ?? 0) - $huevosFacturadosRestantes);
-    }
-
-    /**
-     * Obtener cartones regalados restantes
-     */
-    public function getCartonesRegaloRestantes(): float
-    {
-        $huevosRegaloRestantes = $this->getHuevosRegaloRestantes();
-        return $huevosRegaloRestantes / ($this->huevos_por_carton ?? 30);
-    }
-
-    /**
-     * CALCULAR COSTO REAL DE UNA CANTIDAD DE HUEVOS
-     */
-    public function calcularCostoDeHuevos(float $cantidadHuevos): float
-    {
-        // Para lotes SUELTOS-*, usar costo_por_huevo directamente
-        if (str_starts_with($this->numero_lote ?? '', 'SUELTOS-')) {
-            return $cantidadHuevos * ($this->costo_por_huevo ?? 0);
-        }
-
-        $huevosFacturadosRestantes = $this->getHuevosFacturadosRestantes();
-
-        if ($cantidadHuevos <= $huevosFacturadosRestantes) {
-            return round($cantidadHuevos * ($this->costo_por_huevo ?? 0), 2);
-        }
-
-        $costoFacturados = $huevosFacturadosRestantes * ($this->costo_por_huevo ?? 0);
-
-        return round($costoFacturados, 2);
-    }
-
-    /**
-     * Calcular el beneficio de los cartones regalados en dinero
-     */
-    public function getBeneficioRegalos(): float
-    {
-        if (($this->cantidad_cartones_regalo ?? 0) <= 0) {
-            return 0;
-        }
-
-        $huevosRegalados = $this->cantidad_cartones_regalo * $this->huevos_por_carton;
-        return round($huevosRegalados * $this->costo_por_huevo, 2);
-    }
-
-    /**
-     * Calcular costo real por carton (promediando con regalos)
-     */
-    public function getCostoRealPorCarton(): float
-    {
-        $cartonesTotales = $this->getCartonesTotales();
-
-        if ($cartonesTotales <= 0) {
-            return 0;
-        }
-
-        return round($this->costo_total_lote / $cartonesTotales, 2);
-    }
-
-    /**
-     * Obtener informacion resumida del lote con regalos
-     */
-    public function getResumenLote(): array
-    {
-        return [
-            'cartones_facturados' => $this->cantidad_cartones_facturados,
-            'cartones_regalo' => $this->cantidad_cartones_regalo,
-            'cartones_totales' => $this->getCartonesTotales(),
-            'huevos_facturados_restantes' => $this->getHuevosFacturadosRestantes(),
-            'huevos_regalo_restantes' => $this->getHuevosRegaloRestantes(),
-            'costo_por_huevo_facturado' => $this->costo_por_huevo,
-            'costo_facturado' => $this->costo_por_carton_facturado,
-            'costo_real_promedio' => $this->getCostoRealPorCarton(),
-            'beneficio_regalos' => $this->getBeneficioRegalos(),
-            'ahorro_porcentaje' => $this->cantidad_cartones_facturados > 0
-                ? round(($this->cantidad_cartones_regalo / $this->cantidad_cartones_facturados) * 100, 2)
-                : 0,
-        ];
-    }
-
-    /**
-     * Verificar si el lote es de sueltos consolidado
+     * Verificar si es lote de sueltos
      */
     public function esLoteSueltos(): bool
     {
@@ -473,32 +332,94 @@ class Lote extends Model
     }
 
     /**
-     * Verificar si el lote tiene huevos de regalo disponibles
+     * Verificar si es lote único
      */
-    public function tieneRegalosDisponibles(): bool
+    public function esLoteUnico(): bool
     {
-        return $this->getHuevosRegaloRestantes() > 0;
+        return str_starts_with($this->numero_lote ?? '', 'LU-');
     }
 
     /**
-     * Obtener el reempaque que origino este lote (si es SUELTOS-*)
+     * Calcular costo de una cantidad de huevos
      */
-    public function getReempaqueOrigenInfo(): ?array
+    public function calcularCostoDeHuevos(float $cantidadHuevos): float
     {
-        if (!$this->esLoteSueltos() || !$this->reempaque_origen_id) {
-            return null;
-        }
+        return round($cantidadHuevos * ($this->costo_por_huevo ?? 0), 2);
+    }
 
-        $reempaque = $this->reempaqueOrigen;
+    // ============================================
+    // SCOPES
+    // ============================================
 
-        if (!$reempaque) {
-            return null;
-        }
+    public function scopeDisponible($query)
+    {
+        return $query->where('estado', 'disponible');
+    }
 
-        return [
-            'numero_reempaque' => $reempaque->numero_reempaque,
-            'fecha' => $reempaque->created_at?->format('Y-m-d H:i'),
-            'lotes_usados' => $reempaque->reempaqueLotes->pluck('lote.numero_lote')->toArray(),
-        ];
+    public function scopePorBodega($query, int $bodegaId)
+    {
+        return $query->where('bodega_id', $bodegaId);
+    }
+
+    public function scopeConRemanente($query)
+    {
+        return $query->where('cantidad_huevos_remanente', '>', 0);
+    }
+
+    public function scopeSueltos($query)
+    {
+        return $query->where('numero_lote', 'LIKE', 'SUELTOS-%');
+    }
+
+    public function scopeLotesUnicos($query)
+    {
+        return $query->where('numero_lote', 'LIKE', 'LU-%');
+    }
+
+    // ============================================
+    // BOOT
+    // ============================================
+
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::saving(function ($lote) {
+            // Lotes SUELTOS y ÚNICOS: no recalcular
+            if (str_starts_with($lote->numero_lote ?? '', 'SUELTOS-') ||
+                str_starts_with($lote->numero_lote ?? '', 'LU-')) {
+                if (is_null($lote->cantidad_cartones_recibidos)) {
+                    $lote->cantidad_cartones_recibidos = 0;
+                }
+                return;
+            }
+
+            // Lotes tradicionales (L-*): lógica original
+            $facturados = $lote->cantidad_cartones_facturados ?? 0;
+            $regalo = $lote->cantidad_cartones_regalo ?? 0;
+
+            if (is_null($lote->cantidad_cartones_recibidos)) {
+                $lote->cantidad_cartones_recibidos = $facturados + $regalo;
+            }
+
+            if (is_null($lote->cantidad_huevos_original)) {
+                $lote->cantidad_huevos_original = $lote->cantidad_cartones_recibidos * $lote->huevos_por_carton;
+            }
+
+            if (is_null($lote->cantidad_huevos_remanente)) {
+                $lote->cantidad_huevos_remanente = $lote->cantidad_huevos_original;
+            }
+
+            if (is_null($lote->costo_por_huevo) || $lote->isDirty('costo_total_lote')) {
+                $huevosFacturados = $facturados * ($lote->huevos_por_carton ?? 30);
+                $lote->costo_por_huevo = $huevosFacturados > 0
+                    ? round(($lote->costo_total_lote ?? 0) / $huevosFacturados, 4)
+                    : 0;
+            }
+
+            if (is_null($lote->costo_por_carton_facturado) && $facturados > 0) {
+                $lote->costo_por_carton_facturado = round(($lote->costo_total_lote ?? 0) / $facturados, 2);
+            }
+        });
     }
 }

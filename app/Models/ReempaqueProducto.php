@@ -15,7 +15,7 @@ class ReempaqueProducto extends Model
     protected $fillable = [
         'reempaque_id',
         'producto_id',
-        'categoria_id',  // 🆕 NUEVO
+        'categoria_id',
         'bodega_id',
         'cantidad',
         'costo_unitario',
@@ -50,11 +50,12 @@ class ReempaqueProducto extends Model
     {
         return $this->belongsTo(Bodega::class, 'bodega_id');
     }
-    // 🆕 NUEVA RELACIÓN
+
     public function categoria(): BelongsTo
     {
         return $this->belongsTo(Categoria::class, 'categoria_id');
     }
+
     // ============================================
     // SCOPES
     // ============================================
@@ -75,7 +76,7 @@ class ReempaqueProducto extends Model
 
     /**
      * Agregar este producto al stock de la bodega con costo promedio ponderado
-     * 🎯 REDONDEO HACIA ARRIBA para evitar pérdidas
+     * 🎯 COSTO EXACTO - Sin redondeo para mantener precisión contable
      * ⚠️ SI EL COSTO ES 0, solo suma stock pero NO afecta el promedio
      */
     public function agregarAStock(): bool
@@ -105,11 +106,8 @@ class ReempaqueProducto extends Model
         // 🎯 SI EL COSTO NUEVO ES 0, solo agregar stock sin afectar el promedio
         if ($costoNuevo <= 0) {
             $bodegaProducto->stock = $stockAnterior + $this->cantidad;
-            // costo_promedio_actual NO cambia
-            // precio_venta_sugerido NO cambia
             $bodegaProducto->save();
 
-            // Marcar como agregado
             $this->agregado_a_stock = true;
             $this->fecha_agregado_stock = now();
             $this->save();
@@ -131,22 +129,20 @@ class ReempaqueProducto extends Model
 
         // Nuevo costo promedio ponderado
         if ($costoAnterior > 0) {
-            // Hay costo anterior, calcular promedio ponderado normal
             $nuevoCostoPromedio = $stockTotal > 0 ? $valorTotal / $stockTotal : $costoNuevo;
         } else {
-            // No había costo anterior, usar el nuevo costo
             $nuevoCostoPromedio = $costoNuevo;
         }
 
-        // 🎯 REDONDEAR COSTO HACIA ARRIBA (evita pérdidas)
-        $nuevoCostoPromedio = (int) ceil($nuevoCostoPromedio);
+        // 🎯 COSTO EXACTO - Redondear solo a 2 decimales para precisión contable
+        $nuevoCostoPromedio = round($nuevoCostoPromedio, 2);
 
         // Actualizar stock y costo promedio
         $bodegaProducto->stock = $stockTotal;
         $bodegaProducto->costo_promedio_actual = $nuevoCostoPromedio;
 
         // Calcular precio de venta sugerido (costo + margen)
-        $margen = $bodegaProducto->producto->margen_ganancia ?? 5; // Default L5
+        $margen = $bodegaProducto->producto->margen_ganancia ?? 5;
         $tipoMargen = $bodegaProducto->producto->tipo_margen ?? 'monto';
 
         if ($tipoMargen === 'porcentaje') {
@@ -155,8 +151,8 @@ class ReempaqueProducto extends Model
             $precioVentaCalculado = $nuevoCostoPromedio + $margen;
         }
 
-        // 🎯 REDONDEAR PRECIO HACIA ARRIBA (nunca pierdes)
-        $bodegaProducto->precio_venta_sugerido = (int) ceil($precioVentaCalculado);
+        // 🎯 PRECIO: Redondear hacia arriba para no perder en ventas
+        $bodegaProducto->precio_venta_sugerido = ceil($precioVentaCalculado * 100) / 100;
 
         $bodegaProducto->save();
 
@@ -178,12 +174,11 @@ class ReempaqueProducto extends Model
 
     /**
      * Revertir la adición al stock (para cancelaciones)
-     * ⚠️ NOTA: Esto reduce stock pero NO recalcula el costo promedio
      */
     public function revertirStock(): bool
     {
         if (!$this->agregado_a_stock) {
-            return false; // No hay nada que revertir
+            return false;
         }
 
         $bodegaProducto = BodegaProducto::where('producto_id', $this->producto_id)
@@ -191,20 +186,17 @@ class ReempaqueProducto extends Model
             ->first();
 
         if (!$bodegaProducto) {
-            return false; // No existe el registro
+            return false;
         }
 
-        // Reducir el stock
         $bodegaProducto->stock -= $this->cantidad;
 
-        // Si el stock queda en 0 o negativo, ajustar
         if ($bodegaProducto->stock < 0) {
             $bodegaProducto->stock = 0;
         }
 
         $bodegaProducto->save();
 
-        // Marcar como no agregado
         $this->agregado_a_stock = false;
         $this->fecha_agregado_stock = null;
         $this->save();
@@ -262,13 +254,6 @@ class ReempaqueProducto extends Model
      */
     public function getCostoConMerma(): float
     {
-        $reempaque = $this->reempaque;
-
-        if (!$reempaque) {
-            return $this->costo_unitario;
-        }
-
-        // El costo_unitario ya incluye la merma porque se calcula sobre huevos_utiles
         return $this->costo_unitario;
     }
 

@@ -7,6 +7,8 @@ use App\Models\Cliente;
 use App\Http\Controllers\ViajeVentaController;
 use App\Http\Controllers\CotizacionPdfController;
 use App\Http\Controllers\FacturaVentaController;
+use App\Http\Controllers\LiquidacionViajePdfController;
+use App\Http\Controllers\CargaChoferPdfController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -62,6 +64,26 @@ Route::middleware(['auth'])->group(function () {
     // Factura de Venta - Imprimir (estilo ticket)
     Route::get('/venta/{venta}/imprimir', [FacturaVentaController::class, 'imprimir'])
         ->name('venta.imprimir');
+
+    // =====================================================
+    // RUTAS PDF - Viajes
+    // =====================================================
+
+    // Liquidación de Viaje - Ver en navegador
+    Route::get('/pdf/liquidacion-viaje/{viaje}', [LiquidacionViajePdfController::class, 'generate'])
+        ->name('pdf.liquidacion-viaje');
+    
+    // Liquidación de Viaje - Descargar
+    Route::get('/pdf/liquidacion-viaje/{viaje}/download', [LiquidacionViajePdfController::class, 'download'])
+        ->name('pdf.liquidacion-viaje.download');
+
+    // Carga Chofer - Ver en navegador
+    Route::get('/pdf/carga-chofer/{viaje}', [CargaChoferPdfController::class, 'generate'])
+        ->name('pdf.carga-chofer');
+    
+    // Carga Chofer - Descargar
+    Route::get('/pdf/carga-chofer/{viaje}/download', [CargaChoferPdfController::class, 'download'])
+        ->name('pdf.carga-chofer.download');
 });
 
 require __DIR__.'/auth.php';

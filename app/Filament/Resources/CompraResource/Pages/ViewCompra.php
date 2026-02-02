@@ -10,6 +10,7 @@ use Filament\Infolists\Infolist;
 use Illuminate\Support\Facades\Auth;
 use App\Models\Lote;
 use App\Models\BodegaProducto;
+use Illuminate\Support\Facades\Log;
 
 class ViewCompra extends ViewRecord
 {
@@ -34,8 +35,11 @@ class ViewCompra extends ViewRecord
 
         $nombreLower = strtolower($unidad->nombre);
 
-        // Verificar si contiene "carton" o "cartón" (con o sin acento)
-        return str_contains($nombreLower, 'carton') || str_contains($nombreLower, 'cartón');
+        // Reconocer cartones: "carton", "cartón", "1x30", o cualquier unidad con "30"
+        return str_contains($nombreLower, 'carton') 
+            || str_contains($nombreLower, 'cartón')
+            || str_contains($nombreLower, '1x30')
+            || str_contains($nombreLower, '30');
     }
 
     protected function getHeaderActions(): array
@@ -86,7 +90,7 @@ class ViewCompra extends ViewRecord
                 }),
 
             // ========================================
-            // 🎯 MARCAR COMO RECIBIDA (CREA LOTES O AGREGA A STOCK)
+            // 🎯 MARCAR COMO RECIBIDA (AGREGA A LOTE ÚNICO O STOCK)
             // ========================================
 
             Actions\Action::make('marcar_recibida')
@@ -141,7 +145,7 @@ class ViewCompra extends ViewRecord
                     $bodegaId = $data['bodega_id'];
                     $bodega = \App\Models\Bodega::find($bodegaId);
 
-                    // 🎯 PROCESAR INVENTARIO (Lotes para cartones, Stock directo para otros)
+                    // 🎯 PROCESAR INVENTARIO CON LOTE ÚNICO
                     $resultado = $this->procesarInventarioDesdeCompra($bodegaId);
 
                     $this->record->update([
@@ -156,8 +160,8 @@ class ViewCompra extends ViewRecord
                         ? "¡Compra completada! "
                         : "";
 
-                    if ($resultado['lotes'] > 0) {
-                        $mensaje .= "Se crearon {$resultado['lotes']} lote(s). ";
+                    if ($resultado['lotes_actualizados'] > 0) {
+                        $mensaje .= "Se actualizaron {$resultado['lotes_actualizados']} lote(s). ";
                     }
                     if ($resultado['productos_stock'] > 0) {
                         $mensaje .= "Se agregaron {$resultado['productos_stock']} producto(s) al stock. ";
@@ -227,7 +231,7 @@ class ViewCompra extends ViewRecord
                 }),
 
             // ========================================
-            // 🎯 RECIBIR Y PAGAR (CREA LOTES O AGREGA A STOCK)
+            // 🎯 RECIBIR Y PAGAR (AGREGA A LOTE ÚNICO O STOCK)
             // ========================================
 
             Actions\Action::make('recibir_y_pagar')
@@ -271,7 +275,7 @@ class ViewCompra extends ViewRecord
                     $bodegaId = $data['bodega_id'];
                     $bodega = \App\Models\Bodega::find($bodegaId);
 
-                    // 🎯 PROCESAR INVENTARIO (Lotes para cartones, Stock directo para otros)
+                    // 🎯 PROCESAR INVENTARIO CON LOTE ÚNICO
                     $resultado = $this->procesarInventarioDesdeCompra($bodegaId);
 
                     if ($nota) {
@@ -289,8 +293,8 @@ class ViewCompra extends ViewRecord
                     $this->refreshFormData(['estado', 'nota']);
 
                     $mensaje = "¡Compra completada! ";
-                    if ($resultado['lotes'] > 0) {
-                        $mensaje .= "Se crearon {$resultado['lotes']} lote(s). ";
+                    if ($resultado['lotes_actualizados'] > 0) {
+                        $mensaje .= "Se actualizaron {$resultado['lotes_actualizados']} lote(s). ";
                     }
                     if ($resultado['productos_stock'] > 0) {
                         $mensaje .= "Se agregaron {$resultado['productos_stock']} producto(s) al stock. ";
@@ -423,8 +427,6 @@ class ViewCompra extends ViewRecord
                     $totalProductos = $this->record->detalles()->count();
                     $totalUnidadesFacturadas = $this->record->detalles()->sum('cantidad_facturada');
                     $totalUnidadesRecibidas = $this->record->detalles()->sum('cantidad_recibida');
-
-                    // 🆕 Calcular ISV total de la compra
                     $totalIsvCredito = $this->record->detalles()->sum('isv_credito');
 
                     $mensaje = "📦 RESUMEN DE COMPRA #{$this->record->numero_compra}\n\n";
@@ -436,7 +438,6 @@ class ViewCompra extends ViewRecord
                     $mensaje .= "Total unidades recibidas: " . number_format($totalUnidadesRecibidas, 2) . "\n";
                     $mensaje .= "Total a pagar: L " . number_format($this->record->total, 2) . "\n";
 
-                    // 🆕 Mostrar ISV crédito si existe
                     if ($totalIsvCredito > 0) {
                         $mensaje .= "💰 ISV Crédito Fiscal: L " . number_format($totalIsvCredito, 2) . "\n";
                     }
@@ -449,11 +450,6 @@ class ViewCompra extends ViewRecord
                             $mensaje .= "Interés acumulado: L " . number_format($interesAcumulado, 2) . " ({$periodos} {$periodo})\n";
                             $mensaje .= "Saldo total: L " . number_format($this->record->getSaldoConIntereses(), 2) . "\n";
                         }
-                    }
-
-                    $lotes = $this->record->lotes()->count();
-                    if ($lotes > 0) {
-                        $mensaje .= "\n📋 Lotes creados: {$lotes}";
                     }
 
                     $mensaje .= "\n\nCreado: " . $this->record->created_at->format('d/m/Y H:i');
@@ -473,17 +469,17 @@ class ViewCompra extends ViewRecord
     }
 
     /**
-     * 🎯 PROCESAR INVENTARIO DESDE LA COMPRA
+     * 🎯 PROCESAR INVENTARIO DESDE LA COMPRA - CON LOTE ÚNICO
      *
-     * - Productos con unidad CARTON o MEDIO CARTON → Crear LOTES (flujo de huevos)
-     * - Productos con OTRAS unidades → Agregar directo a STOCK con costo promedio ponderado
+     * - Productos con unidad CARTON/1x30 → Agregar a LOTE ÚNICO (costo promedio ponderado)
+     * - Productos con OTRAS unidades → Agregar directo a STOCK
      *
      * @param int $bodegaId
-     * @return array ['lotes' => int, 'productos_stock' => int]
+     * @return array ['lotes_actualizados' => int, 'productos_stock' => int]
      */
     protected function procesarInventarioDesdeCompra(int $bodegaId): array
     {
-        $lotesCreados = 0;
+        $lotesActualizados = 0;
         $productosStock = 0;
 
         foreach ($this->record->detalles as $detalle) {
@@ -493,13 +489,13 @@ class ViewCompra extends ViewRecord
                 continue;
             }
 
-            // 🎯 VERIFICAR SI ES UNIDAD TIPO CARTÓN
+            // 🎯 VERIFICAR SI ES UNIDAD TIPO CARTÓN (incluye 1x30)
             if ($this->esUnidadCarton($detalle->unidad_id)) {
                 // ========================================
-                // FLUJO DE LOTES (para huevos en cartones)
+                // FLUJO DE LOTE ÚNICO (para huevos en cartones)
                 // ========================================
-                $this->crearLoteDesdeDetalle($detalle, $bodegaId);
-                $lotesCreados++;
+                $this->agregarALoteUnico($detalle, $bodegaId);
+                $lotesActualizados++;
             } else {
                 // ========================================
                 // FLUJO DE STOCK DIRECTO (otros productos)
@@ -510,57 +506,54 @@ class ViewCompra extends ViewRecord
         }
 
         return [
-            'lotes' => $lotesCreados,
+            'lotes_actualizados' => $lotesActualizados,
             'productos_stock' => $productosStock,
         ];
     }
 
     /**
-     * 🎯 CREAR LOTE DESDE DETALLE DE COMPRA (para cartones de huevos)
+     * 🎯 AGREGAR A LOTE ÚNICO (para cartones de huevos)
+     *
+     * Busca el lote único del producto en la bodega y agrega la compra.
+     * Si no existe, lo crea. Usa costo promedio ponderado.
      */
-    protected function crearLoteDesdeDetalle($detalle, int $bodegaId): void
+    protected function agregarALoteUnico($detalle, int $bodegaId): void
     {
         $huevosPorCarton = 30;
 
         $cantidadFacturada = $detalle->cantidad_facturada ?? $detalle->cantidad ?? 0;
         $cantidadRegalo = $detalle->cantidad_regalo ?? 0;
-        $cantidadRecibida = $cantidadFacturada + $cantidadRegalo;
 
-        if ($cantidadRecibida <= 0) {
+        if (($cantidadFacturada + $cantidadRegalo) <= 0) {
             return;
         }
 
-        $totalHuevos = $cantidadRecibida * $huevosPorCarton;
-        $costoTotalLote = $detalle->subtotal ?? ($cantidadFacturada * $detalle->precio_unitario);
+        // Calcular costo total de esta compra
+        $costoCompra = $detalle->subtotal ?? ($cantidadFacturada * $detalle->precio_unitario);
 
-        $costoPorCartonFacturado = $cantidadFacturada > 0
-            ? round($costoTotalLote / $cantidadFacturada, 2)
-            : 0;
-
-        $costoPorHuevo = Lote::calcularCostoPorHuevo(
-            $costoTotalLote,
-            $cantidadFacturada,
-            $huevosPorCarton
+        // Obtener o crear el lote único
+        $lote = Lote::obtenerOCrearLoteUnico(
+            $detalle->producto_id,
+            $bodegaId,
+            $huevosPorCarton,
+            Auth::id()
         );
 
-        Lote::create([
-            'compra_id' => $this->record->id,
-            'compra_detalle_id' => $detalle->id,
-            'producto_id' => $detalle->producto_id,
-            'proveedor_id' => $this->record->proveedor_id,
-            'bodega_id' => $bodegaId,
-            'numero_lote' => $this->generarNumeroLote($bodegaId),
-            'cantidad_cartones_facturados' => $cantidadFacturada,
-            'cantidad_cartones_regalo' => $cantidadRegalo,
-            'cantidad_cartones_recibidos' => $cantidadRecibida,
-            'huevos_por_carton' => $huevosPorCarton,
-            'cantidad_huevos_original' => $totalHuevos,
-            'cantidad_huevos_remanente' => $totalHuevos,
-            'costo_total_lote' => $costoTotalLote,
-            'costo_por_carton_facturado' => $costoPorCartonFacturado,
-            'costo_por_huevo' => $costoPorHuevo,
-            'estado' => 'disponible',
-            'created_by' => Auth::id(),
+        // Agregar la compra al lote (recalcula costo promedio)
+        $resultado = $lote->agregarCompra(
+            $cantidadFacturada,
+            $cantidadRegalo,
+            $costoCompra,
+            $this->record->id,
+            $detalle->id,
+            $this->record->proveedor_id
+        );
+
+        // Log para debugging (opcional)
+        Log::info("Compra agregada a lote único", [
+            'lote' => $lote->numero_lote,
+            'compra' => $this->record->numero_compra,
+            'resultado' => $resultado,
         ]);
     }
 
@@ -568,7 +561,6 @@ class ViewCompra extends ViewRecord
      * 🎯 AGREGAR STOCK DESDE DETALLE DE COMPRA (para productos que no son cartones)
      *
      * Usa el método de COSTO PROMEDIO PONDERADO de BodegaProducto
-     * 🆕 Si el producto tiene ISV, usa costo_sin_isv en lugar de precio_unitario
      */
     protected function agregarStockDesdeDetalle($detalle, int $bodegaId): void
     {
@@ -580,23 +572,18 @@ class ViewCompra extends ViewRecord
             return;
         }
 
-        // 🆕 DETERMINAR EL COSTO UNITARIO CORRECTO
-        // Si tiene costo_sin_isv (producto con ISV), usar ese
-        // Si no, usar precio_unitario normal
+        // Determinar el costo unitario correcto
         $costoUnitario = 0;
 
         if (!empty($detalle->costo_sin_isv) && $detalle->costo_sin_isv > 0) {
-            // Producto con ISV - usar costo real sin ISV
             $costoUnitario = (float) $detalle->costo_sin_isv;
         } else {
-            // Producto sin ISV - calcular desde subtotal o precio_unitario
             $costoTotal = $detalle->subtotal ?? ($cantidadFacturada * $detalle->precio_unitario);
             $costoUnitario = $cantidadFacturada > 0
                 ? $costoTotal / $cantidadFacturada
                 : 0;
         }
 
-        // Sin redondeo - mantener valor exacto
         $costoUnitario = round($costoUnitario, 2);
 
         // Buscar o crear registro en bodega_producto
@@ -614,13 +601,12 @@ class ViewCompra extends ViewRecord
             ]
         );
 
-        // 🎯 AGREGAR STOCK CON COSTO PROMEDIO PONDERADO
-        // Primero agregar los facturados (tienen costo)
+        // Agregar stock con costo promedio ponderado
         if ($cantidadFacturada > 0) {
             $bodegaProducto->actualizarCostoPromedio($cantidadFacturada, $costoUnitario);
         }
 
-        // Luego agregar los de regalo (sin costo, no afectan el promedio)
+        // Agregar regalo sin costo
         if ($cantidadRegalo > 0) {
             $bodegaProducto->agregarStockSinCosto($cantidadRegalo);
         }
@@ -638,30 +624,6 @@ class ViewCompra extends ViewRecord
             'cancelada' => 'Cancelada ❌',
             default => $estado,
         };
-    }
-
-    /**
-     * Generar número de lote automático basado en la bodega
-     * Formato: L-B{ID_BODEGA}-{SECUENCIAL}
-     */
-    protected function generarNumeroLote(int $bodegaId): string
-    {
-        $ultimoLote = Lote::where('numero_lote', 'LIKE', "L-B{$bodegaId}-%")
-            ->where('numero_lote', 'NOT LIKE', 'SUELTOS-%')
-            ->orderBy('numero_lote', 'desc')
-            ->value('numero_lote');
-
-        if ($ultimoLote) {
-            $prefijo = "L-B{$bodegaId}-";
-            $numeroSecuencial = (int) str_replace($prefijo, '', $ultimoLote);
-            $nuevoNumero = $numeroSecuencial + 1;
-        } else {
-            $nuevoNumero = 1;
-        }
-
-        $numeroFormateado = str_pad($nuevoNumero, 6, '0', STR_PAD_LEFT);
-
-        return "L-B{$bodegaId}-{$numeroFormateado}";
     }
 
     public function infolist(Infolist $infolist): Infolist
@@ -743,7 +705,7 @@ class ViewCompra extends ViewRecord
                             ]),
                     ]),
 
-                // 🆕 SECCIÓN DE ISV CRÉDITO FISCAL
+                // ISV Crédito Fiscal
                 Infolists\Components\Section::make('ISV Crédito Fiscal')
                     ->schema([
                         Infolists\Components\Grid::make(3)
@@ -763,7 +725,7 @@ class ViewCompra extends ViewRecord
 
                                 Infolists\Components\TextEntry::make('info_isv')
                                     ->label('')
-                                    ->getStateUsing(fn() => '💡 Este monto es deducible en tu declaración fiscal')
+                                    ->getStateUsing(fn() => 'Este monto es deducible en tu declaración fiscal')
                                     ->color('gray'),
                             ]),
                     ])
@@ -799,52 +761,6 @@ class ViewCompra extends ViewRecord
                     ->visible(fn($record) => $record->tipo_pago === 'credito')
                     ->collapsible(),
 
-                // 🎯 SECCIÓN DE LOTES (para cartones de huevos)
-                Infolists\Components\Section::make('Lotes Generados')
-                    ->schema([
-                        Infolists\Components\RepeatableEntry::make('lotes')
-                            ->schema([
-                                Infolists\Components\TextEntry::make('numero_lote')
-                                    ->label('No. Lote')
-                                    ->weight('bold')
-                                    ->copyable(),
-
-                                Infolists\Components\TextEntry::make('producto.nombre')
-                                    ->label('Producto'),
-
-                                Infolists\Components\TextEntry::make('cantidad_cartones_facturados')
-                                    ->label('Facturados')
-                                    ->numeric(decimalPlaces: 0)
-                                    ->suffix(' cart.'),
-
-                                Infolists\Components\TextEntry::make('cantidad_cartones_regalo')
-                                    ->label('Regalo 🎁')
-                                    ->numeric(decimalPlaces: 0)
-                                    ->suffix(' cart.')
-                                    ->color('success')
-                                    ->visible(fn($state) => $state > 0),
-
-                                Infolists\Components\TextEntry::make('cantidad_huevos_remanente')
-                                    ->label('Disponibles')
-                                    ->numeric(decimalPlaces: 0)
-                                    ->suffix(' huevos')
-                                    ->color(fn($state) => $state > 0 ? 'success' : 'gray'),
-
-                                Infolists\Components\TextEntry::make('costo_por_huevo')
-                                    ->label('Costo/Huevo')
-                                    ->formatStateUsing(fn($state) => 'L ' . number_format($state, 2))
-                                    ->helperText('Solo facturados'),
-
-                                Infolists\Components\TextEntry::make('estado')
-                                    ->badge()
-                                    ->formatStateUsing(fn($state) => $state === 'disponible' ? 'Disponible' : 'Agotado')
-                                    ->color(fn($state) => $state === 'disponible' ? 'success' : 'gray'),
-                            ])
-                            ->columns(7),
-                    ])
-                    ->visible(fn($record) => $record->lotes()->count() > 0)
-                    ->collapsible(),
-
                 Infolists\Components\Section::make('Productos')
                     ->schema([
                         Infolists\Components\RepeatableEntry::make('detalles')
@@ -864,7 +780,7 @@ class ViewCompra extends ViewRecord
                                     ->suffix(' fact.'),
 
                                 Infolists\Components\TextEntry::make('cantidad_regalo')
-                                    ->label('Regalo 🎁')
+                                    ->label('Regalo')
                                     ->numeric(decimalPlaces: 0)
                                     ->suffix(' reg.')
                                     ->color('success')
@@ -880,7 +796,6 @@ class ViewCompra extends ViewRecord
                                     ->label('Precio Unit.')
                                     ->money('HNL'),
 
-                                // 🆕 Mostrar costo sin ISV si aplica
                                 Infolists\Components\TextEntry::make('costo_sin_isv')
                                     ->label('Costo Real')
                                     ->money('HNL')
@@ -888,7 +803,6 @@ class ViewCompra extends ViewRecord
                                     ->visible(fn($record) => !empty($record->costo_sin_isv) && $record->costo_sin_isv > 0)
                                     ->helperText('Sin ISV'),
 
-                                // 🆕 Mostrar ISV crédito si aplica
                                 Infolists\Components\TextEntry::make('isv_credito')
                                     ->label('ISV')
                                     ->money('HNL')

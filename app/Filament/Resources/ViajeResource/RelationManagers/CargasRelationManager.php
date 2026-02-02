@@ -67,30 +67,28 @@ class CargasRelationManager extends RelationManager
                             $producto = Producto::find($state);
 
                             if ($bodegaProducto && $producto) {
-                                $costoPromedio = $bodegaProducto->costo_promedio_actual ?? 0;
-                                
-                                // 🎯 USAR PRECIO MÁXIMO COMPETITIVO SI ESTÁ CONFIGURADO
-                                // Si el producto tiene precio_venta_maximo y el costo es menor, usar ese precio
-                                if ($producto->tienePrecioMaximo() && $costoPromedio < $producto->precio_venta_maximo) {
-                                    $precioBase = (float) $producto->precio_venta_maximo;
-                                } else {
-                                    // Si no tiene precio máximo o el costo supera el máximo, usar el precio calculado
-                                    $precioBase = $bodegaProducto->precio_venta_sugerido ?? ($costoPromedio + 5);
-                                }
-                                
+                                // Costo sin ISV (como está en la BD)
+                                $costoSinIsv = $bodegaProducto->costo_promedio_actual ?? 0;
                                 $aplicaIsv = $producto->aplica_isv ?? false;
                                 
-                                // Precio con ISV redondeado hacia arriba
-                                $precioConIsv = $aplicaIsv 
-                                    ? (int) ceil($precioBase * (1 + self::ISV_RATE)) 
-                                    : (int) $precioBase;
+                                // Costo con ISV (lo que realmente pagó) - para mostrar
+                                $costoConIsv = $aplicaIsv ? round($costoSinIsv * 1.15, 2) : $costoSinIsv;
+                                
+                                // El precio_venta_sugerido YA INCLUYE ISV
+                                $precioConIsv = $bodegaProducto->precio_venta_sugerido ?? 0;
+                                
+                                // Precio sin ISV (desglosado)
+                                $precioSinIsv = $aplicaIsv && $precioConIsv > 0
+                                    ? round($precioConIsv / 1.15, 2) 
+                                    : $precioConIsv;
 
                                 $set('stock_disponible', number_format((float) $bodegaProducto->stock, 2));
-                                $set('costo_unitario', $costoPromedio);
-                                $set('precio_venta_sugerido', $precioBase);
-                                $set('precio_venta_minimo', $costoPromedio);
+                                $set('costo_unitario', $costoSinIsv); // Guardamos sin ISV en BD
+                                $set('costo_con_isv', $costoConIsv); // Mostramos con ISV
+                                $set('precio_venta_sugerido', $precioSinIsv); // Precio sin ISV
+                                $set('precio_venta_minimo', $costoConIsv); // Precio mínimo = lo que pagaste
                                 $set('aplica_isv', $aplicaIsv);
-                                $set('precio_con_isv', $precioConIsv);
+                                $set('precio_con_isv', $precioConIsv); // Precio con ISV (tal cual de BD)
                                 $set('unidad_id', $producto->unidad_id);
                                 
                                 // Inicializar subtotales en 0
@@ -100,7 +98,7 @@ class CargasRelationManager extends RelationManager
                                 // Si ya hay cantidad, calcular subtotales
                                 $cantidad = floatval($get('cantidad') ?? 0);
                                 if ($cantidad > 0) {
-                                    $set('subtotal_costo', round($costoPromedio * $cantidad, 2));
+                                    $set('subtotal_costo', round($costoSinIsv * $cantidad, 2));
                                     $set('subtotal_venta', round($precioConIsv * $cantidad, 2));
                                 }
                             }
@@ -108,6 +106,7 @@ class CargasRelationManager extends RelationManager
                             // Limpiar campos si no hay producto seleccionado
                             $set('stock_disponible', null);
                             $set('costo_unitario', null);
+                            $set('costo_con_isv', null);
                             $set('precio_venta_sugerido', null);
                             $set('precio_venta_minimo', null);
                             $set('aplica_isv', false);
@@ -139,31 +138,41 @@ class CargasRelationManager extends RelationManager
                         $this->recalcularSubtotales($get, $set, $state);
                     }),
 
-                Forms\Components\TextInput::make('costo_unitario')
+                // Costo que se muestra (con ISV si aplica)
+                Forms\Components\TextInput::make('costo_con_isv')
                     ->label('Costo Unitario')
                     ->numeric()
                     ->prefix('L')
-                    ->required()
-                    ->live(debounce: 500)
-                    ->afterStateUpdated(function ($state, Forms\Get $get, Forms\Set $set) {
-                        $set('precio_venta_minimo', floatval($state));
-                        $this->recalcularSubtotales($get, $set, $get('cantidad'));
-                    }),
+                    ->disabled()
+                    ->dehydrated(false)
+                    ->helperText(fn (Forms\Get $get) => 
+                        ($get('aplica_isv') ?? false) 
+                            ? 'Lo que pagaste (incluye ISV)' 
+                            : 'Costo del producto'
+                    ),
+
+                // Costo real que se guarda en BD (sin ISV)
+                Forms\Components\Hidden::make('costo_unitario')
+                    ->default(0),
 
                 Forms\Components\TextInput::make('precio_venta_sugerido')
-                    ->label('Precio Venta (sin ISV)')
+                    ->label(fn (Forms\Get $get) => 
+                        ($get('aplica_isv') ?? false) 
+                            ? 'Precio Venta (sin ISV)' 
+                            : 'Precio Venta'
+                    )
                     ->numeric()
                     ->prefix('L')
                     ->required()
                     ->live(debounce: 500)
                     ->afterStateUpdated(function ($state, Forms\Get $get, Forms\Set $set) {
-                        $precioBase = floatval($state ?? 0);
+                        $precioSinIsv = floatval($state ?? 0);
                         $aplicaIsv = $get('aplica_isv') ?? false;
                         
-                        // Actualizar precio con ISV (redondeado hacia arriba)
+                        // Calcular precio con ISV
                         $precioConIsv = $aplicaIsv 
-                            ? (int) ceil($precioBase * (1 + self::ISV_RATE)) 
-                            : (int) $precioBase;
+                            ? round($precioSinIsv * (1 + self::ISV_RATE), 2)
+                            : $precioSinIsv;
                         $set('precio_con_isv', $precioConIsv);
                         
                         // Recalcular subtotales
@@ -184,7 +193,8 @@ class CargasRelationManager extends RelationManager
                     ->prefix('L')
                     ->disabled()
                     ->dehydrated(false)
-                    ->helperText('Precio final al cliente'),
+                    ->helperText('Precio final al cliente')
+                    ->visible(fn (Forms\Get $get) => $get('aplica_isv') ?? false),
 
                 Forms\Components\TextInput::make('precio_venta_minimo')
                     ->label('Precio Mínimo')
@@ -203,32 +213,38 @@ class CargasRelationManager extends RelationManager
                     ->default(0),
 
                 Forms\Components\TextInput::make('subtotal_venta')
-                    ->label('Subtotal Venta (con ISV)')
+                    ->label(fn (Forms\Get $get) => 
+                        ($get('aplica_isv') ?? false) 
+                            ? 'Subtotal Venta (con ISV)' 
+                            : 'Subtotal Venta'
+                    )
                     ->numeric()
                     ->prefix('L')
                     ->disabled()
                     ->dehydrated(true)
                     ->default(0)
-                    ->helperText('Incluye ISV si aplica'),
+                    ->helperText(fn (Forms\Get $get) => 
+                        ($get('aplica_isv') ?? false) 
+                            ? 'Incluye ISV' 
+                            : ''
+                    ),
             ])
             ->columns(3);
     }
 
     /**
      * Recalcular subtotales considerando ISV
-     * CORRECTO: Usa precio_con_isv (ya redondeado) × cantidad
      */
     private function recalcularSubtotales(Forms\Get $get, Forms\Set $set, $cantidad): void
     {
         $cantidad = floatval($cantidad ?? 0);
-        $costo = floatval($get('costo_unitario') ?? 0);
+        $costoSinIsv = floatval($get('costo_unitario') ?? 0);
         $precioConIsv = floatval($get('precio_con_isv') ?? 0);
 
-        // Subtotal costo = costo unitario × cantidad
-        $set('subtotal_costo', round($costo * $cantidad, 2));
+        // Subtotal costo = costo unitario (sin ISV) × cantidad
+        $set('subtotal_costo', round($costoSinIsv * $cantidad, 2));
 
-        // Subtotal venta = precio con ISV (redondeado) × cantidad
-        // Esto es correcto para facturación: el cliente paga el precio unitario redondeado
+        // Subtotal venta = precio con ISV × cantidad
         $set('subtotal_venta', round($precioConIsv * $cantidad, 2));
     }
 
@@ -253,10 +269,22 @@ class CargasRelationManager extends RelationManager
                     ->badge()
                     ->color('gray'),
 
+                // Mostrar costo CON ISV (lo que realmente pagó)
                 Tables\Columns\TextColumn::make('costo_unitario')
                     ->label('Costo Unit.')
                     ->money('HNL')
-                    ->sortable(),
+                    ->sortable()
+                    ->getStateUsing(function ($record) {
+                        $costoSinIsv = $record->costo_unitario ?? 0;
+                        $aplicaIsv = $record->producto?->aplica_isv ?? false;
+                        
+                        // Mostrar con ISV si aplica
+                        if ($aplicaIsv && $costoSinIsv > 0) {
+                            return round($costoSinIsv * 1.15, 2);
+                        }
+                        return $costoSinIsv;
+                    })
+                    ->description(fn ($record) => $record->producto?->aplica_isv ? 'Incluye ISV' : ''),
 
                 Tables\Columns\TextColumn::make('precio_venta_sugerido')
                     ->label('Precio Venta')
@@ -376,13 +404,15 @@ class CargasRelationManager extends RelationManager
                         
                         $producto = $record->producto;
                         $aplicaIsv = $producto?->aplica_isv ?? false;
-                        $precioBase = $data['precio_venta_sugerido'] ?? 0;
+                        $costoSinIsv = $data['costo_unitario'] ?? 0;
+                        $precioSinIsv = $data['precio_venta_sugerido'] ?? 0;
                         
                         $data['stock_disponible'] = number_format((float) (($bodegaProducto->stock ?? 0) + $record->cantidad), 2);
                         $data['aplica_isv'] = $aplicaIsv;
+                        $data['costo_con_isv'] = $aplicaIsv ? round($costoSinIsv * 1.15, 2) : $costoSinIsv;
                         $data['precio_con_isv'] = $aplicaIsv 
-                            ? (int) ceil($precioBase * (1 + self::ISV_RATE)) 
-                            : (int) $precioBase;
+                            ? round($precioSinIsv * (1 + self::ISV_RATE), 2)
+                            : $precioSinIsv;
                         
                         return $data;
                     })

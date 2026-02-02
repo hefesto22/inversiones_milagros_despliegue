@@ -305,9 +305,12 @@ class CompraResource extends Resource
                                                     return [];
                                                 }
 
-                                                // Excluir productos con unidad "Medio Cartón" (no se compran, se reempaquetan)
+                                                // Excluir productos con unidad "1x15" o "Medio" (no se compran, se reempaquetan)
                                                 $unidadesExcluidas = Unidad::where('activo', true)
-                                                    ->where('nombre', 'like', '%Medio%')
+                                                    ->where(function($query) {
+                                                        $query->where('nombre', 'like', '%Medio%')
+                                                              ->orWhere('nombre', '1x15');
+                                                    })
                                                     ->pluck('id')
                                                     ->toArray();
 
@@ -321,6 +324,7 @@ class CompraResource extends Resource
                                                 if ($esSuperAdminOJefe) {
                                                     return Producto::where('activo', true)
                                                         ->whereNotIn('unidad_id', $unidadesExcluidas)
+                                                        ->where('nombre', 'NOT LIKE', '%opoa%')
                                                         ->orderBy('nombre')
                                                         ->get()
                                                         ->mapWithKeys(fn($producto) => [
@@ -343,6 +347,7 @@ class CompraResource extends Resource
 
                                                 return Producto::where('activo', true)
                                                     ->whereNotIn('unidad_id', $unidadesExcluidas)
+                                                    ->where('nombre', 'NOT LIKE', '%opoa%')
                                                     ->whereHas('bodegas', function ($query) use ($bodegasUsuario) {
                                                         $query->whereIn('bodega_producto.bodega_id', $bodegasUsuario)
                                                             ->where('bodega_producto.activo', true);

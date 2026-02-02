@@ -77,6 +77,7 @@ class ProductosDisponiblesWidget extends BaseWidget
                         default => 'danger',
                     }),
 
+                // Precio sin ISV (desglosado)
                 Tables\Columns\TextColumn::make('precio_venta')
                     ->label('Precio Venta')
                     ->getStateUsing(function (Producto $record) {
@@ -84,12 +85,20 @@ class ProductosDisponiblesWidget extends BaseWidget
                         $bp = BodegaProducto::where('bodega_id', $this->bodegaId)
                             ->where('producto_id', $record->id)
                             ->first();
-                        return $bp?->precio_venta_sugerido ?? 0;
+                        $precioConIsv = $bp?->precio_venta_sugerido ?? 0;
+                        
+                        // Si aplica ISV, el precio guardado YA lo incluye, entonces desgloso
+                        if ($record->aplica_isv && $precioConIsv > 0) {
+                            return round($precioConIsv / 1.15, 2);
+                        }
+                        
+                        return $precioConIsv;
                     })
                     ->money('HNL')
                     ->color('success')
                     ->weight('bold'),
 
+                // Precio + ISV (precio final - tal cual está guardado)
                 Tables\Columns\TextColumn::make('precio_con_isv')
                     ->label('Precio + ISV')
                     ->getStateUsing(function (Producto $record) {
@@ -97,16 +106,14 @@ class ProductosDisponiblesWidget extends BaseWidget
                         $bp = BodegaProducto::where('bodega_id', $this->bodegaId)
                             ->where('producto_id', $record->id)
                             ->first();
-                        $precio = $bp?->precio_venta_sugerido ?? 0;
-
-                        if ($record->aplica_isv) {
-                            return $precio * 1.15;
-                        }
-                        return $precio;
+                        
+                        // El precio_venta_sugerido YA incluye ISV si aplica
+                        // Solo retornamos el valor tal cual
+                        return $bp?->precio_venta_sugerido ?? 0;
                     })
                     ->money('HNL')
                     ->color('primary')
-                    ->description(fn (Producto $record) => $record->aplica_isv ? '+15% ISV' : 'Sin ISV'),
+                    ->description(fn (Producto $record) => $record->aplica_isv ? 'Incluye 15% ISV' : 'Sin ISV'),
 
                 Tables\Columns\IconColumn::make('aplica_isv')
                     ->label('ISV')

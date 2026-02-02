@@ -95,24 +95,32 @@ class CreateVenta extends CreateRecord
         }
 
         if (!$encontrado) {
-            // Calcular ISV
-            $precioUnitario = floatval($producto['precio_unitario']);
-            $aplicaIsv = $producto['aplica_isv'] ?? true;
-            $isvUnitario = $aplicaIsv ? round($precioUnitario * 0.15, 2) : 0;
+            // El precio_unitario que viene YA INCLUYE ISV si aplica
+            $precioConIsv = floatval($producto['precio_unitario']);
+            $aplicaIsv = $producto['aplica_isv'] ?? false;
+
+            // Calcular desglose: el precio YA incluye ISV
+            if ($aplicaIsv && $precioConIsv > 0) {
+                $precioSinIsv = round($precioConIsv / 1.15, 2);
+                $isvUnitario = round($precioConIsv - $precioSinIsv, 2);
+            } else {
+                $precioSinIsv = $precioConIsv;
+                $isvUnitario = 0;
+            }
 
             // Agregar nuevo producto
             $detalles[] = [
                 'producto_id' => $producto['producto_id'],
                 'unidad_id' => $producto['unidad_id'],
                 'cantidad' => 1,
-                'precio_unitario' => $precioUnitario,
+                'precio_unitario' => $precioSinIsv, // Precio SIN ISV para cálculos
+                'precio_con_isv' => $precioConIsv,  // Precio CON ISV (el que se muestra/cobra)
                 'costo_unitario' => $producto['costo_unitario'] ?? 0,
                 'aplica_isv' => $aplicaIsv,
                 'isv_unitario' => $isvUnitario,
-                'precio_con_isv' => $precioUnitario + $isvUnitario,
-                'subtotal' => $precioUnitario,
+                'subtotal' => $precioSinIsv,
                 'total_isv' => $isvUnitario,
-                'total_linea' => $precioUnitario + $isvUnitario,
+                'total_linea' => $precioConIsv, // Total = precio con ISV
                 'stock_disponible' => $producto['stock_disponible'] ?? 0,
                 'precio_anterior' => null,
             ];
@@ -131,18 +139,27 @@ class CreateVenta extends CreateRecord
     protected function recalcularLinea(array &$detalle): void
     {
         $cantidad = floatval($detalle['cantidad'] ?? 0);
-        $precioUnitario = floatval($detalle['precio_unitario'] ?? 0);
-        $aplicaIsv = $detalle['aplica_isv'] ?? true;
+        $precioConIsv = floatval($detalle['precio_con_isv'] ?? $detalle['precio_unitario'] ?? 0);
+        $aplicaIsv = $detalle['aplica_isv'] ?? false;
 
-        $subtotal = $cantidad * $precioUnitario;
-        $isvUnitario = $aplicaIsv ? round($precioUnitario * 0.15, 2) : 0;
+        // El precio YA incluye ISV, desglosar
+        if ($aplicaIsv && $precioConIsv > 0) {
+            $precioSinIsv = round($precioConIsv / 1.15, 2);
+            $isvUnitario = round($precioConIsv - $precioSinIsv, 2);
+        } else {
+            $precioSinIsv = $precioConIsv;
+            $isvUnitario = 0;
+        }
+
+        $subtotal = $cantidad * $precioSinIsv;
         $totalIsv = $cantidad * $isvUnitario;
+        $totalLinea = $cantidad * $precioConIsv;
 
+        $detalle['precio_unitario'] = $precioSinIsv;
         $detalle['subtotal'] = round($subtotal, 2);
         $detalle['isv_unitario'] = $isvUnitario;
-        $detalle['precio_con_isv'] = round($precioUnitario + $isvUnitario, 2);
         $detalle['total_isv'] = round($totalIsv, 2);
-        $detalle['total_linea'] = round($subtotal + $totalIsv, 2);
+        $detalle['total_linea'] = round($totalLinea, 2);
     }
 
     protected function recalcularTotales(): void

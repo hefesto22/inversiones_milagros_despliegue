@@ -195,6 +195,14 @@ class ProductoResource extends Resource
                         ->afterStateUpdated(function (Forms\Set $set, Forms\Get $get, $state) {
                             $set('unidad_id', null);
                             $set('nombre', null);
+                            
+                            // 🎯 Heredar ISV de la categoría seleccionada
+                            if ($state) {
+                                $categoria = \App\Models\Categoria::find($state);
+                                if ($categoria) {
+                                    $set('aplica_isv', $categoria->aplica_isv ?? false);
+                                }
+                            }
                         }),
 
                     Forms\Components\Select::make('unidad_id')
@@ -292,9 +300,9 @@ class ProductoResource extends Resource
                                 if ($unidadesUsadas > 0) {
                                     $disponibles = $totalUnidades - $unidadesUsadas;
                                     if ($disponibles <= 0) {
-                                        return "⚠️ Todas las unidades ya están en uso para esta categoría";
+                                        return "Todas las unidades ya están en uso para esta categoría";
                                     }
-                                    return "📦 {$disponibles} de {$totalUnidades} unidades disponibles";
+                                    return "{$disponibles} de {$totalUnidades} unidades disponibles";
                                 }
                             }
 
@@ -308,7 +316,7 @@ class ProductoResource extends Resource
                         ->label('Nombre del Producto')
                         ->required()
                         ->maxLength(255)
-                        ->helperText('Se genera automáticamente, pero puedes cambiarlo libremente (ej: Caja de Aceite x12, Bolsa de Arroz 5lb)')
+                        ->helperText('Se genera automáticamente, pero puedes cambiarlo libremente')
                         ->placeholder('Ej: Huevo Grande Cartón, Caja de Leche x24'),
 
                     Forms\Components\TextInput::make('precio_sugerido')
@@ -319,7 +327,7 @@ class ProductoResource extends Resource
                         ->maxValue(999999)
                         ->default(0)
                         ->required()
-                        ->helperText('Precio de referencia inicial (opcional). El precio real se calcula automáticamente.'),
+                        ->helperText('Precio de referencia inicial (opcional)'),
 
                     Forms\Components\TextInput::make('sku')
                         ->label('SKU')
@@ -391,7 +399,7 @@ class ProductoResource extends Resource
                                 return new \Illuminate\Support\HtmlString("
                                     <div class='rounded-lg bg-gray-50 dark:bg-gray-900/20 p-4'>
                                         <p class='text-sm text-gray-600 dark:text-gray-400'>
-                                            📦 <strong>Opcional:</strong> Configura esto solo si el producto viene en cajas/bultos 
+                                            <strong>Opcional:</strong> Configura esto solo si el producto viene en cajas/bultos 
                                             con cantidad fija (ej: galletas, confites, bebidas).
                                         </p>
                                         <p class='text-xs text-gray-500 dark:text-gray-500 mt-2'>
@@ -416,7 +424,7 @@ class ProductoResource extends Resource
                                 return new \Illuminate\Support\HtmlString("
                                     <div class='rounded-lg bg-blue-50 dark:bg-blue-900/20 p-4'>
                                         <p class='text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2'>
-                                            📦 Configuración de Empaque:
+                                            Configuración de Empaque:
                                         </p>
                                         <div class='text-sm text-blue-800 dark:text-blue-200 space-y-1'>
                                             <p>• <strong>1 caja = {$unidadesPorBulto} {$unidadNombre}</strong></p>
@@ -528,7 +536,7 @@ class ProductoResource extends Resource
                              <div class='rounded-lg bg-{$colorClass}-50 dark:bg-{$colorClass}-900/20 p-4'>
                                  <div class='flex items-center justify-between mb-3'>
                                      <p class='text-sm font-semibold text-{$colorClass}-900 dark:text-{$colorClass}-100'>
-                                         💰 Simulación de Precio:
+                                         Simulación de Precio:
                                      </p>
                                      {$isvBadge}
                                  </div>
@@ -551,7 +559,7 @@ class ProductoResource extends Resource
                                          <strong class='text-amber-600 dark:text-amber-400'>+L " . number_format($montoIsv, 0) . "</strong>
                                      </div>" : "") . "
                                      <div class='flex justify-between pt-2 border-t-2 border-{$colorClass}-300 dark:border-{$colorClass}-600'>
-                                         <span class='font-bold'>💵 PRECIO FINAL:</span>
+                                         <span class='font-bold'>PRECIO FINAL:</span>
                                          <strong class='text-lg text-green-600 dark:text-green-400'>L " . number_format($precioFinal, 0) . "</strong>
                                      </div>
                                      <div class='text-xs text-{$colorClass}-600 dark:text-{$colorClass}-400 mt-2'>
@@ -568,38 +576,45 @@ class ProductoResource extends Resource
                         ->content(new \Illuminate\Support\HtmlString("
                          <div class='rounded-lg bg-yellow-50 dark:bg-yellow-900/20 p-4'>
                              <p class='text-sm font-semibold text-yellow-900 dark:text-yellow-100 mb-2'>
-                                 ⚠️ Importante:
+                                 Importante:
                              </p>
                              <ul class='text-sm text-yellow-800 dark:text-yellow-200 space-y-1 list-disc list-inside'>
                                  <li>El precio de venta se <strong>actualiza automáticamente</strong> cada vez que entra stock (compra o reempaque)</li>
                                  <li>El sistema usa <strong>Costo Promedio Ponderado</strong> para calcular el costo real</li>
                                  <li>Los precios se <strong>redondean hacia arriba</strong> para evitar pérdidas</li>
                                  <li>El <strong>ISV (15%)</strong> se calcula sobre el precio de venta y se muestra por separado</li>
-                                 <li>Así <strong>nunca venderás a pérdida</strong> 🎯</li>
+                                 <li>Así <strong>nunca venderás a pérdida</strong></li>
                              </ul>
                          </div>
                      "))
                         ->columnSpanFull(),
                 ])
                 ->columns(1)
-                ->collapsible(),
+                ->collapsible()
+                ->collapsed(true), // Colapsada por defecto para uso futuro
 
-            // 🆕 SECCIÓN: Precio Máximo Competitivo
-            Forms\Components\Section::make('Precio Máximo Competitivo')
-                ->description('Opcional: Configura un tope de precio para mantener competitividad frente a la competencia')
+            // 🆕 SECCIÓN: Precio Máximo Competitivo (PRECIO MANUAL)
+            Forms\Components\Section::make('Precio de Venta')
+                ->description('Configura el precio de venta del producto')
                 ->schema([
                     Forms\Components\Grid::make(2)
                         ->schema([
                             Forms\Components\TextInput::make('precio_venta_maximo')
-                                ->label('Precio Máximo de Venta')
+                                ->label('Precio de Venta')
                                 ->prefix('L')
                                 ->numeric()
                                 ->minValue(0)
                                 ->maxValue(999999)
                                 ->step(0.01)
-                                ->placeholder('Sin límite')
+                                ->required()
                                 ->live(onBlur: true)
-                                ->helperText('Deja vacío si no quieres limitar el precio'),
+                                ->helperText(function (Forms\Get $get) {
+                                    $aplicaIsv = $get('aplica_isv');
+                                    if ($aplicaIsv) {
+                                        return 'Este precio YA incluye el 15% de ISV';
+                                    }
+                                    return 'Este producto no aplica ISV';
+                                }),
 
                             Forms\Components\TextInput::make('margen_minimo_seguridad')
                                 ->label('Margen Mínimo de Seguridad')
@@ -609,92 +624,78 @@ class ProductoResource extends Resource
                                 ->maxValue(50)
                                 ->default(3)
                                 ->step(0.5)
-                                ->helperText('Se aplica cuando el costo supera el precio máximo'),
+                                ->helperText('Se aplica cuando el costo supera el precio de venta'),
                         ]),
 
-                    Forms\Components\Placeholder::make('info_precio_maximo')
+                    // Mostrar desglose de ISV si aplica
+                    Forms\Components\Placeholder::make('desglose_isv')
                         ->label('')
                         ->content(function (Forms\Get $get) {
-                            $precioMaximo = $get('precio_venta_maximo');
-                            $margenMinimo = $get('margen_minimo_seguridad') ?? 3;
-                            $margenNormal = $get('margen_ganancia') ?? 5;
-                            $tipoMargen = $get('tipo_margen') ?? 'monto';
+                            $precioVenta = (float) ($get('precio_venta_maximo') ?? 0);
+                            $aplicaIsv = $get('aplica_isv');
 
-                            if (!$precioMaximo) {
+                            if ($precioVenta <= 0) {
                                 return new \Illuminate\Support\HtmlString("
-                    <div class='rounded-lg bg-gray-50 dark:bg-gray-800 p-4'>
-                        <p class='text-sm text-gray-600 dark:text-gray-400'>
-                            💡 <strong>¿Para qué sirve?</strong>
-                        </p>
-                        <p class='text-sm text-gray-500 dark:text-gray-500 mt-2'>
-                            Si la competencia vende un producto a <strong>L105</strong>, puedes configurar ese precio como máximo.
-                            Así, aunque tu margen normal calcule L110, el sistema usará <strong>L105</strong> para mantener competitividad.
-                        </p>
-                        <p class='text-xs text-gray-400 mt-2'>
-                            ⚠️ Si el costo sube demasiado y supera el precio máximo, el sistema aplicará el margen mínimo de seguridad para no vender a pérdida.
-                        </p>
-                    </div>
-                ");
+                                    <div class='rounded-lg bg-gray-50 dark:bg-gray-800 p-4'>
+                                        <p class='text-sm text-gray-600 dark:text-gray-400'>
+                                            Ingresa el precio de venta para ver el desglose
+                                        </p>
+                                    </div>
+                                ");
                             }
 
-                            // Simular diferentes escenarios
-                            $costoNormal = $precioMaximo * 0.85; // Costo normal (85% del precio máximo)
-                            $costoAlto = $precioMaximo * 1.02;   // Costo alto (102% del precio máximo)
+                            if ($aplicaIsv) {
+                                // Calcular desglose: Precio incluye ISV
+                                $precioSinIsv = round($precioVenta / 1.15, 2);
+                                $montoIsv = round($precioVenta - $precioSinIsv, 2);
 
-                            // Precio calculado normal
-                            if ($tipoMargen === 'porcentaje') {
-                                $precioCalculadoNormal = $costoNormal * (1 + ($margenNormal / 100));
+                                return new \Illuminate\Support\HtmlString("
+                                    <div class='rounded-lg bg-blue-50 dark:bg-blue-900/30 p-4'>
+                                        <p class='text-sm font-semibold text-blue-900 dark:text-blue-100 mb-3'>
+                                            Desglose del Precio (incluye ISV 15%):
+                                        </p>
+                                        <div class='space-y-2 text-sm'>
+                                            <div class='flex justify-between text-blue-800 dark:text-blue-200'>
+                                                <span>Precio sin ISV:</span>
+                                                <strong>L " . number_format($precioSinIsv, 2) . "</strong>
+                                            </div>
+                                            <div class='flex justify-between text-amber-700 dark:text-amber-300'>
+                                                <span>ISV (15%):</span>
+                                                <strong>L " . number_format($montoIsv, 2) . "</strong>
+                                            </div>
+                                            <div class='flex justify-between text-green-700 dark:text-green-300 pt-2 border-t border-blue-200 dark:border-blue-700'>
+                                                <span class='font-bold'>Precio Final:</span>
+                                                <strong class='text-lg'>L " . number_format($precioVenta, 2) . "</strong>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ");
                             } else {
-                                $precioCalculadoNormal = $costoNormal + $margenNormal;
+                                return new \Illuminate\Support\HtmlString("
+                                    <div class='rounded-lg bg-green-50 dark:bg-green-900/30 p-4'>
+                                        <p class='text-sm font-semibold text-green-900 dark:text-green-100 mb-2'>
+                                            Precio Final (Sin ISV):
+                                        </p>
+                                        <p class='text-2xl font-bold text-green-700 dark:text-green-300'>
+                                            L " . number_format($precioVenta, 2) . "
+                                        </p>
+                                        <p class='text-xs text-green-600 dark:text-green-400 mt-2'>
+                                            Este producto está exento de ISV
+                                        </p>
+                                    </div>
+                                ");
                             }
-
-                            // Precio con margen mínimo cuando costo > precio máximo
-                            $precioConMargenMinimo = $costoAlto * (1 + ($margenMinimo / 100));
-
-                            return new \Illuminate\Support\HtmlString("
-                <div class='rounded-lg bg-blue-50 dark:bg-blue-900/30 p-4'>
-                    <p class='text-sm font-semibold text-blue-900 dark:text-blue-100 mb-3'>
-                        📊 Simulación de Escenarios con Precio Máximo L" . number_format($precioMaximo, 2) . ":
-                    </p>
-                    
-                    <div class='space-y-3'>
-                        <!-- Escenario 1: Costo normal -->
-                        <div class='bg-green-50 dark:bg-green-900/30 rounded p-3 border-l-4 border-green-500'>
-                            <p class='text-xs font-semibold text-green-800 dark:text-green-200 mb-1'>
-                                ✅ Escenario Normal: Costo L" . number_format($costoNormal, 2) . "
-                            </p>
-                            <div class='text-xs text-green-700 dark:text-green-300 space-y-1'>
-                                <p>• Precio con margen normal: <span class='line-through'>L" . number_format($precioCalculadoNormal, 2) . "</span></p>
-                                <p>• <strong>Precio final: L" . number_format($precioMaximo, 2) . "</strong> (usa el tope competitivo)</p>
-                                <p>• Ganancia: L" . number_format($precioMaximo - $costoNormal, 2) . " por unidad</p>
-                            </div>
-                        </div>
-                        
-                        <!-- Escenario 2: Costo alto (supera el máximo) -->
-                        <div class='bg-amber-50 dark:bg-amber-900/30 rounded p-3 border-l-4 border-amber-500'>
-                            <p class='text-xs font-semibold text-amber-800 dark:text-amber-200 mb-1'>
-                                ⚠️ Escenario Costo Alto: Costo L" . number_format($costoAlto, 2) . " (supera el máximo)
-                            </p>
-                            <div class='text-xs text-amber-700 dark:text-amber-300 space-y-1'>
-                                <p>• El costo supera el precio máximo configurado</p>
-                                <p>• Se aplica margen mínimo de seguridad ({$margenMinimo}%)</p>
-                                <p>• <strong>Precio final: L" . number_format($precioConMargenMinimo, 2) . "</strong></p>
-                                <p>• Ganancia mínima: L" . number_format($precioConMargenMinimo - $costoAlto, 2) . " por unidad</p>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <p class='text-xs text-blue-600 dark:text-blue-400 mt-3'>
-                        🛡️ El sistema <strong>nunca venderá a pérdida</strong>. Si el costo sube mucho, se mostrará una alerta.
-                    </p>
-                </div>
-            ");
                         })
                         ->columnSpanFull(),
+
+                    // Campo oculto para ISV (heredado de categoría)
+                    Forms\Components\Toggle::make('aplica_isv')
+                        ->label('Aplica ISV (15%)')
+                        ->disabled()
+                        ->dehydrated(true)
+                        ->helperText('Se hereda automáticamente de la categoría seleccionada'),
                 ])
-                ->columns(1)
-                ->collapsible()
-                ->collapsed(fn($record) => $record ? is_null($record->precio_venta_maximo) : true),
+                ->columns(1),
 
             // 🎯 SECCIÓN: Gestión por Bodega (visible solo al editar)
             Forms\Components\Section::make('Gestión por Bodega')
@@ -729,7 +730,7 @@ class ProductoResource extends Resource
                                                     ->step(0.01)
                                                     ->dehydrated(true)
                                                     ->suffix($record->unidad->nombre ?? 'unidades')
-                                                    ->helperText($puedeEditarStock ? '⚠️ Ajuste manual' : null)
+                                                    ->helperText($puedeEditarStock ? 'Ajuste manual' : null)
                                                     ->extraAttributes($puedeEditarStock ? ['class' => 'border-orange-300'] : []),
 
                                                 Forms\Components\TextInput::make("stock_minimo_{$bodegaProducto->id}")
@@ -744,7 +745,7 @@ class ProductoResource extends Resource
                                                 Forms\Components\TextInput::make("costo_promedio_{$bodegaProducto->id}")
                                                     ->label('Costo Promedio')
                                                     ->prefix('L')
-                                                    ->default(number_format($bodegaProducto->costo_promedio_actual ?? 0, 0))
+                                                    ->default(number_format($bodegaProducto->costo_promedio_actual ?? 0, 2))
                                                     ->disabled()
                                                     ->dehydrated(false)
                                                     ->helperText('Automático')
@@ -753,7 +754,7 @@ class ProductoResource extends Resource
                                                 Forms\Components\TextInput::make("precio_venta_{$bodegaProducto->id}")
                                                     ->label('Precio Venta')
                                                     ->prefix('L')
-                                                    ->default(number_format($bodegaProducto->precio_venta_sugerido ?? 0, 0))
+                                                    ->default(number_format($bodegaProducto->precio_venta_sugerido ?? 0, 2))
                                                     ->disabled()
                                                     ->dehydrated(false)
                                                     ->extraAttributes(['class' => 'font-bold text-green-600'])
@@ -909,7 +910,7 @@ class ProductoResource extends Resource
                     ->searchable()
                     ->sortable()
                     ->weight('bold')
-                    ->description(fn($record) => $record->formato_empaque ? "📦 {$record->formato_empaque}" : null),
+                    ->description(fn($record) => $record->formato_empaque ? "{$record->formato_empaque}" : null),
 
                 Tables\Columns\TextColumn::make('sku')
                     ->label('SKU')
@@ -1025,7 +1026,7 @@ class ProductoResource extends Resource
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
 
-                // 🎯 NUEVA COLUMNA: Costo Promedio
+                // 🎯 NUEVA COLUMNA: Costo Promedio (lo que realmente pagaste)
                 Tables\Columns\TextColumn::make('costo_promedio')
                     ->label('Costo Promedio')
                     ->money('HNL', divideBy: 1)
@@ -1045,27 +1046,42 @@ class ProductoResource extends Resource
                             ->exists();
 
                         if ($esSuperAdminOJefe) {
-                            $promedio = DB::table('bodega_producto')
+                            $costoSinIsv = DB::table('bodega_producto')
                                 ->where('producto_id', $record->id)
                                 ->where('costo_promedio_actual', '>', 0)
                                 ->avg('costo_promedio_actual');
 
-                            return $promedio ?? $record->precio_sugerido ?? 0;
+                            $costo = $costoSinIsv ?? $record->precio_sugerido ?? 0;
+                        } else {
+                            $costoSinIsv = DB::table('bodega_producto')
+                                ->join('bodega_user', 'bodega_producto.bodega_id', '=', 'bodega_user.bodega_id')
+                                ->where('bodega_producto.producto_id', $record->id)
+                                ->where('bodega_user.user_id', $currentUser->id)
+                                ->where('bodega_producto.costo_promedio_actual', '>', 0)
+                                ->avg('bodega_producto.costo_promedio_actual');
+
+                            $costo = $costoSinIsv ?? $record->precio_sugerido ?? 0;
                         }
 
-                        $promedio = DB::table('bodega_producto')
-                            ->join('bodega_user', 'bodega_producto.bodega_id', '=', 'bodega_user.bodega_id')
-                            ->where('bodega_producto.producto_id', $record->id)
-                            ->where('bodega_user.user_id', $currentUser->id)
-                            ->where('bodega_producto.costo_promedio_actual', '>', 0)
-                            ->avg('bodega_producto.costo_promedio_actual');
+                        // Si el producto aplica ISV, mostrar el costo CON ISV (lo que realmente pagó)
+                        $aplicaIsv = $record->aplica_isv ?? false;
+                        
+                        if ($aplicaIsv && $costo > 0) {
+                            return round($costo * 1.15, 2); // Costo + ISV = lo que pagaste
+                        }
 
-                        return $promedio ?? $record->precio_sugerido ?? 0;
+                        return $costo;
                     })
-                    ->description('Promedio ponderado')
+                    ->description(function ($record) {
+                        $aplicaIsv = $record->aplica_isv ?? false;
+                        if ($aplicaIsv) {
+                            return 'Incluye ISV';
+                        }
+                        return 'Sin ISV';
+                    })
                     ->toggleable(isToggledHiddenByDefault: true),
 
-                // 🎯 COLUMNA: Precio Venta (sin ISV)
+                // 🎯 COLUMNA: Precio Venta (sin ISV - desglosado)
                 Tables\Columns\TextColumn::make('precio_venta')
                     ->label('Precio Venta')
                     ->money('HNL', divideBy: 1)
@@ -1087,32 +1103,35 @@ class ProductoResource extends Resource
                             ->exists();
 
                         if ($esSuperAdminOJefe) {
-                            $promedio = DB::table('bodega_producto')
+                            $precioConIsv = DB::table('bodega_producto')
                                 ->where('producto_id', $record->id)
                                 ->where('precio_venta_sugerido', '>', 0)
-                                ->avg('precio_venta_sugerido');
-
-                            return $promedio ?? 0;
+                                ->avg('precio_venta_sugerido') ?? 0;
+                        } else {
+                            $precioConIsv = DB::table('bodega_producto')
+                                ->join('bodega_user', 'bodega_producto.bodega_id', '=', 'bodega_user.bodega_id')
+                                ->where('bodega_producto.producto_id', $record->id)
+                                ->where('bodega_user.user_id', $currentUser->id)
+                                ->where('bodega_producto.precio_venta_sugerido', '>', 0)
+                                ->avg('bodega_producto.precio_venta_sugerido') ?? 0;
                         }
 
-                        $promedio = DB::table('bodega_producto')
-                            ->join('bodega_user', 'bodega_producto.bodega_id', '=', 'bodega_user.bodega_id')
-                            ->where('bodega_producto.producto_id', $record->id)
-                            ->where('bodega_user.user_id', $currentUser->id)
-                            ->where('bodega_producto.precio_venta_sugerido', '>', 0)
-                            ->avg('bodega_producto.precio_venta_sugerido');
+                        // Si aplica ISV, el precio guardado YA lo incluye, entonces desgloso
+                        $aplicaIsv = $record->aplica_isv ?? false;
+                        
+                        if ($aplicaIsv && $precioConIsv > 0) {
+                            // Precio sin ISV = Precio con ISV / 1.15
+                            return round($precioConIsv / 1.15, 2);
+                        }
 
-                        return $promedio ?? 0;
+                        return $precioConIsv;
                     })
                     ->description(function ($record) {
-                        $margen = $record->margen_ganancia ?? 0;
-                        $tipo = $record->tipo_margen ?? 'monto';
-
-                        if ($tipo === 'porcentaje') {
-                            return "Margen: {$margen}%";
+                        $aplicaIsv = $record->aplica_isv ?? false;
+                        if ($aplicaIsv) {
+                            return 'Sin ISV';
                         }
-
-                        return "Margen: +L{$margen}";
+                        return 'Exento ISV';
                     }),
 
                 // 🆕 COLUMNA: Precio + ISV (precio final al cliente)
@@ -1150,16 +1169,11 @@ class ProductoResource extends Resource
                                 ->avg('bodega_producto.precio_venta_sugerido') ?? 0;
                         }
 
-                        // Calcular precio con ISV si aplica
-                        $aplicaIsv = $record->aplica_isv ?? true;
-
-                        if ($aplicaIsv && $precioBase > 0) {
-                            return $precioBase * 1.15; // +15% ISV
-                        }
-
+                        // El precio_venta_sugerido YA incluye ISV si aplica
+                        // Solo retornamos el valor tal cual
                         return $precioBase;
                     })
-                    ->description(fn($record) => ($record->aplica_isv ?? true) ? '+15% ISV' : 'Sin ISV'),
+                    ->description(fn($record) => ($record->aplica_isv ?? true) ? 'Incluye 15% ISV' : 'Sin ISV'),
             ])
 
             ->filters([
@@ -1171,11 +1185,12 @@ class ProductoResource extends Resource
                     ->label('Unidad')
                     ->relationship('unidad', 'nombre'),
 
-                Tables\Filters\TernaryFilter::make('activo')
+                    Tables\Filters\TernaryFilter::make('activo')
                     ->label('Estado')
                     ->placeholder('Todos')
                     ->trueLabel('Activos')
-                    ->falseLabel('Inactivos'),
+                    ->falseLabel('Inactivos')
+                    ->default(true),
 
                 // 🆕 Filtro para productos con formato de empaque
                 Tables\Filters\TernaryFilter::make('tiene_formato')
