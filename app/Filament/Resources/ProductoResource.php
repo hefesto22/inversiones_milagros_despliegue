@@ -1046,23 +1046,21 @@ class ProductoResource extends Resource
                             ->whereIn('roles.name', ['super_admin', 'jefe'])
                             ->exists();
 
-                        if ($esSuperAdminOJefe) {
-                            $costoSinIsv = DB::table('bodega_producto')
-                                ->where('producto_id', $record->id)
-                                ->where('costo_promedio_actual', '>', 0)
-                                ->avg('costo_promedio_actual');
-
-                            $costo = $costoSinIsv ?? $record->precio_sugerido ?? 0;
-                        } else {
-                            $costoSinIsv = DB::table('bodega_producto')
-                                ->join('bodega_user', 'bodega_producto.bodega_id', '=', 'bodega_user.bodega_id')
-                                ->where('bodega_producto.producto_id', $record->id)
-                                ->where('bodega_user.user_id', $currentUser->id)
-                                ->where('bodega_producto.costo_promedio_actual', '>', 0)
-                                ->avg('bodega_producto.costo_promedio_actual');
-
-                            $costo = $costoSinIsv ?? $record->precio_sugerido ?? 0;
-                        }
+                            if ($esSuperAdminOJefe) {
+                                $costoSinIsv = DB::table('bodega_producto')
+                                    ->where('producto_id', $record->id)
+                                    ->avg('costo_promedio_actual');
+                            
+                                $costo = floatval($costoSinIsv);
+                            } else {
+                                $costoSinIsv = DB::table('bodega_producto')
+                                    ->join('bodega_user', 'bodega_producto.bodega_id', '=', 'bodega_user.bodega_id')
+                                    ->where('bodega_producto.producto_id', $record->id)
+                                    ->where('bodega_user.user_id', $currentUser->id)
+                                    ->avg('bodega_producto.costo_promedio_actual');
+                            
+                                $costo = floatval($costoSinIsv);
+                            }
 
                         // Si el producto aplica ISV, mostrar el costo CON ISV (lo que realmente pagó)
                         $aplicaIsv = $record->aplica_isv ?? false;
