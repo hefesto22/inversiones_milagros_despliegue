@@ -4,6 +4,7 @@ namespace App\Filament\Resources;
 
 use App\Filament\Resources\LoteResource\Pages;
 use App\Models\Lote;
+use App\Models\Merma;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -61,7 +62,7 @@ class LoteResource extends Resource
     {
         return $form
             ->schema([
-                Forms\Components\Section::make('Información del Lote')
+                Forms\Components\Section::make('Informacion del Lote')
                     ->schema([
                         Forms\Components\Grid::make(3)
                             ->schema([
@@ -83,7 +84,7 @@ class LoteResource extends Resource
                                     ->dehydrated(false),
 
                                 Forms\Components\Select::make('proveedor_id')
-                                    ->label('Último Proveedor')
+                                    ->label('Ultimo Proveedor')
                                     ->relationship('proveedor', 'nombre')
                                     ->disabled()
                                     ->dehydrated(false)
@@ -156,7 +157,7 @@ class LoteResource extends Resource
                                     ->helperText('Costo promedio ponderado'),
 
                                 Forms\Components\TextInput::make('costo_por_carton_facturado')
-                                    ->label('Costo por Cartón')
+                                    ->label('Costo por Carton')
                                     ->disabled()
                                     ->dehydrated(false)
                                     ->prefix('L'),
@@ -181,7 +182,7 @@ class LoteResource extends Resource
                         return 'heroicon-o-archive-box';
                     })
                     ->description(function ($record) {
-                        if ($record->esLoteUnico()) return 'Lote Único';
+                        if ($record->esLoteUnico()) return 'Lote Unico';
                         if ($record->esLoteSueltos()) return 'Lote Sueltos';
                         return null;
                     }),
@@ -193,7 +194,7 @@ class LoteResource extends Resource
                     ->limit(30),
 
                 Tables\Columns\TextColumn::make('proveedor.nombre')
-                    ->label('Últ. Proveedor')
+                    ->label('Ult. Proveedor')
                     ->searchable()
                     ->sortable()
                     ->toggleable()
@@ -219,7 +220,7 @@ class LoteResource extends Resource
                     }),
 
                 Tables\Columns\TextColumn::make('buffer_regalo')
-                    ->label('Buffer 🎁')
+                    ->label('Buffer')
                     ->getStateUsing(fn($record) => $record->getBufferRegaloDisponible())
                     ->numeric(decimalPlaces: 0)
                     ->suffix(' huevos')
@@ -241,7 +242,7 @@ class LoteResource extends Resource
                     ->description('Promedio ponderado'),
 
                 Tables\Columns\TextColumn::make('costo_por_carton_facturado')
-                    ->label('Costo/Cartón')
+                    ->label('Costo/Carton')
                     ->formatStateUsing(fn($state) => 'L ' . number_format($state, 2))
                     ->sortable()
                     ->toggleable(),
@@ -301,7 +302,7 @@ class LoteResource extends Resource
                         Forms\Components\Select::make('tipo')
                             ->label('Tipo de Lote')
                             ->options([
-                                'unicos' => 'Lotes Únicos (LU-*)',
+                                'unicos' => 'Lotes Unicos (LU-*)',
                                 'sueltos' => 'Lotes de Sueltos (SUELTOS-*)',
                                 'tradicionales' => 'Lotes Tradicionales (L-*)',
                             ])
@@ -330,15 +331,15 @@ class LoteResource extends Resource
                 Tables\Filters\Filter::make('con_buffer')
                     ->label('Con Buffer de Regalo')
                     ->query(function ($query) {
-                        return $query->whereRaw('huevos_regalo_acumulados > merma_total_acumulada');
+                        return $query->whereRaw('huevos_regalo_acumulados > merma_total_acumulada + COALESCE(huevos_regalo_consumidos, 0)');
                     }),
             ])
             ->actions([
                 Tables\Actions\ViewAction::make(),
 
-                // 🎯 ACCIÓN PRINCIPAL: REGISTRAR MERMA
+                // ACCION PRINCIPAL: REGISTRAR MERMA
                 Tables\Actions\Action::make('registrar_merma')
-                    ->label('Registrar Merma')
+                    ->label('Reg. Merma')
                     ->icon('heroicon-o-minus-circle')
                     ->color('danger')
                     ->form([
@@ -347,7 +348,7 @@ class LoteResource extends Resource
                             ->content(function ($record) {
                                 $buffer = $record->getBufferRegaloDisponible();
                                 $bufferColor = $buffer > 0 ? 'green' : 'red';
-                                
+
                                 return new \Illuminate\Support\HtmlString("
                                     <div class='rounded-lg bg-gray-50 dark:bg-gray-900 p-4 space-y-2'>
                                         <div class='grid grid-cols-2 gap-4'>
@@ -356,7 +357,7 @@ class LoteResource extends Resource
                                                 <p class='text-xl font-bold text-blue-600'>" . number_format($record->cantidad_huevos_remanente, 0) . "</p>
                                             </div>
                                             <div>
-                                                <p class='text-sm text-gray-500'>Buffer de Regalos 🎁</p>
+                                                <p class='text-sm text-gray-500'>Buffer de Regalos</p>
                                                 <p class='text-xl font-bold text-{$bufferColor}-600'>" . number_format($buffer, 0) . "</p>
                                             </div>
                                         </div>
@@ -369,50 +370,32 @@ class LoteResource extends Resource
                             }),
 
                         Forms\Components\TextInput::make('cantidad_huevos')
-                            ->label('Cantidad de Huevos Dañados')
+                            ->label('Cantidad de Huevos Danados')
                             ->required()
                             ->numeric()
                             ->minValue(1)
                             ->maxValue(fn($record) => $record->cantidad_huevos_remanente)
                             ->suffix('huevos')
                             ->live()
-                            ->afterStateUpdated(function ($state, Forms\Set $set, $record) {
-                                $cantidad = (int) ($state ?? 0);
-                                $buffer = $record->getBufferRegaloDisponible();
-                                $costoPorHuevo = $record->costo_por_huevo ?? 0;
-
-                                $cubierto = min($cantidad, $buffer);
-                                $perdidaHuevos = max(0, $cantidad - $buffer);
-                                $perdidaLempiras = $perdidaHuevos * $costoPorHuevo;
-
-                                $set('_cubierto_por_regalo', $cubierto);
-                                $set('_perdida_huevos', $perdidaHuevos);
-                                $set('_perdida_lempiras', $perdidaLempiras);
-                            })
-                            ->helperText(fn($record) => 'Máximo: ' . number_format($record->cantidad_huevos_remanente, 0) . ' huevos'),
+                            ->helperText(fn($record) => 'Maximo: ' . number_format($record->cantidad_huevos_remanente, 0) . ' huevos'),
 
                         Forms\Components\Select::make('motivo')
                             ->label('Motivo')
                             ->required()
                             ->options([
-                                'rotos' => '🥚 Rotos',
-                                'podridos' => '🤢 Podridos',
-                                'vencidos' => '📅 Vencidos',
-                                'dañados_transporte' => '🚚 Dañados en Transporte',
-                                'otros' => '❓ Otros',
+                                'rotos' => 'Rotos',
+                                'podridos' => 'Podridos',
+                                'vencidos' => 'Vencidos',
+                                'dañados_transporte' => 'Danados en Transporte',
+                                'otros' => 'Otros',
                             ])
                             ->native(false)
                             ->default('rotos'),
 
                         Forms\Components\Textarea::make('descripcion')
-                            ->label('Descripción (opcional)')
+                            ->label('Descripcion (opcional)')
                             ->placeholder('Detalles adicionales sobre la merma...')
                             ->rows(2),
-
-                        // Campos ocultos para mostrar cálculo
-                        Forms\Components\Hidden::make('_cubierto_por_regalo')->dehydrated(false),
-                        Forms\Components\Hidden::make('_perdida_huevos')->dehydrated(false),
-                        Forms\Components\Hidden::make('_perdida_lempiras')->dehydrated(false),
 
                         // Resumen del impacto
                         Forms\Components\Placeholder::make('resumen_impacto')
@@ -439,11 +422,11 @@ class LoteResource extends Resource
                                     return new \Illuminate\Support\HtmlString("
                                         <div class='rounded-lg bg-green-50 dark:bg-green-900/20 p-4'>
                                             <p class='text-green-800 dark:text-green-200 font-bold'>
-                                                ✅ Sin pérdida económica
+                                                Sin perdida economica
                                             </p>
                                             <p class='text-sm text-green-700 dark:text-green-300 mt-1'>
-                                                Los {$cantidad} huevos serán cubiertos por el buffer de regalos.<br>
-                                                Buffer restante después: " . number_format($buffer - $cubierto, 0) . " huevos
+                                                Los {$cantidad} huevos seran cubiertos por el buffer de regalos.<br>
+                                                Buffer restante despues: " . number_format($buffer - $cubierto, 0) . " huevos
                                             </p>
                                         </div>
                                     ");
@@ -451,16 +434,13 @@ class LoteResource extends Resource
                                     return new \Illuminate\Support\HtmlString("
                                         <div class='rounded-lg bg-red-50 dark:bg-red-900/20 p-4'>
                                             <p class='text-red-800 dark:text-red-200 font-bold'>
-                                                ⚠️ Pérdida económica
+                                                Perdida economica
                                             </p>
                                             <div class='text-sm text-red-700 dark:text-red-300 mt-2 space-y-1'>
-                                                <p>• Cubierto por buffer: <strong>{$cubierto} huevos</strong></p>
-                                                <p>• Pérdida real: <strong>{$perdidaHuevos} huevos</strong></p>
-                                                <p>• Pérdida en dinero: <strong>L " . number_format($perdidaLempiras, 2) . "</strong></p>
+                                                <p>Cubierto por buffer: <strong>{$cubierto} huevos</strong></p>
+                                                <p>Perdida real: <strong>{$perdidaHuevos} huevos</strong></p>
+                                                <p>Perdida en dinero: <strong>L " . number_format($perdidaLempiras, 2) . "</strong></p>
                                             </div>
-                                            <p class='text-xs text-red-600 dark:text-red-400 mt-2'>
-                                                El costo por huevo aumentará porque perdiste huevos pagados.
-                                            </p>
                                         </div>
                                     ");
                                 }
@@ -477,9 +457,9 @@ class LoteResource extends Resource
                         $mensaje = "Merma #{$merma->numero_merma} registrada. ";
 
                         if ($merma->tuvoPerdidaEconomica()) {
-                            $mensaje .= "Pérdida: L " . number_format($merma->perdida_real_lempiras, 2);
+                            $mensaje .= "Perdida: L " . number_format($merma->perdida_real_lempiras, 2);
                         } else {
-                            $mensaje .= "Sin pérdida económica (cubierto por buffer).";
+                            $mensaje .= "Sin perdida economica (cubierto por buffer).";
                         }
 
                         Notification::make()
@@ -491,6 +471,112 @@ class LoteResource extends Resource
                     })
                     ->visible(fn($record) => $record->estado === 'disponible' && $record->cantidad_huevos_remanente > 0)
                     ->modalWidth('lg'),
+
+                // ACCION: ELIMINAR MERMA
+                Tables\Actions\Action::make('eliminar_merma')
+                    ->label('Elim. Merma')
+                    ->icon('heroicon-o-trash')
+                    ->color('warning')
+                    ->form([
+                        Forms\Components\Placeholder::make('info_mermas')
+                            ->label('')
+                            ->content(function ($record) {
+                                $mermas = $record->mermas()->orderBy('created_at', 'desc')->get()->filter(fn($m) => $m->puedeSerEliminada());
+
+                                if ($mermas->isEmpty()) {
+                                    return new \Illuminate\Support\HtmlString("
+                                        <div class='text-gray-500 text-center p-4'>
+                                            Este lote no tiene mermas registradas.
+                                        </div>
+                                    ");
+                                }
+
+                                $html = "<div class='space-y-2'>";
+                                foreach ($mermas as $merma) {
+                                    $puedeEliminar = $merma->puedeSerEliminada();
+                                    $color = $puedeEliminar ? 'gray-50' : 'red-50';
+                                    $html .= "
+                                        <div class='rounded-lg bg-{$color} dark:bg-gray-800 p-3 text-sm'>
+                                            <div class='flex justify-between items-start'>
+                                                <div>
+                                                    <span class='font-bold'>{$merma->numero_merma}</span>
+                                                    <span class='text-gray-500'> - {$merma->cantidad_huevos} huevos</span>
+                                                </div>
+                                                <span class='text-xs text-gray-400'>{$merma->created_at->format('d/m/Y H:i')}</span>
+                                            </div>
+                                            <div class='text-xs text-gray-600 mt-1'>
+                                                Motivo: {$merma->getMotivoLabel()} | 
+                                                Perdida: L " . number_format($merma->perdida_real_lempiras, 2) . "
+                                            </div>
+                                        </div>
+                                    ";
+                                }
+                                $html .= "</div>";
+
+                                return new \Illuminate\Support\HtmlString($html);
+                            }),
+
+                        Forms\Components\Select::make('merma_id')
+                            ->label('Seleccionar Merma a Eliminar')
+                            ->required()
+                            ->options(function ($record) {
+                                return $record->mermas()
+                                    ->orderBy('created_at', 'desc')
+                                    ->get()
+                                    ->filter(fn($merma) => $merma->puedeSerEliminada())
+                                    ->mapWithKeys(function ($merma) {
+                                        $label = "{$merma->numero_merma} - {$merma->cantidad_huevos} huevos ({$merma->created_at->format('d/m H:i')})";
+                                        return [$merma->id => $label];
+                                    });
+                            })
+                            ->helperText('Se revertiran todos los cambios que hizo esta merma'),
+
+                        Forms\Components\Textarea::make('motivo_eliminacion')
+                            ->label('Motivo de Eliminacion')
+                            ->required()
+                            ->placeholder('Por que se elimina esta merma?')
+                            ->rows(2),
+                    ])
+                    ->action(function ($record, array $data) {
+                        $merma = Merma::find($data['merma_id']);
+
+                        if (!$merma) {
+                            Notification::make()
+                                ->title('Error')
+                                ->body('No se encontro la merma seleccionada.')
+                                ->danger()
+                                ->send();
+                            return;
+                        }
+
+                        // Verificar permisos
+                        if (!$merma->puedeSerEliminada()) {
+                            $user = Auth::user();
+                            if (!$user->roles->whereIn('name', ['Jefe', 'Super Admin'])->count()) {
+                                Notification::make()
+                                    ->title('Sin permisos')
+                                    ->body($merma->getMensajeNoPuedeEliminar())
+                                    ->danger()
+                                    ->send();
+                                return;
+                            }
+                        }
+
+                        $numeroMerma = $merma->numero_merma;
+                        $resumen = $merma->eliminarYRevertir($data['motivo_eliminacion']);
+
+                        Notification::make()
+                            ->title('Merma eliminada')
+                            ->body("Merma {$numeroMerma} eliminada. Se devolvieron {$resumen['huevos_devueltos']} huevos al lote.")
+                            ->success()
+                            ->duration(5000)
+                            ->send();
+                    })
+                    ->visible(fn($record) => $record->mermas()->get()->filter(fn($m) => $m->puedeSerEliminada())->isNotEmpty())
+                    ->modalWidth('lg')
+                    ->requiresConfirmation()
+                    ->modalHeading('Eliminar Merma')
+                    ->modalDescription('Esta accion revertira todos los cambios que hizo la merma en el lote.'),
 
                 // Ver historial de compras
                 Tables\Actions\Action::make('ver_historial')

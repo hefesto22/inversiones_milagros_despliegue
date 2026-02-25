@@ -28,8 +28,8 @@ class ViajeDescarga extends Model
 
     protected $casts = [
         'cantidad' => 'decimal:3',
-        'costo_unitario' => 'decimal:2',
-        'subtotal_costo' => 'decimal:2',
+        'costo_unitario' => 'decimal:4',
+        'subtotal_costo' => 'decimal:4',
         'reingresa_stock' => 'boolean',
         'cobrar_chofer' => 'boolean',
         'monto_cobrar' => 'decimal:2',

@@ -17,6 +17,7 @@ class BodegaGasto extends Model
         'bodega_id',
         'registrado_por',
         'tipo_gasto',
+        'categoria_contable',
         'fecha',
         'detalle',
         'monto',
@@ -46,15 +47,54 @@ class BodegaGasto extends Model
         'cartones' => 'Cartones',
         'empaque' => 'Empaque (cintas, etiquetas, bolsas)',
         'limpieza' => 'Limpieza',
-        'papeleria' => 'Papelería',
+        'papeleria' => 'Papeleria',
         'herramientas' => 'Herramientas',
         'mantenimiento' => 'Mantenimiento',
         'servicios' => 'Servicios (agua, luz, internet)',
         'uniformes' => 'Uniformes',
-        'fumigacion' => 'Fumigación',
+        'fumigacion' => 'Fumigacion',
         'transporte_local' => 'Transporte Local',
+        'honorarios' => 'Honorarios (contabilidad, legal)',
+        'inversion' => 'Inversion (terreno, vehiculo, equipo)',
         'otros' => 'Otros',
     ];
+
+    public const CATEGORIAS_CONTABLES = [
+        'gasto_venta' => 'Gasto de Venta',
+        'gasto_admin' => 'Gasto Administrativo',
+        'inversion' => 'Inversion (Activo Fijo)',
+    ];
+
+    // =========================================================
+    // MAPEO AUTOMATICO: tipo_gasto -> categoria_contable
+    // =========================================================
+
+    private const MAPA_CATEGORIA = [
+        'papeleria'  => 'gasto_admin',
+        'servicios'  => 'gasto_admin',
+        'fumigacion' => 'gasto_admin',
+        'honorarios' => 'gasto_admin',
+        'inversion'  => 'inversion',
+        // Todo lo demas => gasto_venta (default)
+    ];
+
+    public static function resolverCategoria(string $tipoGasto): string
+    {
+        return self::MAPA_CATEGORIA[$tipoGasto] ?? 'gasto_venta';
+    }
+
+    // =========================================================
+    // BOOT - Asignar categoria_contable automaticamente
+    // =========================================================
+
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::saving(function (BodegaGasto $gasto) {
+            $gasto->categoria_contable = self::resolverCategoria($gasto->tipo_gasto);
+        });
+    }
 
     // =========================================================
     // RELACIONES
@@ -81,36 +121,24 @@ class BodegaGasto extends Model
     }
 
     // =========================================================
-    // MÉTODOS AUXILIARES
+    // METODOS AUXILIARES
     // =========================================================
 
-    /**
-     * Obtener el label del tipo de gasto
-     */
     public function getTipoGastoLabelAttribute(): string
     {
         return self::TIPOS_GASTO[$this->tipo_gasto] ?? $this->tipo_gasto;
     }
 
-    /**
-     * Verificar si está pendiente
-     */
     public function isPendiente(): bool
     {
         return $this->estado === 'pendiente';
     }
 
-    /**
-     * Verificar si está aprobado
-     */
     public function isAprobado(): bool
     {
         return $this->estado === 'aprobado';
     }
 
-    /**
-     * Marcar como enviado por WhatsApp
-     */
     public function marcarEnviadoWhatsapp(): void
     {
         $this->update([
@@ -119,9 +147,6 @@ class BodegaGasto extends Model
         ]);
     }
 
-    /**
-     * Aprobar el gasto
-     */
     public function aprobar(int $userId): void
     {
         $this->update([
@@ -131,43 +156,36 @@ class BodegaGasto extends Model
         ]);
     }
 
-    /**
-     * Generar texto para WhatsApp
-     */
     public function generarTextoWhatsapp(): string
     {
         $tipoLabel = $this->tipo_gasto_label;
         $fecha = $this->fecha->format('d/m/Y');
         $monto = number_format($this->monto, 2);
-        $factura = $this->tiene_factura ? 'Sí' : 'No';
+        $factura = $this->tiene_factura ? 'Si' : 'No';
 
-        $texto = "📋 *GASTO DE BODEGA*\n\n";
-        $texto .= "🏢 *Bodega:* {$this->bodega->nombre}\n";
-        $texto .= "📅 *Fecha:* {$fecha}\n";
-        $texto .= "📁 *Categoría:* {$tipoLabel}\n";
-        $texto .= "📝 *Detalle:* {$this->detalle}\n";
-        $texto .= "💰 *Monto:* L {$monto}\n";
-        $texto .= "🧾 *Tiene Factura:* {$factura}\n";
+        $texto = "*GASTO DE BODEGA*\n\n";
+        $texto .= "*Bodega:* {$this->bodega->nombre}\n";
+        $texto .= "*Fecha:* {$fecha}\n";
+        $texto .= "*Categoria:* {$tipoLabel}\n";
+        $texto .= "*Detalle:* {$this->detalle}\n";
+        $texto .= "*Monto:* L {$monto}\n";
+        $texto .= "*Tiene Factura:* {$factura}\n";
 
         if ($this->tiene_factura) {
-            $texto .= "\n📎 _Adjuntar foto de factura_";
+            $texto .= "\n_Adjuntar foto de factura_";
         }
 
         return $texto;
     }
 
-    /**
-     * Generar URL de WhatsApp
-     */
     public function generarUrlWhatsapp(?string $numeroGrupo = null): string
     {
         $texto = urlencode($this->generarTextoWhatsapp());
-        
+
         if ($numeroGrupo) {
             return "https://wa.me/{$numeroGrupo}?text={$texto}";
         }
 
-        // Si no hay número, abre WhatsApp para elegir contacto/grupo
         return "https://wa.me/?text={$texto}";
     }
 }

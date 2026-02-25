@@ -62,19 +62,19 @@ class DescargasRelationManager extends RelationManager
                                             $carga = $this->getOwnerRecord()->cargas()
                                                 ->where('producto_id', $state)
                                                 ->first();
-                                            
+
                                             $producto = Producto::find($state);
 
                                             if ($carga) {
                                                 $set('unidad_id', $carga->unidad_id);
                                                 $set('costo_unitario', $carga->costo_unitario);
                                                 $set('cantidad', $carga->getCantidadDisponible());
-                                                
+
                                                 // Verificar si tiene unidades por bulto (para detectar fracciones)
                                                 $unidadesPorBulto = $producto->unidades_por_bulto ?? null;
                                                 $set('unidades_por_bulto', $unidadesPorBulto);
                                                 $set('tiene_subunidades', !empty($unidadesPorBulto) && $unidadesPorBulto > 1);
-                                                
+
                                                 // Calcular subtotal
                                                 $cantidad = $carga->getCantidadDisponible();
                                                 $set('subtotal_costo', round($cantidad * $carga->costo_unitario, 2));
@@ -99,13 +99,13 @@ class DescargasRelationManager extends RelationManager
                                     ->afterStateUpdated(function ($state, Forms\Get $get, Forms\Set $set) {
                                         $costo = $get('costo_unitario') ?? 0;
                                         $set('subtotal_costo', round($state * $costo, 2));
-                                        
+
                                         // Mostrar información de fracción si aplica
                                         $unidadesPorBulto = $get('unidades_por_bulto');
                                         if ($unidadesPorBulto && $unidadesPorBulto > 1) {
                                             $parteEntera = floor($state);
                                             $fraccion = $state - $parteEntera;
-                                            
+
                                             if ($fraccion > 0) {
                                                 $huevosSueltos = round($fraccion * $unidadesPorBulto);
                                                 $set('info_fraccion', "⚠️ {$parteEntera} cartones completos + {$huevosSueltos} unidades sueltas (irán al lote de sueltos)");
@@ -125,8 +125,8 @@ class DescargasRelationManager extends RelationManager
                                 // Placeholder para mostrar información de fracción
                                 Forms\Components\Placeholder::make('info_fraccion')
                                     ->label('Distribución')
-                                    ->content(fn (Forms\Get $get) => $get('info_fraccion') ?? '-')
-                                    ->visible(fn (Forms\Get $get) => $get('tiene_subunidades') && $get('cantidad'))
+                                    ->content(fn(Forms\Get $get) => $get('info_fraccion') ?? '-')
+                                    ->visible(fn(Forms\Get $get) => $get('tiene_subunidades') && $get('cantidad'))
                                     ->columnSpanFull(),
 
                                 Forms\Components\Select::make('estado_producto')
@@ -178,7 +178,7 @@ class DescargasRelationManager extends RelationManager
                             ->label('Monto a Cobrar')
                             ->numeric()
                             ->prefix('L')
-                            ->visible(fn (Forms\Get $get) => $get('cobrar_chofer'))
+                            ->visible(fn(Forms\Get $get) => $get('cobrar_chofer'))
                             ->helperText('Por defecto es el costo total'),
                     ])
                     ->collapsed()
@@ -202,18 +202,18 @@ class DescargasRelationManager extends RelationManager
                     ->formatStateUsing(function ($state, $record) {
                         $producto = $record->producto;
                         $unidadesPorBulto = $producto?->unidades_por_bulto;
-                        
+
                         // Si es fracción, mostrar detalle
                         if ($unidadesPorBulto && $unidadesPorBulto > 1) {
                             $parteEntera = floor($state);
                             $fraccion = $state - $parteEntera;
-                            
+
                             if ($fraccion > 0.0001) {
                                 $unidadesSueltas = round($fraccion * $unidadesPorBulto);
                                 return number_format($state, 4) . " ({$unidadesSueltas} sueltos)";
                             }
                         }
-                        
+
                         return number_format($state, 2);
                     })
                     ->color('primary')
@@ -227,13 +227,13 @@ class DescargasRelationManager extends RelationManager
                 Tables\Columns\TextColumn::make('estado_producto')
                     ->label('Estado')
                     ->badge()
-                    ->formatStateUsing(fn ($state) => match($state) {
+                    ->formatStateUsing(fn($state) => match ($state) {
                         'bueno' => 'Bueno',
                         'danado' => 'Dañado',
                         'vencido' => 'Vencido',
                         default => $state,
                     })
-                    ->color(fn ($state) => match($state) {
+                    ->color(fn($state) => match ($state) {
                         'bueno' => 'success',
                         'danado' => 'warning',
                         'vencido' => 'danger',
@@ -282,13 +282,13 @@ class DescargasRelationManager extends RelationManager
                 Tables\Actions\CreateAction::make()
                     ->label('Agregar Descarga Manual')
                     ->icon('heroicon-o-plus')
-                    ->visible(fn () => in_array($this->getOwnerRecord()->estado, ['regresando', 'descargando', 'liquidando']))
+                    ->visible(fn() => in_array($this->getOwnerRecord()->estado, ['regresando', 'descargando', 'liquidando']))
                     ->mutateFormDataUsing(function (array $data): array {
                         // Limpiar campos temporales
                         unset($data['info_fraccion']);
                         unset($data['tiene_subunidades']);
                         unset($data['unidades_por_bulto']);
-                        
+
                         if ($data['cobrar_chofer'] && empty($data['monto_cobrar'])) {
                             $data['monto_cobrar'] = $data['subtotal_costo'];
                         }
@@ -331,15 +331,15 @@ class DescargasRelationManager extends RelationManager
             ])
             ->actions([
                 Tables\Actions\ViewAction::make(),
-                
+
                 Tables\Actions\EditAction::make()
-                    ->visible(fn () => !in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado'])),
+                    ->visible(fn() => !in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado'])),
 
                 Tables\Actions\Action::make('procesar_reingreso')
                     ->label('Reingresar a Bodega')
                     ->icon('heroicon-o-arrow-path')
                     ->color('success')
-                    ->visible(fn ($record) => $record->reingresa_stock 
+                    ->visible(fn($record) => $record->reingresa_stock
                         && $record->estado_producto === 'bueno'
                         && !$record->procesado_reingreso
                         && !in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado']))
@@ -348,25 +348,25 @@ class DescargasRelationManager extends RelationManager
                     ->modalDescription(function ($record) {
                         $producto = $record->producto;
                         $unidadesPorBulto = $producto?->unidades_por_bulto;
-                        
+
                         if ($unidadesPorBulto && $unidadesPorBulto > 1) {
                             $parteEntera = floor($record->cantidad);
                             $fraccion = $record->cantidad - $parteEntera;
-                            
+
                             if ($fraccion > 0.0001) {
                                 $huevosSueltos = round($fraccion * $unidadesPorBulto);
                                 return "Se reingresarán {$parteEntera} cartones completos al stock y {$huevosSueltos} unidades sueltas al lote de sueltos. ¿Confirma?";
                             }
                         }
-                        
+
                         return '¿Confirma el reingreso de este producto al inventario de bodega?';
                     })
                     ->action(function ($record) {
                         $this->procesarReingreso($record);
                     }),
-                
+
                 Tables\Actions\DeleteAction::make()
-                    ->visible(fn () => !in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado']))
+                    ->visible(fn() => !in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado']))
                     ->after(function ($record) {
                         // Actualizar cantidad_devuelta en la carga
                         $carga = $this->getOwnerRecord()->cargas()
@@ -386,7 +386,7 @@ class DescargasRelationManager extends RelationManager
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
                     Tables\Actions\DeleteBulkAction::make()
-                        ->visible(fn () => !in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado'])),
+                        ->visible(fn() => !in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado'])),
                 ]),
             ])
             ->defaultSort('created_at', 'desc')
@@ -406,14 +406,14 @@ class DescargasRelationManager extends RelationManager
         $producto = $record->producto;
         $bodegaId = $viaje->bodega_origen_id;
         $unidadesPorBulto = $producto->unidades_por_bulto ?? null;
-        
+
         DB::transaction(function () use ($record, $producto, $bodegaId, $unidadesPorBulto) {
             $cantidad = $record->cantidad;
             $cartonesCompletos = floor($cantidad);
             $fraccion = $cantidad - $cartonesCompletos;
-            
+
             $mensajes = [];
-            
+
             // 1. Reingresar cartones completos al stock de BodegaProducto
             if ($cartonesCompletos > 0) {
                 $bodegaProducto = BodegaProducto::firstOrCreate(
@@ -423,18 +423,26 @@ class DescargasRelationManager extends RelationManager
                     ],
                     [
                         'stock' => 0,
-                        'costo_promedio_actual' => $record->costo_unitario,
+                        'costo_promedio_actual' => 0,
+                        'activo' => true,
                     ]
                 );
 
-                $bodegaProducto->increment('stock', $cartonesCompletos);
+                // FIX: Usar costo_bodega_original de la carga para promedio ponderado correcto
+                $viaje = $this->getOwnerRecord();
+                $carga = $viaje->cargas()->where('producto_id', $record->producto_id)->first();
+                $costoParaReintegro = $carga
+                    ? floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? $record->costo_unitario)
+                    : $record->costo_unitario;
+
+                $bodegaProducto->actualizarCostoPromedio($cartonesCompletos, $costoParaReintegro);
                 $mensajes[] = "{$cartonesCompletos} cartones al stock";
             }
-            
+
             // 2. Si hay fracción y el producto tiene unidades por bulto, enviar a lote de sueltos
             if ($fraccion > 0.0001 && $unidadesPorBulto && $unidadesPorBulto > 1) {
                 $huevosSueltos = round($fraccion * $unidadesPorBulto);
-                
+
                 if ($huevosSueltos > 0) {
                     $this->agregarALoteSueltos(
                         bodegaId: $bodegaId,
@@ -443,7 +451,7 @@ class DescargasRelationManager extends RelationManager
                         costoUnitario: $record->costo_unitario,
                         unidadesPorBulto: $unidadesPorBulto
                     );
-                    
+
                     $mensajes[] = "{$huevosSueltos} unidades al lote de sueltos";
                 }
             } elseif ($fraccion > 0.0001) {
@@ -455,20 +463,28 @@ class DescargasRelationManager extends RelationManager
                     ],
                     [
                         'stock' => 0,
-                        'costo_promedio_actual' => $record->costo_unitario,
+                        'costo_promedio_actual' => 0,
+                        'activo' => true,
                     ]
                 );
-                
-                $bodegaProducto->increment('stock', $fraccion);
+
+                // FIX: Usar costo_bodega_original de la carga para promedio ponderado correcto
+                $viaje = $this->getOwnerRecord();
+                $carga = $viaje->cargas()->where('producto_id', $record->producto_id)->first();
+                $costoParaReintegro = $carga
+                    ? floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? $record->costo_unitario)
+                    : $record->costo_unitario;
+
+                $bodegaProducto->actualizarCostoPromedio($fraccion, $costoParaReintegro);
                 $mensajes[] = number_format($fraccion, 4) . " unidades al stock";
             }
-            
+
             // Marcar como procesado (si tienes este campo)
             if (method_exists($record, 'setAttribute')) {
                 $record->procesado_reingreso = true;
                 $record->save();
             }
-            
+
             Notification::make()
                 ->title('Stock reingresado')
                 ->body("Se agregaron: " . implode(', ', $mensajes))
@@ -491,32 +507,32 @@ class DescargasRelationManager extends RelationManager
         $bodega = \App\Models\Bodega::find($bodegaId);
         $codigoBodega = $bodega->codigo ?? "B{$bodegaId}";
         $numeroLote = "SUELTOS-{$codigoBodega}";
-        
+
         // Calcular costo por huevo
         $costoPorHuevo = $costoUnitario / $unidadesPorBulto;
-        
+
         // Buscar lote de sueltos existente para esta bodega y producto
         $loteSueltos = Lote::where('numero_lote', $numeroLote)
             ->where('bodega_id', $bodegaId)
             ->where('producto_id', $productoId)
             ->where('estado', 'disponible')
             ->first();
-        
+
         if ($loteSueltos) {
             // Actualizar lote existente
             $loteSueltos->cantidad_huevos_remanente += $cantidadHuevos;
             $loteSueltos->cantidad_huevos_original += $cantidadHuevos;
-            
+
             // Recalcular costo promedio ponderado
             $costoAnterior = $loteSueltos->costo_total_lote ?? 0;
             $costoNuevo = $cantidadHuevos * $costoPorHuevo;
             $loteSueltos->costo_total_lote = $costoAnterior + $costoNuevo;
-            
+
             // Actualizar costo por huevo (promedio)
             if ($loteSueltos->cantidad_huevos_original > 0) {
                 $loteSueltos->costo_por_huevo = $loteSueltos->costo_total_lote / $loteSueltos->cantidad_huevos_original;
             }
-            
+
             $loteSueltos->save();
         } else {
             // Crear nuevo lote de sueltos

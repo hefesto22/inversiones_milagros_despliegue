@@ -27,7 +27,7 @@ class ReempaqueLote extends Model
         'cantidad_huevos_usados' => 'decimal:3',
         'cartones_facturados_usados' => 'decimal:3',
         'cartones_regalo_usados' => 'decimal:3',
-        'costo_parcial' => 'decimal:2',
+        'costo_parcial' => 'decimal:4',
     ];
 
     // ============================================
@@ -50,6 +50,7 @@ class ReempaqueLote extends Model
 
     /**
      * Calcular el costo por huevo de este lote en el reempaque
+     * NOTA: Considera que algunos huevos pueden ser de regalo (costo 0)
      */
     public function getCostoPorHuevo(): float
     {
@@ -89,11 +90,41 @@ class ReempaqueLote extends Model
     }
 
     /**
+     * Obtener total de huevos facturados usados
+     */
+    public function getHuevosFacturadosUsados(): float
+    {
+        $lote = $this->lote;
+
+        if (!$lote) {
+            return 0;
+        }
+
+        return $this->cartones_facturados_usados * ($lote->huevos_por_carton ?? 30);
+    }
+
+    /**
      * Verificar si este lote usó cartones regalados
      */
     public function usoCartonesRegalo(): bool
     {
         return ($this->cartones_regalo_usados ?? 0) > 0;
+    }
+
+    /**
+     * Obtener el ahorro por usar cartones de regalo
+     * (Lo que hubiera costado si fueran facturados)
+     */
+    public function getAhorroPorRegalo(): float
+    {
+        $lote = $this->lote;
+
+        if (!$lote || $this->cartones_regalo_usados <= 0) {
+            return 0;
+        }
+
+        $huevosRegalo = $this->getHuevosRegaloUsados();
+        return round($huevosRegalo * ($lote->costo_por_huevo ?? 0), 2);
     }
 
     // ============================================
@@ -121,10 +152,14 @@ class ReempaqueLote extends Model
                     $reempaqueLote->cantidad_cartones_usados * ($lote->huevos_por_carton ?? 30);
             }
 
-            // Calcular costo_parcial si no está definido
+            // CORREGIDO: Calcular costo_parcial SOLO de huevos facturados
+            // Los huevos de regalo tienen costo = 0
             if (is_null($reempaqueLote->costo_parcial) && $lote) {
-                $reempaqueLote->costo_parcial =
-                    $reempaqueLote->cantidad_huevos_usados * ($lote->costo_por_huevo ?? 0);
+                $huevosFacturados = $facturados * ($lote->huevos_por_carton ?? 30);
+                $reempaqueLote->costo_parcial = round(
+                    $huevosFacturados * ($lote->costo_por_huevo ?? 0),
+                    4
+                );
             }
         });
     }

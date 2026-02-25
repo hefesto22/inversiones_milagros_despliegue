@@ -151,15 +151,20 @@ class ReempaqueResource extends Resource
                                     foreach ($lotes as $lote) {
                                         $huevos = (int) $lote->cantidad_huevos_remanente;
                                         $c30Disp = floor($huevos / 30);
+                                        $bufferRegalo = $lote->getBufferRegaloDisponible();
+                                        $cartonesRegalo = floor($bufferRegalo / 30);
 
-                                        // Usar costo_por_carton_facturado (ya actualizado con mermas en el modelo)
                                         $costoPorCarton = $lote->costo_por_carton_facturado ?? 0;
 
+                                        // Mostrar info de regalo si hay
+                                        $regaloInfo = $cartonesRegalo > 0 ? " | {$cartonesRegalo} regalo" : "";
+
                                         $opciones[$lote->id] = sprintf(
-                                            '%s | %s | %d C30 | L%.2f/cart',
+                                            '%s | %s | %d C30%s | L%.2f/cart',
                                             $lote->producto->nombre ?? 'Sin producto',
                                             $lote->numero_lote,
                                             $c30Disp,
+                                            $regaloInfo,
                                             $costoPorCarton
                                         );
                                     }
@@ -180,17 +185,17 @@ class ReempaqueResource extends Resource
 
                                     $set('disponible_c30', $c30);
 
-                                    // Usar costo_por_huevo para cálculos internos (4 decimales de precisión)
-                                    $costoPorHuevo = $lote->costo_por_huevo ?? 0;
-                                    // Usar costo_por_carton_facturado para mostrar (ya calculado correctamente)
-                                    $costoPorCarton = $lote->costo_por_carton_facturado ?? 0;
-
-                                    $set('costo_unitario', $costoPorHuevo);
-                                    $set('costo_por_carton', $costoPorCarton);
+                                    // Guardar datos del lote para cálculos FIFO
+                                    $set('costo_por_huevo', $lote->costo_por_huevo ?? 0);
+                                    $set('costo_por_carton', $lote->costo_por_carton_facturado ?? 0);
+                                    $set('huevos_facturados_disponibles', $lote->getHuevosFacturadosDisponibles());
+                                    $set('huevos_regalo_disponibles', $lote->getBufferRegaloDisponible());
 
                                     $set('cantidad_c30', 0);
                                     $set('cantidad_huevos', 0);
                                     $set('costo_parcial', 0);
+                                    $set('huevos_facturados_usados', 0);
+                                    $set('huevos_regalo_usados', 0);
                                 })
                                 ->disabled(fn(string $operation) => $operation === 'edit')
                                 ->dehydrated()
@@ -199,14 +204,25 @@ class ReempaqueResource extends Resource
                             Forms\Components\Grid::make(4)->schema([
                                 Forms\Components\Placeholder::make('info_disponible')
                                     ->label('Disponible')
-                                    ->content(fn(Forms\Get $get) => new \Illuminate\Support\HtmlString("
-                                        <div class='text-center'>
-                                            <div class='text-3xl font-bold text-blue-600 dark:text-blue-400'>
-                                                " . (int)($get('disponible_c30') ?? 0) . "
+                                    ->content(function (Forms\Get $get) {
+                                        $c30 = (int)($get('disponible_c30') ?? 0);
+                                        $regaloHuevos = (float)($get('huevos_regalo_disponibles') ?? 0);
+                                        $regaloCartones = floor($regaloHuevos / 30);
+                                        
+                                        $regaloText = $regaloCartones > 0 
+                                            ? "<div class='text-xs text-green-500'>{$regaloCartones} de regalo</div>" 
+                                            : "";
+                                        
+                                        return new \Illuminate\Support\HtmlString("
+                                            <div class='text-center'>
+                                                <div class='text-3xl font-bold text-blue-600 dark:text-blue-400'>
+                                                    {$c30}
+                                                </div>
+                                                <div class='text-xs text-gray-500'>cartones</div>
+                                                {$regaloText}
                                             </div>
-                                            <div class='text-xs text-gray-500'>cartones</div>
-                                        </div>
-                                    ")),
+                                        ");
+                                    }),
 
                                 Forms\Components\TextInput::make('cantidad_c30')
                                     ->label('Usar Cartones')
@@ -217,36 +233,103 @@ class ReempaqueResource extends Resource
                                     ->live(debounce: 300)
                                     ->afterStateUpdated(function ($state, Forms\Set $set, Forms\Get $get) {
                                         $c30 = min((int)($state ?? 0), (int)($get('disponible_c30') ?? 0));
-                                        $huevos = $c30 * 30;
-                                        $set('cantidad_huevos', $huevos);
+                                        $huevosAUsar = $c30 * 30;
+                                        $set('cantidad_huevos', $huevosAUsar);
 
-                                        // Usar costo_por_carton para mayor precisión (evita errores de redondeo)
+                                        // 🎯 LÓGICA FIFO: Calcular cuántos son facturados vs regalo
+                                        $huevosFacturadosDisp = (float)($get('huevos_facturados_disponibles') ?? 0);
+                                        $huevosRegaloDisp = (float)($get('huevos_regalo_disponibles') ?? 0);
+                                        
+                                        // CORREGIDO: Derivar costo por huevo desde costo por carton para evitar redondeos
                                         $costoPorCarton = (float)($get('costo_por_carton') ?? 0);
-                                        $set('costo_parcial', round($c30 * $costoPorCarton, 2));
+                                        $costoPorHuevo = $costoPorCarton / 30;
+
+                                        if ($huevosAUsar <= $huevosFacturadosDisp) {
+                                            // Todos son facturados (con costo)
+                                            $huevosFacturadosUsados = $huevosAUsar;
+                                            $huevosRegaloUsados = 0;
+                                        } else {
+                                            // Parte facturados + parte regalo
+                                            $huevosFacturadosUsados = $huevosFacturadosDisp;
+                                            $huevosRegaloUsados = min(
+                                                $huevosAUsar - $huevosFacturadosDisp,
+                                                $huevosRegaloDisp
+                                            );
+                                        }
+
+                                        // Solo los facturados tienen costo
+                                        $costoParcial = round($huevosFacturadosUsados * $costoPorHuevo, 4);
+
+                                        $set('huevos_facturados_usados', $huevosFacturadosUsados);
+                                        $set('huevos_regalo_usados', $huevosRegaloUsados);
+                                        $set('costo_parcial', $costoParcial);
                                     })
                                     ->suffix('C30')
                                     ->disabled(fn(string $operation) => $operation === 'edit')
                                     ->dehydrated(),
 
-                                Forms\Components\TextInput::make('costo_por_carton')
-                                    ->label('Costo/Cartón')
-                                    ->prefix('L')
-                                    ->disabled()
-                                    ->dehydrated()
-                                    ->formatStateUsing(fn($state) => number_format($state ?? 0, 2)),
+                                Forms\Components\Placeholder::make('info_costo')
+                                    ->label('Desglose')
+                                    ->content(function (Forms\Get $get) {
+                                        $facturados = (float)($get('huevos_facturados_usados') ?? 0);
+                                        $regalo = (float)($get('huevos_regalo_usados') ?? 0);
+                                        $costoPorCarton = (float)($get('costo_por_carton') ?? 0);
+                                        
+                                        $cartFacturados = $facturados / 30;
+                                        $cartRegalo = $regalo / 30;
+                                        
+                                        if ($facturados <= 0 && $regalo <= 0) {
+                                            return new \Illuminate\Support\HtmlString("
+                                                <div class='text-sm text-gray-400'>-</div>
+                                            ");
+                                        }
+                                        
+                                        $lines = [];
+                                        if ($cartFacturados > 0) {
+                                            $lines[] = "<span class='text-blue-600'>" . number_format($cartFacturados, 1) . " fact</span>";
+                                        }
+                                        if ($cartRegalo > 0) {
+                                            $lines[] = "<span class='text-green-600 font-bold'>" . number_format($cartRegalo, 1) . " regalo</span>";
+                                        }
+                                        
+                                        return new \Illuminate\Support\HtmlString("
+                                            <div class='text-sm'>
+                                                " . implode(' + ', $lines) . "
+                                            </div>
+                                            <div class='text-xs text-gray-500'>L " . number_format($costoPorCarton, 4) . "/cart</div>
+                                        ");
+                                    }),
 
-                                Forms\Components\TextInput::make('costo_parcial')
+                                Forms\Components\Placeholder::make('costo_display')
                                     ->label('Costo Total')
-                                    ->prefix('L')
-                                    ->disabled()
-                                    ->dehydrated()
-                                    ->formatStateUsing(fn($state) => number_format($state ?? 0, 2))
-                                    ->extraAttributes(['class' => 'font-bold']),
+                                    ->content(function (Forms\Get $get) {
+                                        $costo = (float)($get('costo_parcial') ?? 0);
+                                        $regaloUsados = (float)($get('huevos_regalo_usados') ?? 0);
+                                        
+                                        $color = $costo > 0 ? 'text-blue-600' : 'text-green-600';
+                                        $regaloNote = $regaloUsados > 0 
+                                            ? "<div class='text-xs text-green-500'>Incluye regalo gratis</div>" 
+                                            : "";
+                                        
+                                        return new \Illuminate\Support\HtmlString("
+                                            <div class='text-xl font-bold {$color}'>
+                                                L " . number_format($costo, 4) . "
+                                            </div>
+                                            {$regaloNote}
+                                        ");
+                                    }),
                             ]),
 
+                            // Campos ocultos para datos
                             Forms\Components\Hidden::make('disponible_c30')->dehydrated(false),
                             Forms\Components\Hidden::make('cantidad_huevos')->dehydrated(),
-                            Forms\Components\Hidden::make('costo_unitario')->dehydrated(),
+                            Forms\Components\Hidden::make('costo_por_huevo')->dehydrated(),
+                            Forms\Components\Hidden::make('costo_por_carton')->dehydrated(),
+                            Forms\Components\Hidden::make('costo_parcial')->dehydrated(),
+                            Forms\Components\Hidden::make('huevos_facturados_disponibles')->dehydrated(false),
+                            Forms\Components\Hidden::make('huevos_regalo_disponibles')->dehydrated(false),
+                            Forms\Components\Hidden::make('huevos_facturados_usados')->dehydrated(),
+                            Forms\Components\Hidden::make('huevos_regalo_usados')->dehydrated(),
                         ])
                         ->columns(1)
                         ->defaultItems(1)
@@ -284,6 +367,14 @@ class ReempaqueResource extends Resource
                             $maxC30 = floor($totalHuevos / 30);
                             $maxC15 = floor($totalHuevos / 15);
 
+                            // Calcular huevos de regalo usados
+                            $totalRegaloUsados = (float) collect($lotes)->sum('huevos_regalo_usados');
+                            $cartonesRegalo = $totalRegaloUsados / 30;
+                            
+                            $regaloInfo = $totalRegaloUsados > 0 
+                                ? "<p class='text-sm text-green-600 font-bold mt-1'>Incluye " . number_format($cartonesRegalo, 1) . " cartones de regalo (costo L 0)</p>"
+                                : "";
+
                             return new \Illuminate\Support\HtmlString("
                                 <div class='rounded-lg bg-blue-50 dark:bg-blue-900/20 p-4'>
                                     <p class='text-lg font-bold text-blue-900 dark:text-blue-100'>
@@ -292,6 +383,7 @@ class ReempaqueResource extends Resource
                                     <p class='text-sm text-blue-700 dark:text-blue-300'>
                                         Máximo: {$maxC30} cartones (C30) o {$maxC15} medios (C15)
                                     </p>
+                                    {$regaloInfo}
                                 </div>
                             ");
                         }),
@@ -313,7 +405,6 @@ class ReempaqueResource extends Resource
                                 
                                 if ($unidadId) {
                                     $unidad = Unidad::find($unidadId);
-                                    // Determinar factor por nombre
                                     $factor = 30;
                                     if ($unidad && str_contains($unidad->nombre, '15')) {
                                         $factor = 15;
@@ -369,10 +460,8 @@ class ReempaqueResource extends Resource
                                         $categoriaId = $get('categoria_id');
                                         if (!$categoriaId) return [];
 
-                                        // Obtener todas las distribuciones actuales
                                         $distribuciones = $get('../../distribuciones') ?? [];
                                         
-                                        // Obtener unidades ya usadas para esta categoría
                                         $unidadesUsadas = [];
                                         foreach ($distribuciones as $dist) {
                                             if (($dist['categoria_id'] ?? null) == $categoriaId && !empty($dist['unidad_id'])) {
@@ -380,11 +469,10 @@ class ReempaqueResource extends Resource
                                             }
                                         }
 
-                                        // Obtener unidades de esta categoría que NO estén ya usadas
                                         $categoria = Categoria::with(['unidades' => function ($query) {
                                             $query->where('unidades.activo', true)
                                                   ->wherePivot('activo', true)
-                                                  ->whereIn('nombre', ['1x30', '1x15']); // Solo 1x30 y 1x15
+                                                  ->whereIn('nombre', ['1x30', '1x15']);
                                         }])->find($categoriaId);
 
                                         if (!$categoria) return [];
@@ -421,8 +509,7 @@ class ReempaqueResource extends Resource
                                         }
                                         
                                         $unidad = Unidad::find($unidadId);
-                                        // Determinar factor por nombre: 1x30 = 30, 1x15 = 15
-                                        $factor = 30; // default
+                                        $factor = 30;
                                         if ($unidad && str_contains($unidad->nombre, '15')) {
                                             $factor = 15;
                                         }
@@ -444,19 +531,18 @@ class ReempaqueResource extends Resource
                             $unidadId = $state['unidad_id'] ?? null;
                             $cantidad = (int)($state['cantidad'] ?? 0);
 
-                            if (!$categoriaId || !$unidadId) return '📝 Nueva línea';
+                            if (!$categoriaId || !$unidadId) return 'Nueva linea';
 
                             $categoria = Categoria::find($categoriaId);
                             $unidad = Unidad::find($unidadId);
                             
-                            // Determinar factor por nombre
                             $factor = 30;
                             if ($unidad && str_contains($unidad->nombre, '15')) {
                                 $factor = 15;
                             }
                             $huevos = $cantidad * $factor;
 
-                            return "📦 " . ($categoria?->nombre ?? '') . " - {$cantidad} " . ($unidad?->nombre ?? '') . " ({$huevos} huevos)";
+                            return ($categoria?->nombre ?? '') . " - {$cantidad} " . ($unidad?->nombre ?? '') . " ({$huevos} huevos)";
                         })
                         ->disabled(fn(string $operation) => $operation === 'edit')
                         ->dehydrated(),
@@ -471,16 +557,22 @@ class ReempaqueResource extends Resource
                             ->label('Costo Total')
                             ->content(function (Forms\Get $get) {
                                 $lotes = $get('lotes_seleccionados') ?? [];
-                                $costoTotal = collect($lotes)->sum('costo_parcial');
+                                $costoTotal = (float) collect($lotes)->sum('costo_parcial');
                                 $huevosTotal = (int) collect($lotes)->sum('cantidad_huevos');
+                                $huevosRegalo = (float) collect($lotes)->sum('huevos_regalo_usados');
+
+                                $regaloInfo = $huevosRegalo > 0 
+                                    ? "<div class='text-xs text-green-500 font-bold'>" . number_format($huevosRegalo / 30, 1) . " cartones gratis</div>"
+                                    : "";
 
                                 return new \Illuminate\Support\HtmlString("
                                     <div class='text-2xl font-bold text-blue-600'>
-                                        L " . number_format($costoTotal, 2) . "
+                                        L " . number_format($costoTotal, 4) . "
                                     </div>
                                     <div class='text-xs text-gray-500'>
                                         {$huevosTotal} huevos
                                     </div>
+                                    {$regaloInfo}
                                 ");
                             }),
 
@@ -488,7 +580,7 @@ class ReempaqueResource extends Resource
                             ->label('Costo por Cartón (30)')
                             ->content(function (Forms\Get $get) {
                                 $lotes = $get('lotes_seleccionados') ?? [];
-                                $costoTotal = collect($lotes)->sum('costo_parcial');
+                                $costoTotal = (float) collect($lotes)->sum('costo_parcial');
                                 $huevosTotal = (int) collect($lotes)->sum('cantidad_huevos');
 
                                 if ($huevosTotal <= 0) {
@@ -497,9 +589,13 @@ class ReempaqueResource extends Resource
 
                                 $costoPorCarton = ($costoTotal / $huevosTotal) * 30;
 
+                                // Color verde si hay descuento por regalo
+                                $huevosRegalo = (float) collect($lotes)->sum('huevos_regalo_usados');
+                                $color = $huevosRegalo > 0 ? 'text-green-600' : 'text-green-600';
+
                                 return new \Illuminate\Support\HtmlString("
-                                    <div class='text-2xl font-bold text-green-600'>
-                                        L " . number_format($costoPorCarton, 2) . "
+                                    <div class='text-2xl font-bold {$color}'>
+                                        L " . number_format($costoPorCarton, 4) . "
                                     </div>
                                 ");
                             }),
@@ -508,7 +604,7 @@ class ReempaqueResource extends Resource
                             ->label('Costo por Medio (15)')
                             ->content(function (Forms\Get $get) {
                                 $lotes = $get('lotes_seleccionados') ?? [];
-                                $costoTotal = collect($lotes)->sum('costo_parcial');
+                                $costoTotal = (float) collect($lotes)->sum('costo_parcial');
                                 $huevosTotal = (int) collect($lotes)->sum('cantidad_huevos');
 
                                 if ($huevosTotal <= 0) {
@@ -519,7 +615,7 @@ class ReempaqueResource extends Resource
 
                                 return new \Illuminate\Support\HtmlString("
                                     <div class='text-2xl font-bold text-amber-600'>
-                                        L " . number_format($costoPorMedio, 2) . "
+                                        L " . number_format($costoPorMedio, 4) . "
                                     </div>
                                 ");
                             }),
@@ -570,6 +666,11 @@ class ReempaqueResource extends Resource
                         if ($record->cartones_15 > 0) $items[] = "{$record->cartones_15} C15";
                         return implode(' + ', $items) ?: '-';
                     }),
+
+                Tables\Columns\TextColumn::make('costo_total')
+                    ->label('Costo')
+                    ->money('HNL')
+                    ->sortable(),
 
                 Tables\Columns\TextColumn::make('estado')
                     ->badge()

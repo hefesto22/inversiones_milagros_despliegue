@@ -17,10 +17,12 @@ class ViajeCarga extends Model
 
     protected $fillable = [
         'viaje_id',
+        'reempaque_id',
         'producto_id',
         'unidad_id',
         'cantidad',
         'costo_unitario',
+        'costo_bodega_original', // Costo original de bodega antes de cargar (para restaurar al eliminar)
         'precio_venta_sugerido',
         'precio_venta_minimo',
         'subtotal_costo',
@@ -32,7 +34,8 @@ class ViajeCarga extends Model
 
     protected $casts = [
         'cantidad' => 'decimal:3',
-        'costo_unitario' => 'decimal:2',
+        'costo_unitario' => 'decimal:4',
+        'costo_bodega_original' => 'decimal:4',
         'precio_venta_sugerido' => 'decimal:2',
         'precio_venta_minimo' => 'decimal:2',
         'subtotal_costo' => 'decimal:2',
@@ -61,30 +64,41 @@ class ViajeCarga extends Model
         return $this->belongsTo(Unidad::class, 'unidad_id');
     }
 
+    public function reempaque(): BelongsTo
+    {
+        return $this->belongsTo(Reempaque::class, 'reempaque_id');
+    }
+
     // ============================================
-    // MÉTODOS
+    // MÉTODOS DE CÁLCULO
     // ============================================
 
     /**
      * Calcular subtotales considerando ISV si aplica
+     * 
+     * NOTA: Solo recalcula si los subtotales no fueron ya establecidos
+     * por el CargasRelationManager (que hace cálculos más precisos
+     * considerando fuentes mixtas bodega+lote)
      */
     public function calcular(): void
     {
-        // Subtotal costo (siempre sin ISV)
-        $this->subtotal_costo = $this->cantidad * $this->costo_unitario;
+        $cantidad = floatval($this->cantidad ?? 0);
+        $costoUnitario = floatval($this->costo_unitario ?? 0);
+        $precioBase = floatval($this->precio_venta_sugerido ?? 0);
 
-        // Subtotal venta (con ISV si el producto lo aplica)
-        $precioBase = $this->precio_venta_sugerido;
-        
-        // Verificar si el producto aplica ISV
+        // Subtotal costo = costo unitario (sin ISV) × cantidad
+        $this->subtotal_costo = round($cantidad * $costoUnitario, 2);
+
+        // Subtotal venta: depende de si aplica ISV
         $aplicaIsv = $this->producto?->aplica_isv ?? false;
-        
-        if ($aplicaIsv) {
-            // Precio con ISV redondeado hacia arriba (por unidad)
-            $precioConIsv = ceil($precioBase * (1 + self::ISV_RATE));
-            $this->subtotal_venta = $this->cantidad * $precioConIsv;
+
+        if ($aplicaIsv && $precioBase > 0) {
+            // precio_venta_sugerido es SIN ISV, calcular CON ISV
+            $precioConIsv = round($precioBase * (1 + self::ISV_RATE), 2);
+            $this->subtotal_venta = round($cantidad * $precioConIsv, 2);
         } else {
-            $this->subtotal_venta = $this->cantidad * $precioBase;
+            // Sin ISV: precio directo
+            $this->subtotal_venta = round($cantidad * $precioBase, 2);
         }
     }
 
@@ -93,13 +107,13 @@ class ViajeCarga extends Model
      */
     public function getPrecioConIsv(): float
     {
-        $precioBase = $this->precio_venta_sugerido ?? 0;
+        $precioBase = floatval($this->precio_venta_sugerido ?? 0);
         $aplicaIsv = $this->producto?->aplica_isv ?? false;
-        
-        if ($aplicaIsv) {
-            return ceil($precioBase * (1 + self::ISV_RATE));
+
+        if ($aplicaIsv && $precioBase > 0) {
+            return round($precioBase * (1 + self::ISV_RATE), 2);
         }
-        
+
         return $precioBase;
     }
 
@@ -109,21 +123,28 @@ class ViajeCarga extends Model
     public function getMontoIsv(): float
     {
         $aplicaIsv = $this->producto?->aplica_isv ?? false;
-        
+
         if (!$aplicaIsv) {
             return 0;
         }
-        
-        $subtotalSinIsv = $this->cantidad * $this->precio_venta_sugerido;
-        return $this->subtotal_venta - $subtotalSinIsv;
+
+        $subtotalSinIsv = floatval($this->cantidad) * floatval($this->precio_venta_sugerido);
+        return round(floatval($this->subtotal_venta) - $subtotalSinIsv, 2);
     }
+
+    // ============================================
+    // MÉTODOS DE INVENTARIO
+    // ============================================
 
     /**
      * Obtener cantidad disponible para vender
      */
     public function getCantidadDisponible(): float
     {
-        return $this->cantidad - $this->cantidad_vendida - $this->cantidad_merma - $this->cantidad_devuelta;
+        return floatval($this->cantidad) 
+             - floatval($this->cantidad_vendida) 
+             - floatval($this->cantidad_merma) 
+             - floatval($this->cantidad_devuelta);
     }
 
     /**
@@ -139,7 +160,7 @@ class ViajeCarga extends Model
      */
     public function registrarVenta(float $cantidad): void
     {
-        $this->cantidad_vendida += $cantidad;
+        $this->cantidad_vendida = floatval($this->cantidad_vendida) + $cantidad;
         $this->save();
     }
 
@@ -148,7 +169,7 @@ class ViajeCarga extends Model
      */
     public function registrarMerma(float $cantidad): void
     {
-        $this->cantidad_merma += $cantidad;
+        $this->cantidad_merma = floatval($this->cantidad_merma) + $cantidad;
         $this->save();
     }
 
@@ -157,7 +178,7 @@ class ViajeCarga extends Model
      */
     public function registrarDevolucion(float $cantidad): void
     {
-        $this->cantidad_devuelta += $cantidad;
+        $this->cantidad_devuelta = floatval($this->cantidad_devuelta) + $cantidad;
         $this->save();
     }
 
@@ -174,11 +195,41 @@ class ViajeCarga extends Model
      */
     public function getPorcentajeVendido(): float
     {
-        if ($this->cantidad <= 0) {
+        $cantidad = floatval($this->cantidad);
+        if ($cantidad <= 0) {
             return 0;
         }
 
-        return ($this->cantidad_vendida / $this->cantidad) * 100;
+        return (floatval($this->cantidad_vendida) / $cantidad) * 100;
+    }
+
+    /**
+     * Obtener la cantidad que vino de bodega (no del reempaque)
+     */
+    public function getCantidadDeBodega(): float
+    {
+        $cantidadTotal = floatval($this->cantidad);
+        
+        if (!$this->reempaque_id) {
+            return $cantidadTotal; // Todo vino de bodega
+        }
+
+        // Si hay reempaque, calcular cuánto vino del reempaque
+        $reempaqueProducto = ReempaqueProducto::where('reempaque_id', $this->reempaque_id)
+            ->where('producto_id', $this->producto_id)
+            ->first();
+
+        $cantidadReempacada = floatval($reempaqueProducto->cantidad ?? 0);
+        return max(0, $cantidadTotal - $cantidadReempacada);
+    }
+
+    /**
+     * Obtener el costo correcto para restaurar en bodega al eliminar
+     * Usa costo_bodega_original si existe, sino fallback a costo_unitario
+     */
+    public function getCostoParaRestaurar(): float
+    {
+        return floatval($this->costo_bodega_original ?? $this->costo_unitario ?? 0);
     }
 
     /**
@@ -195,6 +246,7 @@ class ViajeCarga extends Model
             'cantidad_disponible' => $this->getCantidadDisponible(),
             'porcentaje_vendido' => round($this->getPorcentajeVendido(), 2),
             'costo_unitario' => $this->costo_unitario,
+            'costo_bodega_original' => $this->costo_bodega_original,
             'precio_sugerido' => $this->precio_venta_sugerido,
             'precio_con_isv' => $this->getPrecioConIsv(),
             'precio_minimo' => $this->precio_venta_minimo,
@@ -230,6 +282,7 @@ class ViajeCarga extends Model
         parent::boot();
 
         static::saving(function ($carga) {
+            // Recalcular subtotales para mantener consistencia
             $carga->calcular();
         });
     }

@@ -17,7 +17,7 @@ class ViewLote extends ViewRecord
     protected function getHeaderActions(): array
     {
         return [
-            // Acción de registrar merma
+            // Accion de registrar merma
             Actions\Action::make('registrar_merma')
                 ->label('Registrar Merma')
                 ->icon('heroicon-o-minus-circle')
@@ -38,7 +38,7 @@ class ViewLote extends ViewRecord
                                             <p class='text-xl font-bold text-blue-600'>" . number_format($record->cantidad_huevos_remanente, 0) . "</p>
                                         </div>
                                         <div>
-                                            <p class='text-sm text-gray-500'>Buffer de Regalos 🎁</p>
+                                            <p class='text-sm text-gray-500'>Buffer de Regalos</p>
                                             <p class='text-xl font-bold text-{$bufferColor}-600'>" . number_format($buffer, 0) . "</p>
                                         </div>
                                     </div>
@@ -51,30 +51,30 @@ class ViewLote extends ViewRecord
                         }),
 
                     \Filament\Forms\Components\TextInput::make('cantidad_huevos')
-                        ->label('Cantidad de Huevos Dañados')
+                        ->label('Cantidad de Huevos Daniados')
                         ->required()
                         ->numeric()
                         ->minValue(1)
                         ->maxValue(fn() => $this->record->cantidad_huevos_remanente)
                         ->suffix('huevos')
                         ->live()
-                        ->helperText(fn() => 'Máximo: ' . number_format($this->record->cantidad_huevos_remanente, 0) . ' huevos'),
+                        ->helperText(fn() => 'Maximo: ' . number_format($this->record->cantidad_huevos_remanente, 0) . ' huevos'),
 
                     \Filament\Forms\Components\Select::make('motivo')
                         ->label('Motivo')
                         ->required()
                         ->options([
-                            'rotos' => '🥚 Rotos',
-                            'podridos' => '🤢 Podridos',
-                            'vencidos' => '📅 Vencidos',
-                            'dañados_transporte' => '🚚 Dañados en Transporte',
-                            'otros' => '❓ Otros',
+                            'rotos' => 'Rotos',
+                            'podridos' => 'Podridos',
+                            'vencidos' => 'Vencidos',
+                            'dañados_transporte' => 'Daniados en Transporte',
+                            'otros' => 'Otros',
                         ])
                         ->native(false)
                         ->default('rotos'),
 
                     \Filament\Forms\Components\Textarea::make('descripcion')
-                        ->label('Descripción (opcional)')
+                        ->label('Descripcion (opcional)')
                         ->placeholder('Detalles adicionales sobre la merma...')
                         ->rows(2),
 
@@ -103,11 +103,11 @@ class ViewLote extends ViewRecord
                                 return new \Illuminate\Support\HtmlString("
                                     <div class='rounded-lg bg-green-50 dark:bg-green-900/20 p-4'>
                                         <p class='text-green-800 dark:text-green-200 font-bold'>
-                                            ✅ Sin pérdida económica
+                                            Sin perdida economica
                                         </p>
                                         <p class='text-sm text-green-700 dark:text-green-300 mt-1'>
-                                            Los {$cantidad} huevos serán cubiertos por el buffer de regalos.<br>
-                                            Buffer restante después: " . number_format($buffer - $cubierto, 0) . " huevos
+                                            Los {$cantidad} huevos seran cubiertos por el buffer de regalos.<br>
+                                            Buffer restante despues: " . number_format($buffer - $cubierto, 0) . " huevos
                                         </p>
                                     </div>
                                 ");
@@ -115,12 +115,12 @@ class ViewLote extends ViewRecord
                                 return new \Illuminate\Support\HtmlString("
                                     <div class='rounded-lg bg-red-50 dark:bg-red-900/20 p-4'>
                                         <p class='text-red-800 dark:text-red-200 font-bold'>
-                                            ⚠️ Pérdida económica
+                                            Perdida economica
                                         </p>
                                         <div class='text-sm text-red-700 dark:text-red-300 mt-2 space-y-1'>
-                                            <p>• Cubierto por buffer: <strong>{$cubierto} huevos</strong></p>
-                                            <p>• Pérdida real: <strong>{$perdidaHuevos} huevos</strong></p>
-                                            <p>• Pérdida en dinero: <strong>L " . number_format($perdidaLempiras, 2) . "</strong></p>
+                                            <p>Cubierto por buffer: <strong>{$cubierto} huevos</strong></p>
+                                            <p>Perdida real: <strong>{$perdidaHuevos} huevos</strong></p>
+                                            <p>Perdida en dinero: <strong>L " . number_format($perdidaLempiras, 2) . "</strong></p>
                                         </div>
                                     </div>
                                 ");
@@ -128,33 +128,58 @@ class ViewLote extends ViewRecord
                         }),
                 ])
                 ->action(function (array $data) {
-                    $merma = $this->record->registrarMerma(
-                        (float) $data['cantidad_huevos'],
-                        $data['motivo'],
-                        $data['descripcion'] ?? null,
-                        Auth::id()
-                    );
+                    try {
+                        // Refrescar el lote para obtener datos actuales
+                        $this->record->refresh();
 
-                    $mensaje = "Merma #{$merma->numero_merma} registrada. ";
+                        // Validar que aun hay stock suficiente
+                        $cantidadSolicitada = (float) $data['cantidad_huevos'];
+                        
+                        if ($cantidadSolicitada > $this->record->cantidad_huevos_remanente) {
+                            Notification::make()
+                                ->title('Stock insuficiente')
+                                ->body("Solo hay " . number_format($this->record->cantidad_huevos_remanente, 0) . " huevos disponibles.")
+                                ->danger()
+                                ->send();
+                            return;
+                        }
 
-                    if ($merma->tuvoPerdidaEconomica()) {
-                        $mensaje .= "Pérdida: L " . number_format($merma->perdida_real_lempiras, 2);
-                    } else {
-                        $mensaje .= "Sin pérdida económica (cubierto por buffer).";
+                        $merma = $this->record->registrarMerma(
+                            $cantidadSolicitada,
+                            $data['motivo'],
+                            $data['descripcion'] ?? null,
+                            Auth::id()
+                        );
+
+                        $mensaje = "Merma #{$merma->numero_merma} registrada. ";
+
+                        if ($merma->tuvoPerdidaEconomica()) {
+                            $mensaje .= "Perdida: L " . number_format($merma->perdida_real_lempiras, 2);
+                        } else {
+                            $mensaje .= "Sin perdida economica (cubierto por buffer).";
+                        }
+
+                        Notification::make()
+                            ->title('Merma registrada')
+                            ->body($mensaje)
+                            ->color($merma->tuvoPerdidaEconomica() ? 'warning' : 'success')
+                            ->duration(5000)
+                            ->send();
+
+                        $this->refreshFormData([
+                            'cantidad_huevos_remanente',
+                            'merma_total_acumulada',
+                            'costo_por_huevo',
+                        ]);
+
+                    } catch (\Exception $e) {
+                        Notification::make()
+                            ->title('Error al registrar merma')
+                            ->body($e->getMessage())
+                            ->danger()
+                            ->duration(8000)
+                            ->send();
                     }
-
-                    Notification::make()
-                        ->title('Merma registrada')
-                        ->body($mensaje)
-                        ->color($merma->tuvoPerdidaEconomica() ? 'warning' : 'success')
-                        ->duration(5000)
-                        ->send();
-
-                    $this->refreshFormData([
-                        'cantidad_huevos_remanente',
-                        'merma_total_acumulada',
-                        'costo_por_huevo',
-                    ]);
                 })
                 ->visible(fn() => $this->record->estado === 'disponible' && $this->record->cantidad_huevos_remanente > 0)
                 ->modalWidth('lg'),
@@ -172,8 +197,8 @@ class ViewLote extends ViewRecord
     {
         return $infolist
             ->schema([
-                // Información Principal
-                Infolists\Components\Section::make('Información del Lote')
+                // Informacion Principal
+                Infolists\Components\Section::make('Informacion del Lote')
                     ->schema([
                         Infolists\Components\Grid::make(4)
                             ->schema([
@@ -221,7 +246,7 @@ class ViewLote extends ViewRecord
                                     }),
 
                                 Infolists\Components\TextEntry::make('buffer_disponible')
-                                    ->label('Buffer de Regalos 🎁')
+                                    ->label('Buffer de Regalos')
                                     ->getStateUsing(fn($record) => $record->getBufferRegaloDisponible())
                                     ->numeric(decimalPlaces: 0)
                                     ->suffix(' huevos')
@@ -248,12 +273,12 @@ class ViewLote extends ViewRecord
 
                                 Infolists\Components\TextEntry::make('costo_por_huevo')
                                     ->label('Costo por Huevo')
-                                    ->formatStateUsing(fn($state) => 'L ' . number_format($state, 2))
+                                    ->formatStateUsing(fn($state) => 'L ' . number_format($state, 4))
                                     ->size('lg')
                                     ->color('info'),
 
                                 Infolists\Components\TextEntry::make('costo_por_carton_facturado')
-                                    ->label('Costo por Cartón')
+                                    ->label('Costo por Carton')
                                     ->money('HNL'),
 
                                 Infolists\Components\TextEntry::make('valor_inventario')
@@ -264,19 +289,19 @@ class ViewLote extends ViewRecord
                             ]),
                     ]),
 
-                // Acumulados históricos
+                // Acumulados historicos
                 Infolists\Components\Section::make('Historial Acumulado')
                     ->schema([
                         Infolists\Components\Grid::make(4)
                             ->schema([
                                 Infolists\Components\TextEntry::make('huevos_facturados_acumulados')
-                                    ->label('Huevos Facturados (Total Histórico)')
+                                    ->label('Huevos Facturados (Total Historico)')
                                     ->numeric(decimalPlaces: 0)
                                     ->suffix(' huevos')
                                     ->helperText('Total comprado y pagado'),
 
                                 Infolists\Components\TextEntry::make('huevos_regalo_acumulados')
-                                    ->label('Huevos Regalo (Total Histórico)')
+                                    ->label('Huevos Regalo (Total Historico)')
                                     ->numeric(decimalPlaces: 0)
                                     ->suffix(' huevos')
                                     ->helperText('Total recibido gratis'),
@@ -387,13 +412,13 @@ class ViewLote extends ViewRecord
                                     ->color('success'),
 
                                 Infolists\Components\TextEntry::make('perdida_real_huevos')
-                                    ->label('Pérdida')
+                                    ->label('Perdida')
                                     ->numeric(decimalPlaces: 0)
                                     ->suffix(' huevos')
                                     ->color('danger'),
 
                                 Infolists\Components\TextEntry::make('perdida_real_lempiras')
-                                    ->label('Pérdida L')
+                                    ->label('Perdida L')
                                     ->money('HNL')
                                     ->color('danger'),
 

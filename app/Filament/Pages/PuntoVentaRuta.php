@@ -106,6 +106,50 @@ class PuntoVentaRuta extends Page implements HasTable
     }
 
     /**
+     * Obtener el precio mínimo permitido para un producto y el cliente actual.
+     *
+     * Jerarquía:
+     * 1. Si hay regla de descuento (override o por tipo) → precio_venta - descuento
+     * 2. Si no hay regla → costo + L 1.00 (nunca vender a pérdida)
+     *
+     * @return array ['precio_minimo' => float, 'fuente' => string]
+     */
+    public function getPrecioMinimoPermitido($carga): array
+    {
+        $cliente = $this->clienteSeleccionado;
+        $producto = $carga->producto;
+
+        if (!$cliente || !$producto) {
+            // Fallback: costo + 1
+            $costoBase = (float) ($carga->costo_unitario ?? 0);
+            return [
+                'precio_minimo' => $costoBase + 1,
+                'fuente' => 'proteccion',
+            ];
+        }
+
+        $precioVentaRef = (float) ($producto->precio_venta_maximo ?? $carga->precio_venta_sugerido ?? 0);
+
+        if ($precioVentaRef > 0) {
+            $resultado = $producto->obtenerPrecioMinimo($cliente, $precioVentaRef);
+
+            if ($resultado['precio_minimo'] !== null) {
+                return [
+                    'precio_minimo' => (float) $resultado['precio_minimo'],
+                    'fuente' => $resultado['fuente'],
+                ];
+            }
+        }
+
+        // Sin regla de descuento → costo + L 1.00
+        $costoBase = (float) ($carga->costo_unitario ?? 0);
+        return [
+            'precio_minimo' => $costoBase + 1,
+            'fuente' => 'proteccion',
+        ];
+    }
+
+    /**
      * Seleccionar cliente
      */
     public function seleccionarCliente(int $clienteId): void
@@ -377,12 +421,6 @@ class PuntoVentaRuta extends Page implements HasTable
                     ->weight('bold')
                     ->color('success')
                     ->tooltip('Precio final que paga el cliente (con ISV si aplica)'),
-
-                TextColumn::make('precio_venta_minimo')
-                    ->label('Costo Mín.')
-                    ->money('HNL')
-                    ->color('danger')
-                    ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->actions([
                 Action::make('agregar')
@@ -420,23 +458,47 @@ class PuntoVentaRuta extends Page implements HasTable
                                 // Si no hay historial, usar precio sugerido
                                 return $record->precio_venta_sugerido;
                             })
+                            ->rules([
+                                function ($record) {
+                                    return function (string $attribute, $value, \Closure $fail) use ($record) {
+                                        if (!$record) {
+                                            return;
+                                        }
+
+                                        $minimo = $this->getPrecioMinimoPermitido($record);
+                                        $precioMinimo = $minimo['precio_minimo'];
+
+                                        if ((float) $value < $precioMinimo) {
+                                            $sugerido = $precioMinimo;
+                                            $fail("El precio mínimo permitido es L " . number_format($precioMinimo, 2) . ". Precio sugerido: L " . number_format($sugerido, 2));
+                                        }
+                                    };
+                                },
+                            ])
                             ->helperText(function ($record) {
+                                $textos = [];
+
+                                // Último precio a este cliente
                                 $ultimoPrecio = $this->getUltimoPrecioCliente($record->producto_id);
-                                $texto = 'Costo mínimo: L ' . number_format($record->precio_venta_minimo, 2);
-                                
                                 if ($ultimoPrecio && $ultimoPrecio['precio_sin_isv']) {
                                     $fecha = $ultimoPrecio['fecha'] ? \Carbon\Carbon::parse($ultimoPrecio['fecha'])->format('d/m/Y') : '';
-                                    $texto .= ' • Último precio a este cliente: L ' . number_format($ultimoPrecio['precio_sin_isv'], 2);
+                                    $texto = 'Último precio a este cliente: L ' . number_format($ultimoPrecio['precio_sin_isv'], 2);
                                     if ($fecha) {
                                         $texto .= ' (' . $fecha . ')';
                                     }
+                                    $textos[] = $texto;
+                                }
+
+                                // Precio mínimo permitido
+                                $minimo = $this->getPrecioMinimoPermitido($record);
+                                $textos[] = 'Precio mínimo: L ' . number_format($minimo['precio_minimo'], 2);
+
+                                // ISV
+                                if ($record->producto && $record->producto->aplica_isv) {
+                                    $textos[] = '+15% ISV';
                                 }
                                 
-                                if ($record->producto->aplica_isv) {
-                                    $texto .= ' • +15% ISV';
-                                }
-                                
-                                return $texto;
+                                return implode(' • ', $textos);
                             }),
                     ])
                     ->action(function (array $data, $record) {
@@ -480,8 +542,19 @@ class PuntoVentaRuta extends Page implements HasTable
             return;
         }
 
-        // Verificar si precio está por debajo del mínimo (costo)
-        $vendidoBajoMinimo = $precioBase < $carga->precio_venta_minimo;
+        // Validar precio mínimo permitido (regla de descuento o costo + 1)
+        $minimo = $this->getPrecioMinimoPermitido($carga);
+        $precioMinimo = $minimo['precio_minimo'];
+
+        if ($precioBase < $precioMinimo) {
+            Notification::make()
+                ->title('Precio no permitido')
+                ->body("El precio mínimo permitido es L " . number_format($precioMinimo, 2) . ". Precio sugerido: L " . number_format($precioMinimo, 2))
+                ->danger()
+                ->duration(8000)
+                ->send();
+            return;
+        }
 
         // Calcular precio con ISV si aplica
         $aplicaIsv = $carga->producto->aplica_isv ?? false;
@@ -510,13 +583,13 @@ class PuntoVentaRuta extends Page implements HasTable
             'nombre' => $carga->producto->nombre,
             'unidad' => $carga->unidad->nombre ?? 'Unidad',
             'cantidad' => $cantidad,
-            'precio_base' => $precioBase,           // Precio sin ISV
-            'precio_con_isv' => $precioConIsv,      // Precio con ISV (lo que paga cliente)
-            'monto_isv' => $montoIsv,               // Monto del ISV por unidad
-            'precio_minimo' => $carga->precio_venta_minimo,
+            'precio_base' => $precioBase,
+            'precio_con_isv' => $precioConIsv,
+            'monto_isv' => $montoIsv,
+            'precio_minimo' => $precioMinimo,
             'costo' => $carga->costo_unitario,
             'aplica_isv' => $aplicaIsv,
-            'bajo_minimo' => $vendidoBajoMinimo,
+            'bajo_minimo' => false,
         ];
 
         $mensaje = "{$cantidad} {$carga->unidad->nombre} de {$carga->producto->nombre}";
@@ -524,19 +597,11 @@ class PuntoVentaRuta extends Page implements HasTable
             $mensaje .= " (+ ISV = L " . number_format($precioConIsv, 2) . ")";
         }
         
-        if ($vendidoBajoMinimo) {
-            Notification::make()
-                ->title('⚠️ Producto agregado bajo costo mínimo')
-                ->body($mensaje . " - ¡Estás vendiendo con pérdida!")
-                ->warning()
-                ->send();
-        } else {
-            Notification::make()
-                ->title('Producto agregado')
-                ->body($mensaje)
-                ->success()
-                ->send();
-        }
+        Notification::make()
+            ->title('Producto agregado')
+            ->body($mensaje)
+            ->success()
+            ->send();
     }
 
     /**
@@ -751,7 +816,6 @@ class PuntoVentaRuta extends Page implements HasTable
             
             $secuencia = 1;
             if ($ultimaVenta && $ultimaVenta->numero_venta) {
-                // Extraer el último número de la secuencia
                 $partes = explode('-', $ultimaVenta->numero_venta);
                 $ultimoNumero = (int) end($partes);
                 $secuencia = $ultimoNumero + 1;
@@ -779,7 +843,6 @@ class PuntoVentaRuta extends Page implements HasTable
 
             // Crear los detalles y actualizar stock
             foreach ($this->carrito as $item) {
-                // Crear detalle
                 $venta->detalles()->create([
                     'viaje_carga_id' => $item['carga_id'],
                     'producto_id' => $item['producto_id'],
@@ -794,7 +857,6 @@ class PuntoVentaRuta extends Page implements HasTable
                     'total_linea' => $item['precio_con_isv'] * $item['cantidad'],
                 ]);
 
-                // Actualizar cantidad vendida en la carga
                 $carga = ViajeCarga::find($item['carga_id']);
                 if ($carga) {
                     $carga->increment('cantidad_vendida', $item['cantidad']);
@@ -819,7 +881,6 @@ class PuntoVentaRuta extends Page implements HasTable
 
             DB::commit();
 
-            // Guardar el ID de la venta para imprimir
             $ventaId = $venta->id;
             $totalVenta = $this->totalFinal;
 
@@ -830,12 +891,10 @@ class PuntoVentaRuta extends Page implements HasTable
             $this->mostrarConfirmacion = false;
 
             $this->dispatch('close-modal', id: 'carrito-modal');
-
-            // Abrir ventana de impresión
             $this->dispatch('abrir-impresion', ventaId: $ventaId);
 
             Notification::make()
-                ->title('¡Venta registrada!')
+                ->title('Venta registrada!')
                 ->body('Total: L ' . number_format($totalVenta, 2) . ' - ' . $venta->numero_venta)
                 ->success()
                 ->duration(5000)

@@ -35,8 +35,8 @@ class Reempaque extends Model
         'total_huevos_usados' => 'decimal:3',
         'merma' => 'decimal:3',
         'huevos_utiles' => 'decimal:3',
-        'costo_total' => 'decimal:2',
-        'costo_unitario_promedio' => 'decimal:4',
+        'costo_total' => 'decimal:4',             // FIX: era decimal:2
+        'costo_unitario_promedio' => 'decimal:4',  // FIX: era decimal:2 (columna también era decimal(12,2))
         'cartones_30' => 'integer',
         'cartones_15' => 'integer',
         'huevos_sueltos' => 'integer',
@@ -72,8 +72,8 @@ class Reempaque extends Model
             ->withPivot([
                 'cantidad_cartones_usados',
                 'cantidad_huevos_usados',
-                'cartones_facturados_usados',    // 🆕 NUEVO
-                'cartones_regalo_usados',        // 🆕 NUEVO
+                'cartones_facturados_usados',
+                'cartones_regalo_usados',
                 'costo_parcial'
             ])
             ->withTimestamps();
@@ -114,12 +114,9 @@ class Reempaque extends Model
     }
 
     // ============================================
-    // MÉTODOS DE NEGOCIO
+    // METODOS DE NEGOCIO
     // ============================================
 
-    /**
-     * Calcular el porcentaje de merma
-     */
     public function getPorcentajeMerma(): float
     {
         if ($this->total_huevos_usados <= 0) {
@@ -129,45 +126,50 @@ class Reempaque extends Model
         return round(($this->merma / $this->total_huevos_usados) * 100, 2);
     }
 
-    /**
-     * Verificar si el reempaque está completado
-     */
     public function estaCompletado(): bool
     {
         return $this->estado === 'completado';
     }
 
-    /**
-     * Obtener el total de huevos empacados
-     */
+    public function estaCancelado(): bool
+    {
+        return $this->estado === 'cancelado';
+    }
+
+    public function puedeCancelarse(): bool
+    {
+        return $this->estado !== 'cancelado';
+    }
+
     public function getTotalHuevosEmpacados(): int
     {
         return ($this->cartones_30 * 30) + ($this->cartones_15 * 15) + $this->huevos_sueltos;
     }
 
-    /**
-     * Validar que los huevos empacados coincidan con los útiles
-     */
     public function validarEmpaque(): bool
     {
         $empacados = $this->getTotalHuevosEmpacados();
         $utiles = $this->huevos_utiles;
 
-        // Permitir diferencia mínima por redondeo
         return abs($empacados - $utiles) < 0.01;
     }
 
-    /**
-     * Obtener total de cartones regalados usados en este reempaque
-     */
     public function getTotalCartonesRegaloUsados(): float
     {
         return $this->reempaqueLotes()->sum('cartones_regalo_usados');
     }
 
-    /**
-     * Obtener beneficio total de cartones regalados
-     */
+    public function getTotalHuevosRegaloUsados(): float
+    {
+        $total = 0;
+        foreach ($this->reempaqueLotes as $reempaqueLote) {
+            $lote = $reempaqueLote->lote;
+            $huevosPorCarton = $lote->huevos_por_carton ?? 30;
+            $total += ($reempaqueLote->cartones_regalo_usados ?? 0) * $huevosPorCarton;
+        }
+        return $total;
+    }
+
     public function getBeneficioRegalos(): float
     {
         $beneficio = 0;
@@ -175,15 +177,12 @@ class Reempaque extends Model
         foreach ($this->reempaqueLotes as $reempaqueLote) {
             $lote = $reempaqueLote->lote;
             $huevosRegaloUsados = $reempaqueLote->cartones_regalo_usados * $lote->huevos_por_carton;
-            $beneficio += $huevosRegaloUsados * $lote->costo_por_huevo;
+            $beneficio += $huevosRegaloUsados * floatval($lote->costo_por_huevo);
         }
 
         return $beneficio;
     }
 
-    /**
-     * Calcular eficiencia del reempaque (% de aprovechamiento)
-     */
     public function getEficiencia(): float
     {
         if ($this->total_huevos_usados <= 0) {
@@ -193,9 +192,6 @@ class Reempaque extends Model
         return round(($this->huevos_utiles / $this->total_huevos_usados) * 100, 2);
     }
 
-    /**
-     * Obtener resumen completo del reempaque
-     */
     public function getResumen(): array
     {
         return [
@@ -210,7 +206,9 @@ class Reempaque extends Model
             'cartones_15' => $this->cartones_15,
             'huevos_sueltos' => $this->huevos_sueltos,
             'costo_total' => $this->costo_total,
-            'costo_por_huevo' => $this->costo_unitario_promedio,
+            'costo_por_huevo' => $this->total_huevos_usados > 0
+                ? $this->costo_total / $this->total_huevos_usados
+                : 0,
             'cartones_regalo_usados' => $this->getTotalCartonesRegaloUsados(),
             'beneficio_regalos' => $this->getBeneficioRegalos(),
             'lotes_usados' => $this->reempaqueLotes->count(),
@@ -218,13 +216,10 @@ class Reempaque extends Model
         ];
     }
 
-    /**
-     * Validar que todos los lotes sean del mismo producto (para tipo mezclado)
-     */
     public function validarMismoProducto(): bool
     {
         if ($this->tipo === 'individual') {
-            return true; // No aplica validación
+            return true;
         }
 
         $productos = $this->lotes()
@@ -234,9 +229,6 @@ class Reempaque extends Model
         return $productos->count() === 1;
     }
 
-    /**
-     * Obtener lista de proveedores involucrados
-     */
     public function getProveedores()
     {
         return $this->lotes()
@@ -246,26 +238,18 @@ class Reempaque extends Model
             ->unique('id');
     }
 
-    /**
-     * Marcar como completado
-     */
     public function marcarCompletado(): void
     {
         $this->estado = 'completado';
         $this->save();
     }
 
-    /**
-     * Cancelar el reempaque
-     */
-    /**
-     * Cancelar el reempaque
-     */
-    /**
-     * Cancelar el reempaque
-     */
     public function cancelar(?string $motivo = null): void
     {
+        if ($this->estado === 'cancelado') {
+            throw new \Exception("El reempaque {$this->numero_reempaque} ya esta cancelado.");
+        }
+
         $this->estado = 'cancelado';
 
         if ($motivo) {
@@ -274,14 +258,20 @@ class Reempaque extends Model
 
         $this->save();
 
-        // Devolver huevos a los lotes (incluyendo regalos)
         foreach ($this->reempaqueLotes as $reempaqueLote) {
             $lote = $reempaqueLote->lote;
 
-            // Devolver los huevos usados
+            if (!$lote) {
+                continue;
+            }
+
             $lote->cantidad_huevos_remanente += $reempaqueLote->cantidad_huevos_usados;
 
-            // Cambiar estado si ahora tiene stock
+            $huevosRegaloUsados = ($reempaqueLote->cartones_regalo_usados ?? 0) * ($lote->huevos_por_carton ?? 30);
+            if ($huevosRegaloUsados > 0) {
+                $lote->huevos_regalo_consumidos = max(0, ($lote->huevos_regalo_consumidos ?? 0) - $huevosRegaloUsados);
+            }
+
             if ($lote->cantidad_huevos_remanente > 0) {
                 $lote->estado = 'disponible';
             }
@@ -289,21 +279,9 @@ class Reempaque extends Model
             $lote->save();
         }
 
-        // Eliminar productos generados si ya se agregaron a stock
         foreach ($this->reempaqueProductos as $producto) {
             if ($producto->agregado_a_stock) {
-                // Revertir el stock
-                $bodegaProducto = \App\Models\BodegaProducto::where('bodega_id', $producto->bodega_id)
-                    ->where('producto_id', $producto->producto_id)
-                    ->first();
-
-                if ($bodegaProducto) {
-                    $bodegaProducto->stock -= $producto->cantidad;
-                    $bodegaProducto->save();
-                }
-
-                $producto->agregado_a_stock = false;
-                $producto->save();
+                $producto->revertirStock();
             }
         }
     }
@@ -317,7 +295,6 @@ class Reempaque extends Model
         parent::boot();
 
         static::creating(function ($reempaque) {
-            // Generar número de reempaque automáticamente si no existe
             if (!$reempaque->numero_reempaque) {
                 $ultimoReempaque = static::where('bodega_id', $reempaque->bodega_id)
                     ->orderBy('id', 'desc')
@@ -330,22 +307,20 @@ class Reempaque extends Model
                 $reempaque->numero_reempaque = sprintf('R-B%d-%06d', $reempaque->bodega_id, $secuencial);
             }
 
-            // Calcular huevos_utiles automáticamente
             if (is_null($reempaque->huevos_utiles)) {
                 $reempaque->huevos_utiles = $reempaque->total_huevos_usados - $reempaque->merma;
             }
         });
 
         static::saving(function ($reempaque) {
-            // Validar que huevos_utiles = total_huevos_usados - merma
             $calculado = $reempaque->total_huevos_usados - $reempaque->merma;
 
             if (abs($reempaque->huevos_utiles - $calculado) > 0.01) {
                 $reempaque->huevos_utiles = $calculado;
             }
 
-            // Calcular costo_unitario_promedio si hay huevos útiles
             if ($reempaque->huevos_utiles > 0 && $reempaque->costo_total > 0) {
+                // FIX: No redondear aquí, dejar que la BD maneje la precisión
                 $reempaque->costo_unitario_promedio = $reempaque->costo_total / $reempaque->huevos_utiles;
             }
         });

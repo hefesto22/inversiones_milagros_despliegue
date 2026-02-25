@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\DB;
 
 use App\Filament\Resources\ProductoResource\Pages;
 use App\Filament\Resources\ProductoResource\RelationManagers\ProductoImagenRelationManager;
+use App\Filament\Resources\ProductoResource\RelationManagers\PreciosTipoRelationManager;
 
 class ProductoResource extends Resource
 {
@@ -1242,6 +1243,8 @@ class ProductoResource extends Resource
     {
         return [
             ProductoImagenRelationManager::class,
+            PreciosTipoRelationManager::class,
+
         ];
     }
 

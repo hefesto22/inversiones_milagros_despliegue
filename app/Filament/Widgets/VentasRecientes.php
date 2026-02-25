@@ -19,6 +19,7 @@ class VentasRecientes extends BaseWidget
     protected static ?int $sort = 3;
 
     protected int | string | array $columnSpan = 'full';
+    protected static bool $isLazy = false;
 
     public function getTableHeading(): ?string
     {

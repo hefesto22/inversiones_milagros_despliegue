@@ -27,12 +27,14 @@ class LiquidacionViajePdfController extends Controller
         $empresa = Empresa::getData();
         $datos = $this->calcularDatosLiquidacion($viaje);
 
-        $pdf = Pdf::loadView('pdf.liquidacion-viaje', [
-            'viaje' => $viaje,
-            'empresa' => $empresa,
-            'datos' => $datos,
-            'fechaImpresion' => now()->format('d/m/Y H:i'),
-        ]);
+        // Forzar configuración para Hostinger
+        $pdf = Pdf::setOption(['chroot' => base_path()])
+            ->loadView('pdf.liquidacion-viaje', [
+                'viaje' => $viaje,
+                'empresa' => $empresa,
+                'datos' => $datos,
+                'fechaImpresion' => now()->format('d/m/Y H:i'),
+            ]);
 
         $pdf->setPaper('letter', 'portrait');
 
@@ -58,12 +60,14 @@ class LiquidacionViajePdfController extends Controller
         $empresa = Empresa::getData();
         $datos = $this->calcularDatosLiquidacion($viaje);
 
-        $pdf = Pdf::loadView('pdf.liquidacion-viaje', [
-            'viaje' => $viaje,
-            'empresa' => $empresa,
-            'datos' => $datos,
-            'fechaImpresion' => now()->format('d/m/Y H:i'),
-        ]);
+        // Forzar configuración para Hostinger
+        $pdf = Pdf::setOption(['chroot' => base_path()])
+            ->loadView('pdf.liquidacion-viaje', [
+                'viaje' => $viaje,
+                'empresa' => $empresa,
+                'datos' => $datos,
+                'fechaImpresion' => now()->format('d/m/Y H:i'),
+            ]);
 
         $pdf->setPaper('letter', 'portrait');
 

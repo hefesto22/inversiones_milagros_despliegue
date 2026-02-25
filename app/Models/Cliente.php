@@ -79,12 +79,88 @@ class Cliente extends Model
                 'fecha_ultima_venta',
                 'total_ventas',
                 'cantidad_total_vendida',
+                'descuento_maximo_override',
             ]);
     }
 
     public function preciosCliente(): HasMany
     {
         return $this->hasMany(ClienteProducto::class, 'cliente_id');
+    }
+
+    /**
+     * Reglas de precio que aplican al tipo de este cliente
+     */
+    public function reglasPrecionPorTipo()
+    {
+        return ProductoPrecioTipo::where('tipo_cliente', $this->tipo)
+            ->where('activo', true);
+    }
+
+    // ============================================
+    // MÉTODOS DE DESCUENTO
+    // ============================================
+
+    /**
+     * Obtener todos los descuentos máximos configurados para este cliente.
+     * Combina overrides individuales + reglas por tipo.
+     *
+     * @return \Illuminate\Support\Collection [producto_id => ['descuento_maximo' => float, 'fuente' => string]]
+     */
+    public function obtenerDescuentosMaximos(): \Illuminate\Support\Collection
+    {
+        $resultado = collect();
+
+        // 1. Cargar reglas por tipo de cliente
+        $reglasTipo = ProductoPrecioTipo::where('tipo_cliente', $this->tipo)
+            ->where('activo', true)
+            ->get()
+            ->keyBy('producto_id');
+
+        foreach ($reglasTipo as $productoId => $regla) {
+            $resultado[$productoId] = [
+                'descuento_maximo' => (float) $regla->descuento_maximo,
+                'precio_minimo_fijo' => $regla->precio_minimo_fijo ? (float) $regla->precio_minimo_fijo : null,
+                'fuente' => 'tipo',
+            ];
+        }
+
+        // 2. Cargar overrides individuales (sobreescriben las reglas por tipo)
+        $overrides = ClienteProducto::where('cliente_id', $this->id)
+            ->whereNotNull('descuento_maximo_override')
+            ->get();
+
+        foreach ($overrides as $override) {
+            $resultado[$override->producto_id] = [
+                'descuento_maximo' => (float) $override->descuento_maximo_override,
+                'precio_minimo_fijo' => null,
+                'fuente' => 'cliente',
+            ];
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * Verificar si un producto tiene restricción de descuento para este cliente
+     */
+    public function tieneRestriccionPrecio(int $productoId): bool
+    {
+        // Verificar override individual
+        $tieneOverride = ClienteProducto::where('cliente_id', $this->id)
+            ->where('producto_id', $productoId)
+            ->whereNotNull('descuento_maximo_override')
+            ->exists();
+
+        if ($tieneOverride) {
+            return true;
+        }
+
+        // Verificar regla por tipo
+        return ProductoPrecioTipo::where('producto_id', $productoId)
+            ->where('tipo_cliente', $this->tipo)
+            ->where('activo', true)
+            ->exists();
     }
 
     // ============================================

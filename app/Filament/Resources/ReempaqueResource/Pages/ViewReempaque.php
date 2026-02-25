@@ -207,7 +207,7 @@ class ViewReempaque extends ViewRecord
 
                 Infolists\Components\Section::make('Costos')
                     ->schema([
-                        Infolists\Components\Grid::make(3)
+                        Infolists\Components\Grid::make(5)
                             ->schema([
                                 Infolists\Components\TextEntry::make('costo_total')
                                     ->label('Costo Total')
@@ -216,13 +216,34 @@ class ViewReempaque extends ViewRecord
                                     ->size('lg'),
 
                                 Infolists\Components\TextEntry::make('costo_unitario_promedio')
-                                    ->label('Costo Unitario Promedio')
-                                    ->money('HNL')
+                                    ->label('Costo por Huevo')
+                                    ->getStateUsing(fn($record) => 'L ' . number_format(floatval($record->costo_unitario_promedio), 4))
+                                    ->weight('bold'),
+
+                                Infolists\Components\TextEntry::make('costo_por_carton_30')
+                                    ->label('Costo por Cartón (30)')
+                                    ->getStateUsing(function ($record) {
+                                        $total = floatval($record->costo_total);
+                                        $huevos = intval($record->total_huevos_usados);
+                                        if ($huevos <= 0) return 'L 0.0000';
+                                        return 'L ' . number_format(($total / $huevos) * 30, 4);
+                                    })
                                     ->weight('bold')
-                                    ->helperText('Por huevo'),
+                                    ->color('success'),
+
+                                Infolists\Components\TextEntry::make('costo_por_medio_15')
+                                    ->label('Costo por Medio (15)')
+                                    ->getStateUsing(function ($record) {
+                                        $total = floatval($record->costo_total);
+                                        $huevos = intval($record->total_huevos_usados);
+                                        if ($huevos <= 0) return 'L 0.0000';
+                                        return 'L ' . number_format(($total / $huevos) * 15, 4);
+                                    })
+                                    ->weight('bold')
+                                    ->color('warning'),
 
                                 Infolists\Components\TextEntry::make('proveedores')
-                                    ->label('Proveedores Involucrados')
+                                    ->label('Proveedores')
                                     ->getStateUsing(function ($record) {
                                         return $record->getProveedores()
                                             ->pluck('nombre')
@@ -248,11 +269,11 @@ class ViewReempaque extends ViewRecord
 
                                 Infolists\Components\TextEntry::make('costo_unitario')
                                     ->label('Costo Unitario')
-                                    ->money('HNL'),
+                                    ->getStateUsing(fn($record) => 'L ' . number_format(floatval($record->costo_unitario), 4)),
 
                                 Infolists\Components\TextEntry::make('costo_total')
                                     ->label('Costo Total')
-                                    ->money('HNL'),
+                                    ->getStateUsing(fn($record) => 'L ' . number_format(floatval($record->costo_total), 4)),
 
                                 Infolists\Components\IconEntry::make('agregado_a_stock')
                                     ->label('En Stock')

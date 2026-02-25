@@ -11,15 +11,14 @@ use Illuminate\Support\Facades\Auth;
 use App\Models\Lote;
 use App\Models\BodegaProducto;
 use Illuminate\Support\Facades\Log;
+use Filament\Notifications\Notification;
 
 class ViewCompra extends ViewRecord
 {
     protected static string $resource = CompraResource::class;
 
     /**
-     * Verificar si una unidad es de tipo cartón (para huevos)
-     * Los cartones pasan por el flujo de LOTES
-     * Las demás unidades van directo a STOCK
+     * Verificar si una unidad es de tipo carton (para huevos)
      */
     protected function esUnidadCarton(?int $unidadId): bool
     {
@@ -35,11 +34,44 @@ class ViewCompra extends ViewRecord
 
         $nombreLower = strtolower($unidad->nombre);
 
-        // Reconocer cartones: "carton", "cartón", "1x30", o cualquier unidad con "30"
         return str_contains($nombreLower, 'carton') 
             || str_contains($nombreLower, 'cartón')
             || str_contains($nombreLower, '1x30')
             || str_contains($nombreLower, '30');
+    }
+
+    /**
+     * Validar detalles antes de recibir la compra
+     */
+    protected function validarDetallesAntesDeRecibir(): void
+    {
+        foreach ($this->record->detalles as $detalle) {
+            $cantidadFacturada = $detalle->cantidad_facturada ?? $detalle->cantidad ?? 0;
+            $cantidadRegalo = $detalle->cantidad_regalo ?? 0;
+            $cantidadTotal = $cantidadFacturada + $cantidadRegalo;
+
+            // Validar que haya al menos alguna cantidad
+            if ($cantidadTotal <= 0) {
+                $producto = \App\Models\Producto::find($detalle->producto_id);
+                $nombreProducto = $producto ? $producto->nombre : "ID: {$detalle->producto_id}";
+                
+                Notification::make()
+                    ->title('Error en detalle de compra')
+                    ->body("El producto '{$nombreProducto}' tiene cantidad 0. Edite la compra para corregir.")
+                    ->danger()
+                    ->send();
+                
+                throw new \Exception("Producto '{$nombreProducto}' tiene cantidad 0.");
+            }
+
+            // Para cartones: validar que si solo hay regalo, tenga sentido
+            if ($this->esUnidadCarton($detalle->unidad_id)) {
+                if ($cantidadFacturada == 0 && $cantidadRegalo > 0) {
+                    // Solo regalo sin facturado - advertir pero permitir
+                    Log::warning("Compra {$this->record->numero_compra}: Producto {$detalle->producto_id} tiene solo regalo sin facturados.");
+                }
+            }
+        }
     }
 
     protected function getHeaderActions(): array
@@ -48,17 +80,14 @@ class ViewCompra extends ViewRecord
             Actions\EditAction::make()
                 ->visible(fn() => $this->record->estado === 'borrador'),
 
-            // ========================================
-            // FLUJO DE ESTADOS - CONFIRMAR ORDEN
-            // ========================================
-
+            // CONFIRMAR ORDEN
             Actions\Action::make('confirmar_orden')
                 ->label('Confirmar Orden')
                 ->icon('heroicon-o-check-circle')
                 ->color('success')
                 ->requiresConfirmation()
                 ->modalHeading('Confirmar Orden de Compra')
-                ->modalDescription('¿Confirmar que la orden fue enviada al proveedor?')
+                ->modalDescription('Confirmar que la orden fue enviada al proveedor?')
                 ->form([
                     \Filament\Forms\Components\Textarea::make('nota')
                         ->label('Nota (opcional)')
@@ -82,24 +111,21 @@ class ViewCompra extends ViewRecord
 
                     $this->refreshFormData(['estado', 'nota']);
 
-                    \Filament\Notifications\Notification::make()
+                    Notification::make()
                         ->title('Orden confirmada')
                         ->body('La orden ha sido enviada al proveedor.')
                         ->success()
                         ->send();
                 }),
 
-            // ========================================
-            // 🎯 MARCAR COMO RECIBIDA (AGREGA A LOTE ÚNICO O STOCK)
-            // ========================================
-
+            // MARCAR COMO RECIBIDA
             Actions\Action::make('marcar_recibida')
                 ->label('Marcar como Recibida')
                 ->icon('heroicon-o-inbox-arrow-down')
                 ->color('success')
                 ->requiresConfirmation()
-                ->modalHeading('Registrar Recepción de Mercancía')
-                ->modalDescription('¿Confirmar que la mercancía fue recibida? Se procesará el inventario automáticamente.')
+                ->modalHeading('Registrar Recepcion de Mercancia')
+                ->modalDescription('Confirmar que la mercancia fue recibida? Se procesara el inventario automaticamente.')
                 ->form([
                     \Filament\Forms\Components\Select::make('bodega_id')
                         ->label('Bodega de Destino')
@@ -121,15 +147,17 @@ class ViewCompra extends ViewRecord
                         })
                         ->searchable()
                         ->preload()
-                        ->helperText('Selecciona la bodega donde se recibirá la mercancía'),
+                        ->helperText('Selecciona la bodega donde se recibira la mercancia'),
 
                     \Filament\Forms\Components\Textarea::make('nota')
-                        ->label('Nota sobre la recepción')
-                        ->placeholder('Detalles sobre la recepción de mercancía...')
+                        ->label('Nota sobre la recepcion')
+                        ->placeholder('Detalles sobre la recepcion de mercancia...')
                         ->rows(2),
                 ])
                 ->visible(fn() => in_array($this->record->estado, ['ordenada', 'por_recibir_pagada', 'por_recibir_pendiente_pago']))
                 ->action(function (array $data) {
+                    $this->validarDetallesAntesDeRecibir();
+
                     $nuevoEstado = match ($this->record->estado) {
                         'por_recibir_pagada' => 'recibida_pagada',
                         default => 'recibida_pendiente_pago',
@@ -145,7 +173,6 @@ class ViewCompra extends ViewRecord
                     $bodegaId = $data['bodega_id'];
                     $bodega = \App\Models\Bodega::find($bodegaId);
 
-                    // 🎯 PROCESAR INVENTARIO CON LOTE ÚNICO
                     $resultado = $this->procesarInventarioDesdeCompra($bodegaId);
 
                     $this->record->update([
@@ -156,9 +183,7 @@ class ViewCompra extends ViewRecord
 
                     $this->refreshFormData(['estado', 'nota']);
 
-                    $mensaje = $nuevoEstado === 'recibida_pagada'
-                        ? "¡Compra completada! "
-                        : "";
+                    $mensaje = $nuevoEstado === 'recibida_pagada' ? "Compra completada! " : "";
 
                     if ($resultado['lotes_actualizados'] > 0) {
                         $mensaje .= "Se actualizaron {$resultado['lotes_actualizados']} lote(s). ";
@@ -172,25 +197,22 @@ class ViewCompra extends ViewRecord
                         $mensaje .= " Pendiente de pago.";
                     }
 
-                    \Filament\Notifications\Notification::make()
-                        ->title('Mercancía recibida')
+                    Notification::make()
+                        ->title('Mercancia recibida')
                         ->body($mensaje)
                         ->success()
                         ->duration(5000)
                         ->send();
                 }),
 
-            // ========================================
-            // MARCAR COMO PAGADA (SIN CREAR LOTES)
-            // ========================================
-
+            // MARCAR COMO PAGADA
             Actions\Action::make('marcar_pagada')
                 ->label('Marcar como Pagada')
                 ->icon('heroicon-o-banknotes')
                 ->color('success')
                 ->requiresConfirmation()
                 ->modalHeading('Registrar Pago al Proveedor')
-                ->modalDescription('¿Confirmar que se ha pagado esta compra al proveedor?')
+                ->modalDescription('Confirmar que se ha pagado esta compra al proveedor?')
                 ->form([
                     \Filament\Forms\Components\Textarea::make('nota')
                         ->label('Nota sobre el pago')
@@ -220,27 +242,24 @@ class ViewCompra extends ViewRecord
                     $this->refreshFormData(['estado', 'nota']);
 
                     $mensaje = $nuevoEstado === 'recibida_pagada'
-                        ? '¡Compra completada! Pagada y recibida.'
-                        : 'Pago registrado. Pendiente de recibir mercancía.';
+                        ? 'Compra completada! Pagada y recibida.'
+                        : 'Pago registrado. Pendiente de recibir mercancia.';
 
-                    \Filament\Notifications\Notification::make()
+                    Notification::make()
                         ->title('Pago registrado')
                         ->body($mensaje)
                         ->success()
                         ->send();
                 }),
 
-            // ========================================
-            // 🎯 RECIBIR Y PAGAR (AGREGA A LOTE ÚNICO O STOCK)
-            // ========================================
-
+            // RECIBIR Y PAGAR
             Actions\Action::make('recibir_y_pagar')
                 ->label('Recibir y Pagar')
                 ->icon('heroicon-o-check-badge')
                 ->color('success')
                 ->requiresConfirmation()
                 ->modalHeading('Completar Compra')
-                ->modalDescription('¿Confirmar que la mercancía fue recibida y pagada? Se procesará el inventario automáticamente.')
+                ->modalDescription('Confirmar que la mercancia fue recibida y pagada? Se procesara el inventario automaticamente.')
                 ->form([
                     \Filament\Forms\Components\Select::make('bodega_id')
                         ->label('Bodega de Destino')
@@ -262,20 +281,21 @@ class ViewCompra extends ViewRecord
                         })
                         ->searchable()
                         ->preload()
-                        ->helperText('Selecciona la bodega donde se recibirá la mercancía'),
+                        ->helperText('Selecciona la bodega donde se recibira la mercancia'),
 
                     \Filament\Forms\Components\Textarea::make('nota')
                         ->label('Nota (opcional)')
-                        ->placeholder('Detalles sobre la recepción y pago...')
+                        ->placeholder('Detalles sobre la recepcion y pago...')
                         ->rows(2),
                 ])
                 ->visible(fn() => in_array($this->record->estado, ['ordenada', 'por_recibir_pendiente_pago']))
                 ->action(function (array $data) {
+                    $this->validarDetallesAntesDeRecibir();
+
                     $nota = $data['nota'] ?? null;
                     $bodegaId = $data['bodega_id'];
                     $bodega = \App\Models\Bodega::find($bodegaId);
 
-                    // 🎯 PROCESAR INVENTARIO CON LOTE ÚNICO
                     $resultado = $this->procesarInventarioDesdeCompra($bodegaId);
 
                     if ($nota) {
@@ -292,7 +312,7 @@ class ViewCompra extends ViewRecord
 
                     $this->refreshFormData(['estado', 'nota']);
 
-                    $mensaje = "¡Compra completada! ";
+                    $mensaje = "Compra completada! ";
                     if ($resultado['lotes_actualizados'] > 0) {
                         $mensaje .= "Se actualizaron {$resultado['lotes_actualizados']} lote(s). ";
                     }
@@ -301,34 +321,31 @@ class ViewCompra extends ViewRecord
                     }
                     $mensaje .= "Bodega: '{$bodega->nombre}'.";
 
-                    \Filament\Notifications\Notification::make()
-                        ->title('¡Compra completada!')
+                    Notification::make()
+                        ->title('Compra completada!')
                         ->body($mensaje)
                         ->success()
                         ->duration(5000)
                         ->send();
                 }),
 
-            // ========================================
-            // CANCELAR COMPRA
-            // ========================================
-
+            // CANCELAR COMPRA (solo si no ha sido recibida)
             Actions\Action::make('cancelar_compra')
                 ->label('Cancelar Compra')
                 ->icon('heroicon-o-x-circle')
                 ->color('danger')
                 ->requiresConfirmation()
                 ->modalHeading('Cancelar Compra')
-                ->modalDescription('¿Estás seguro de cancelar esta compra? Debes proporcionar un motivo.')
+                ->modalDescription('Estas seguro de cancelar esta compra? Debes proporcionar un motivo.')
                 ->form([
                     \Filament\Forms\Components\Textarea::make('motivo_cancelacion')
-                        ->label('Motivo de Cancelación')
+                        ->label('Motivo de Cancelacion')
                         ->required()
-                        ->placeholder('Explica por qué se cancela esta compra...')
+                        ->placeholder('Explica por que se cancela esta compra...')
                         ->rows(3)
-                        ->helperText('Este motivo quedará registrado en la nota de la compra.'),
+                        ->helperText('Este motivo quedara registrado en la nota de la compra.'),
                 ])
-                ->visible(fn() => !in_array($this->record->estado, ['cancelada', 'recibida_pagada']))
+                ->visible(fn() => !in_array($this->record->estado, ['cancelada', 'recibida_pagada', 'recibida_pendiente_pago']))
                 ->action(function (array $data) {
                     $nota = "CANCELADA: " . $data['motivo_cancelacion'];
                     if ($this->record->nota) {
@@ -343,59 +360,74 @@ class ViewCompra extends ViewRecord
 
                     $this->refreshFormData(['estado', 'nota']);
 
-                    \Filament\Notifications\Notification::make()
+                    Notification::make()
                         ->title('Compra cancelada')
                         ->body('La compra ha sido cancelada.')
                         ->danger()
                         ->send();
                 }),
 
-            // ========================================
-            // CAMBIO MANUAL DE ESTADO (SOLO JEFE)
-            // ========================================
+            // INFO: Por que no se puede editar/eliminar compras recibidas
+            Actions\Action::make('info_compra_recibida')
+                ->label('Info')
+                ->icon('heroicon-o-information-circle')
+                ->color('gray')
+                ->visible(fn() => in_array($this->record->estado, ['recibida_pagada', 'recibida_pendiente_pago']))
+                ->action(function () {
+                    Notification::make()
+                        ->title('Compra ya procesada')
+                        ->body('Esta compra ya fue recibida y procesada en el inventario. No se puede editar ni cancelar para mantener la integridad de los datos. Si hay un error, contacte al administrador para hacer ajustes manuales.')
+                        ->warning()
+                        ->duration(10000)
+                        ->send();
+                }),
 
+            // CAMBIO MANUAL DE ESTADO (SOLO JEFE/SUPER ADMIN)
             Actions\Action::make('cambiar_estado_manual')
                 ->label('Cambiar Estado')
                 ->icon('heroicon-o-arrow-path')
                 ->color('gray')
                 ->form([
+                    \Filament\Forms\Components\Placeholder::make('advertencia')
+                        ->content(new \Illuminate\Support\HtmlString("
+                            <div class='rounded-lg bg-red-50 dark:bg-red-900/20 p-4 text-red-800 dark:text-red-200'>
+                                <p class='font-bold'>ADVERTENCIA</p>
+                                <p class='text-sm mt-1'>Cambiar el estado manualmente puede causar inconsistencias en el inventario. Use solo si sabe lo que hace.</p>
+                            </div>
+                        ")),
+
                     \Filament\Forms\Components\Select::make('estado')
                         ->label('Nuevo Estado')
                         ->options([
                             'borrador' => 'Borrador',
                             'ordenada' => 'Ordenada',
-                            'recibida_pagada' => 'Recibida y Pagada ✅',
-                            'recibida_pendiente_pago' => 'Recibida - Pendiente Pago 📦',
-                            'por_recibir_pagada' => 'Pagada - Pendiente Recibir 💰',
-                            'por_recibir_pendiente_pago' => 'Pendiente Todo ⏳',
-                            'cancelada' => 'Cancelada ❌',
+                            'recibida_pagada' => 'Recibida y Pagada',
+                            'recibida_pendiente_pago' => 'Recibida - Pendiente Pago',
+                            'por_recibir_pagada' => 'Pagada - Pendiente Recibir',
+                            'por_recibir_pendiente_pago' => 'Pendiente Todo',
+                            'cancelada' => 'Cancelada',
                         ])
                         ->required()
                         ->native(false)
-                        ->default(fn() => $this->record->estado)
-                        ->helperText('Usa esta opción solo si necesitas cambiar el estado manualmente.'),
+                        ->default(fn() => $this->record->estado),
 
                     \Filament\Forms\Components\Textarea::make('motivo_cambio')
                         ->label('Motivo del cambio')
                         ->required()
-                        ->placeholder('¿Por qué cambias el estado manualmente?')
+                        ->placeholder('Por que cambias el estado manualmente?')
                         ->rows(3),
                 ])
                 ->visible(function () {
                     $user = Auth::user();
+                    if (!$user) return false;
 
-                    if (!$user) {
-                        return false;
-                    }
-
-                    return !in_array($this->record->estado, ['recibida_pagada', 'cancelada'])
-                        && $user->roles->contains('name', 'Jefe');
+                    return $user->roles->whereIn('name', ['Jefe', 'Super Admin'])->isNotEmpty();
                 })
                 ->action(function (array $data) {
                     $estadoAnterior = $this->getEstadoLabel($this->record->estado);
                     $estadoNuevo = $this->getEstadoLabel($data['estado']);
 
-                    $nota = "Cambio manual: {$estadoAnterior} → {$estadoNuevo}. Motivo: " . $data['motivo_cambio'];
+                    $nota = "CAMBIO MANUAL: {$estadoAnterior} -> {$estadoNuevo}. Motivo: " . $data['motivo_cambio'];
                     if ($this->record->nota) {
                         $nota = $this->record->nota . "\n\n" . $nota;
                     }
@@ -408,17 +440,14 @@ class ViewCompra extends ViewRecord
 
                     $this->refreshFormData(['estado', 'nota']);
 
-                    \Filament\Notifications\Notification::make()
+                    Notification::make()
                         ->title('Estado actualizado manualmente')
-                        ->body("Estado: {$estadoAnterior} → {$estadoNuevo}")
+                        ->body("Estado: {$estadoAnterior} -> {$estadoNuevo}")
                         ->warning()
                         ->send();
                 }),
 
-            // ========================================
-            // INFORMACIÓN Y UTILIDADES
-            // ========================================
-
+            // VER RESUMEN
             Actions\Action::make('ver_resumen')
                 ->label('Ver Resumen')
                 ->icon('heroicon-o-document-text')
@@ -426,35 +455,27 @@ class ViewCompra extends ViewRecord
                 ->action(function () {
                     $totalProductos = $this->record->detalles()->count();
                     $totalUnidadesFacturadas = $this->record->detalles()->sum('cantidad_facturada');
-                    $totalUnidadesRecibidas = $this->record->detalles()->sum('cantidad_recibida');
+                    $totalUnidadesRegalo = $this->record->detalles()->sum('cantidad_regalo');
                     $totalIsvCredito = $this->record->detalles()->sum('isv_credito');
 
-                    $mensaje = "📦 RESUMEN DE COMPRA #{$this->record->numero_compra}\n\n";
+                    $mensaje = "RESUMEN DE COMPRA #{$this->record->numero_compra}\n\n";
                     $mensaje .= "Proveedor: {$this->record->proveedor->nombre}\n";
                     $mensaje .= "Estado: " . $this->getEstadoLabel($this->record->estado) . "\n";
-                    $mensaje .= "Tipo de pago: " . ($this->record->tipo_pago === 'contado' ? 'Contado' : 'Crédito') . "\n\n";
+                    $mensaje .= "Tipo de pago: " . ($this->record->tipo_pago === 'contado' ? 'Contado' : 'Credito') . "\n\n";
                     $mensaje .= "Productos diferentes: {$totalProductos}\n";
-                    $mensaje .= "Total unidades facturadas: " . number_format($totalUnidadesFacturadas, 2) . "\n";
-                    $mensaje .= "Total unidades recibidas: " . number_format($totalUnidadesRecibidas, 2) . "\n";
+                    $mensaje .= "Total unidades facturadas: " . number_format($totalUnidadesFacturadas, 0) . "\n";
+                    
+                    if ($totalUnidadesRegalo > 0) {
+                        $mensaje .= "Total unidades regalo: " . number_format($totalUnidadesRegalo, 0) . "\n";
+                    }
+                    
                     $mensaje .= "Total a pagar: L " . number_format($this->record->total, 2) . "\n";
 
                     if ($totalIsvCredito > 0) {
-                        $mensaje .= "💰 ISV Crédito Fiscal: L " . number_format($totalIsvCredito, 2) . "\n";
+                        $mensaje .= "ISV Credito Fiscal: L " . number_format($totalIsvCredito, 2) . "\n";
                     }
 
-                    if ($this->record->tipo_pago === 'credito') {
-                        $interesAcumulado = $this->record->getInteresAcumulado();
-                        if ($interesAcumulado > 0) {
-                            $periodos = $this->record->getPeriodosTranscurridos();
-                            $periodo = $this->record->periodo_interes === 'semanal' ? 'semanas' : 'meses';
-                            $mensaje .= "Interés acumulado: L " . number_format($interesAcumulado, 2) . " ({$periodos} {$periodo})\n";
-                            $mensaje .= "Saldo total: L " . number_format($this->record->getSaldoConIntereses(), 2) . "\n";
-                        }
-                    }
-
-                    $mensaje .= "\n\nCreado: " . $this->record->created_at->format('d/m/Y H:i');
-
-                    \Filament\Notifications\Notification::make()
+                    Notification::make()
                         ->title('Resumen de Compra')
                         ->body($mensaje)
                         ->icon('heroicon-o-document-text')
@@ -469,13 +490,7 @@ class ViewCompra extends ViewRecord
     }
 
     /**
-     * 🎯 PROCESAR INVENTARIO DESDE LA COMPRA - CON LOTE ÚNICO
-     *
-     * - Productos con unidad CARTON/1x30 → Agregar a LOTE ÚNICO (costo promedio ponderado)
-     * - Productos con OTRAS unidades → Agregar directo a STOCK
-     *
-     * @param int $bodegaId
-     * @return array ['lotes_actualizados' => int, 'productos_stock' => int]
+     * PROCESAR INVENTARIO DESDE LA COMPRA - CON LOTE UNICO
      */
     protected function procesarInventarioDesdeCompra(int $bodegaId): array
     {
@@ -489,17 +504,10 @@ class ViewCompra extends ViewRecord
                 continue;
             }
 
-            // 🎯 VERIFICAR SI ES UNIDAD TIPO CARTÓN (incluye 1x30)
             if ($this->esUnidadCarton($detalle->unidad_id)) {
-                // ========================================
-                // FLUJO DE LOTE ÚNICO (para huevos en cartones)
-                // ========================================
                 $this->agregarALoteUnico($detalle, $bodegaId);
                 $lotesActualizados++;
             } else {
-                // ========================================
-                // FLUJO DE STOCK DIRECTO (otros productos)
-                // ========================================
                 $this->agregarStockDesdeDetalle($detalle, $bodegaId);
                 $productosStock++;
             }
@@ -512,10 +520,7 @@ class ViewCompra extends ViewRecord
     }
 
     /**
-     * 🎯 AGREGAR A LOTE ÚNICO (para cartones de huevos)
-     *
-     * Busca el lote único del producto en la bodega y agrega la compra.
-     * Si no existe, lo crea. Usa costo promedio ponderado.
+     * AGREGAR A LOTE UNICO (para cartones de huevos)
      */
     protected function agregarALoteUnico($detalle, int $bodegaId): void
     {
@@ -528,10 +533,8 @@ class ViewCompra extends ViewRecord
             return;
         }
 
-        // Calcular costo total de esta compra
         $costoCompra = $detalle->subtotal ?? ($cantidadFacturada * $detalle->precio_unitario);
 
-        // Obtener o crear el lote único
         $lote = Lote::obtenerOCrearLoteUnico(
             $detalle->producto_id,
             $bodegaId,
@@ -539,7 +542,6 @@ class ViewCompra extends ViewRecord
             Auth::id()
         );
 
-        // Agregar la compra al lote (recalcula costo promedio)
         $resultado = $lote->agregarCompra(
             $cantidadFacturada,
             $cantidadRegalo,
@@ -549,8 +551,7 @@ class ViewCompra extends ViewRecord
             $this->record->proveedor_id
         );
 
-        // Log para debugging (opcional)
-        Log::info("Compra agregada a lote único", [
+        Log::info("Compra agregada a lote unico", [
             'lote' => $lote->numero_lote,
             'compra' => $this->record->numero_compra,
             'resultado' => $resultado,
@@ -558,9 +559,7 @@ class ViewCompra extends ViewRecord
     }
 
     /**
-     * 🎯 AGREGAR STOCK DESDE DETALLE DE COMPRA (para productos que no son cartones)
-     *
-     * Usa el método de COSTO PROMEDIO PONDERADO de BodegaProducto
+     * AGREGAR STOCK DESDE DETALLE DE COMPRA (para productos que no son cartones)
      */
     protected function agregarStockDesdeDetalle($detalle, int $bodegaId): void
     {
@@ -572,7 +571,6 @@ class ViewCompra extends ViewRecord
             return;
         }
 
-        // Determinar el costo unitario correcto
         $costoUnitario = 0;
 
         if (!empty($detalle->costo_sin_isv) && $detalle->costo_sin_isv > 0) {
@@ -586,7 +584,6 @@ class ViewCompra extends ViewRecord
 
         $costoUnitario = round($costoUnitario, 2);
 
-        // Buscar o crear registro en bodega_producto
         $bodegaProducto = BodegaProducto::firstOrCreate(
             [
                 'bodega_id' => $bodegaId,
@@ -601,12 +598,10 @@ class ViewCompra extends ViewRecord
             ]
         );
 
-        // Agregar stock con costo promedio ponderado
         if ($cantidadFacturada > 0) {
             $bodegaProducto->actualizarCostoPromedio($cantidadFacturada, $costoUnitario);
         }
 
-        // Agregar regalo sin costo
         if ($cantidadRegalo > 0) {
             $bodegaProducto->agregarStockSinCosto($cantidadRegalo);
         }
@@ -617,11 +612,11 @@ class ViewCompra extends ViewRecord
         return match ($estado) {
             'borrador' => 'Borrador',
             'ordenada' => 'Ordenada',
-            'recibida_pagada' => 'Recibida y Pagada ✅',
-            'recibida_pendiente_pago' => 'Recibida - Debo Pagar 📦💰',
-            'por_recibir_pagada' => 'Pagada - Falta Recibir 💰📦',
-            'por_recibir_pendiente_pago' => 'Pendiente Todo ⏳',
-            'cancelada' => 'Cancelada ❌',
+            'recibida_pagada' => 'Recibida y Pagada',
+            'recibida_pendiente_pago' => 'Recibida - Debo Pagar',
+            'por_recibir_pagada' => 'Pagada - Falta Recibir',
+            'por_recibir_pendiente_pago' => 'Pendiente Todo',
+            'cancelada' => 'Cancelada',
             default => $estado,
         };
     }
@@ -630,7 +625,7 @@ class ViewCompra extends ViewRecord
     {
         return $infolist
             ->schema([
-                Infolists\Components\Section::make('Información General')
+                Infolists\Components\Section::make('Informacion General')
                     ->schema([
                         Infolists\Components\Grid::make(3)
                             ->schema([
@@ -653,7 +648,7 @@ class ViewCompra extends ViewRecord
                                 Infolists\Components\TextEntry::make('tipo_pago')
                                     ->label('Tipo de Pago')
                                     ->badge()
-                                    ->formatStateUsing(fn($state) => $state === 'contado' ? 'Contado' : 'Crédito')
+                                    ->formatStateUsing(fn($state) => $state === 'contado' ? 'Contado' : 'Credito')
                                     ->color(fn($state) => $state === 'contado' ? 'success' : 'warning'),
 
                                 Infolists\Components\TextEntry::make('estado')
@@ -671,7 +666,7 @@ class ViewCompra extends ViewRecord
                                     }),
 
                                 Infolists\Components\TextEntry::make('created_at')
-                                    ->label('Fecha de Creación')
+                                    ->label('Fecha de Creacion')
                                     ->dateTime('d/m/Y H:i'),
 
                                 Infolists\Components\TextEntry::make('total')
@@ -681,21 +676,6 @@ class ViewCompra extends ViewRecord
                                     ->weight('bold')
                                     ->color('success'),
 
-                                Infolists\Components\TextEntry::make('interes_acumulado')
-                                    ->label('Interés Acumulado')
-                                    ->money('HNL')
-                                    ->getStateUsing(fn($record) => $record->getInteresAcumulado())
-                                    ->visible(fn($record) => $record->tipo_pago === 'credito' && $record->getInteresAcumulado() > 0)
-                                    ->color('warning'),
-
-                                Infolists\Components\TextEntry::make('saldo_total')
-                                    ->label('Saldo Total (con intereses)')
-                                    ->money('HNL')
-                                    ->getStateUsing(fn($record) => $record->getSaldoConIntereses())
-                                    ->visible(fn($record) => $record->tipo_pago === 'credito' && $record->getInteresAcumulado() > 0)
-                                    ->weight('bold')
-                                    ->color('danger'),
-
                                 Infolists\Components\TextEntry::make('nota')
                                     ->label('Notas')
                                     ->columnSpanFull()
@@ -704,62 +684,6 @@ class ViewCompra extends ViewRecord
                                     ->color('warning'),
                             ]),
                     ]),
-
-                // ISV Crédito Fiscal
-                Infolists\Components\Section::make('ISV Crédito Fiscal')
-                    ->schema([
-                        Infolists\Components\Grid::make(3)
-                            ->schema([
-                                Infolists\Components\TextEntry::make('total_isv_credito')
-                                    ->label('Total ISV Crédito')
-                                    ->money('HNL')
-                                    ->getStateUsing(fn($record) => $record->detalles()->sum('isv_credito') ?? 0)
-                                    ->size('lg')
-                                    ->weight('bold')
-                                    ->color('info'),
-
-                                Infolists\Components\TextEntry::make('productos_con_isv')
-                                    ->label('Productos con ISV')
-                                    ->getStateUsing(fn($record) => $record->detalles()->whereNotNull('costo_sin_isv')->where('costo_sin_isv', '>', 0)->count())
-                                    ->suffix(' producto(s)'),
-
-                                Infolists\Components\TextEntry::make('info_isv')
-                                    ->label('')
-                                    ->getStateUsing(fn() => 'Este monto es deducible en tu declaración fiscal')
-                                    ->color('gray'),
-                            ]),
-                    ])
-                    ->visible(fn($record) => $record->detalles()->whereNotNull('isv_credito')->where('isv_credito', '>', 0)->exists())
-                    ->collapsible()
-                    ->collapsed(),
-
-                Infolists\Components\Section::make('Información de Crédito')
-                    ->schema([
-                        Infolists\Components\Grid::make(3)
-                            ->schema([
-                                Infolists\Components\TextEntry::make('interes_porcentaje')
-                                    ->label('Tasa de Interés')
-                                    ->suffix('%')
-                                    ->numeric(decimalPlaces: 2),
-
-                                Infolists\Components\TextEntry::make('periodo_interes')
-                                    ->label('Periodo de Interés')
-                                    ->formatStateUsing(fn($state) => $state === 'semanal' ? 'Semanal' : 'Mensual')
-                                    ->badge()
-                                    ->color('info'),
-
-                                Infolists\Components\TextEntry::make('fecha_inicio_credito')
-                                    ->label('Fecha Inicio Crédito')
-                                    ->date('d/m/Y'),
-
-                                Infolists\Components\TextEntry::make('periodos_transcurridos')
-                                    ->label('Periodos Transcurridos')
-                                    ->getStateUsing(fn($record) => $record->getPeriodosTranscurridos())
-                                    ->suffix(fn($record) => ' ' . ($record->periodo_interes === 'semanal' ? 'semanas' : 'meses')),
-                            ]),
-                    ])
-                    ->visible(fn($record) => $record->tipo_pago === 'credito')
-                    ->collapsible(),
 
                 Infolists\Components\Section::make('Productos')
                     ->schema([
@@ -786,45 +710,16 @@ class ViewCompra extends ViewRecord
                                     ->color('success')
                                     ->visible(fn($state) => $state > 0),
 
-                                Infolists\Components\TextEntry::make('cantidad_recibida')
-                                    ->label('Total')
-                                    ->numeric(decimalPlaces: 0)
-                                    ->weight('bold')
-                                    ->suffix(' total'),
-
                                 Infolists\Components\TextEntry::make('precio_unitario')
                                     ->label('Precio Unit.')
                                     ->money('HNL'),
-
-                                Infolists\Components\TextEntry::make('costo_sin_isv')
-                                    ->label('Costo Real')
-                                    ->money('HNL')
-                                    ->color('success')
-                                    ->visible(fn($record) => !empty($record->costo_sin_isv) && $record->costo_sin_isv > 0)
-                                    ->helperText('Sin ISV'),
-
-                                Infolists\Components\TextEntry::make('isv_credito')
-                                    ->label('ISV')
-                                    ->money('HNL')
-                                    ->color('info')
-                                    ->visible(fn($record) => !empty($record->isv_credito) && $record->isv_credito > 0),
-
-                                Infolists\Components\TextEntry::make('descuento')
-                                    ->label('Descuento')
-                                    ->money('HNL')
-                                    ->visible(fn($record) => $record->descuento > 0),
-
-                                Infolists\Components\TextEntry::make('impuesto')
-                                    ->label('Impuesto')
-                                    ->money('HNL')
-                                    ->visible(fn($record) => $record->impuesto > 0),
 
                                 Infolists\Components\TextEntry::make('subtotal')
                                     ->label('Subtotal')
                                     ->money('HNL')
                                     ->weight('bold'),
                             ])
-                            ->columns(10),
+                            ->columns(6),
                     ]),
             ]);
     }

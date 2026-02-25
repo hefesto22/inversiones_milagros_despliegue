@@ -23,8 +23,8 @@ class BodegaProducto extends Model
         'stock' => 'decimal:3',
         'stock_reservado' => 'decimal:3',
         'stock_minimo' => 'decimal:3',
-        'costo_promedio_actual' => 'decimal:2',
-        'precio_venta_sugerido' => 'decimal:2',
+        'costo_promedio_actual' => 'decimal:4',   // FIX: era decimal:2, BD ya es decimal(12,4)
+        'precio_venta_sugerido' => 'decimal:4',   // FIX: era decimal:2, BD ya es decimal(12,4)
         'activo' => 'boolean',
     ];
 
@@ -43,20 +43,39 @@ class BodegaProducto extends Model
     }
 
     // =======================
-    // MÉTODOS DE STOCK
+    // METODOS DE VALIDACION
     // =======================
 
-    /**
-     * Obtener stock disponible (total - reservado)
-     */
+    public function tieneSuficienteStock(float $cantidadRequerida): bool
+    {
+        return $this->getStockDisponible() >= $cantidadRequerida;
+    }
+
+    public function validarReduccion(float $cantidad): void
+    {
+        if ($cantidad <= 0) {
+            throw new \InvalidArgumentException("La cantidad a reducir debe ser mayor a 0");
+        }
+
+        if (!$this->tieneSuficienteStock($cantidad)) {
+            $disponible = $this->getStockDisponible();
+            $producto = $this->producto->nombre ?? 'Producto';
+            throw new \Exception(
+                "Stock insuficiente de {$producto}. " .
+                "Disponible: {$disponible}, Requerido: {$cantidad}"
+            );
+        }
+    }
+
+    // =======================
+    // METODOS DE STOCK
+    // =======================
+
     public function getStockDisponible(): float
     {
         return max(0, $this->stock - $this->stock_reservado);
     }
 
-    /**
-     * Reservar stock (apartado para cliente que pagó pero no se llevó)
-     */
     public function reservarStock(float $cantidad): bool
     {
         if ($this->getStockDisponible() < $cantidad) {
@@ -69,34 +88,21 @@ class BodegaProducto extends Model
         return true;
     }
 
-    /**
-     * Liberar stock reservado (cancelación o entrega)
-     */
     public function liberarReserva(float $cantidad): void
     {
-        $this->stock_reservado -= $cantidad;
-        if ($this->stock_reservado < 0) {
-            $this->stock_reservado = 0;
-        }
+        $this->stock_reservado = max(0, $this->stock_reservado - $cantidad);
         $this->save();
     }
 
-    /**
-     * Entregar producto reservado (reducir stock y reserva)
-     */
     public function entregarReservado(float $cantidad): void
     {
-        $this->stock -= $cantidad;
-        $this->stock_reservado -= $cantidad;
-
-        if ($this->stock < 0) $this->stock = 0;
-        if ($this->stock_reservado < 0) $this->stock_reservado = 0;
-
+        $this->stock = max(0, $this->stock - $cantidad);
+        $this->stock_reservado = max(0, $this->stock_reservado - $cantidad);
         $this->save();
     }
 
     // =======================
-    // MÉTODOS DE COSTO PROMEDIO CONTINUO (DIARIO)
+    // METODOS DE COSTO PROMEDIO CONTINUO (DIARIO)
     // =======================
 
     /**
@@ -104,8 +110,16 @@ class BodegaProducto extends Model
      */
     public function actualizarCostoPromedio(float $cantidadNueva, float $costoUnitarioNuevo): void
     {
-        $stockAnterior = $this->stock ?? 0;
-        $costoAnterior = $this->costo_promedio_actual ?? 0;
+        if ($cantidadNueva < 0) {
+            throw new \InvalidArgumentException("La cantidad no puede ser negativa");
+        }
+
+        if ($cantidadNueva == 0) {
+            return;
+        }
+
+        $stockAnterior = floatval($this->stock ?? 0);
+        $costoAnterior = floatval($this->costo_promedio_actual ?? 0);
 
         if ($costoUnitarioNuevo <= 0) {
             $this->stock = $stockAnterior + $cantidadNueva;
@@ -124,7 +138,8 @@ class BodegaProducto extends Model
             $nuevoCostoPromedio = $costoUnitarioNuevo;
         }
 
-        $nuevoCostoPromedio = round($nuevoCostoPromedio, 2);
+        // FIX: 4 decimales para mantener precisión (BD ya es decimal(12,4))
+        $nuevoCostoPromedio = round($nuevoCostoPromedio, 4);
 
         $this->stock = $stockTotal;
         $this->costo_promedio_actual = $nuevoCostoPromedio;
@@ -136,15 +151,10 @@ class BodegaProducto extends Model
 
     /**
      * Actualizar precio de venta basado en costo_promedio_actual
-     * 
-     * 🆕 NUEVA LÓGICA CON PRECIO MÁXIMO:
-     * 1. Calcula el precio normal (costo + margen)
-     * 2. Si hay precio_maximo configurado, aplica el tope
-     * 3. Si el costo >= precio_maximo, aplica margen mínimo de seguridad
      */
     public function actualizarPrecioVentaSegunCosto(): void
     {
-        $costoBase = $this->costo_promedio_actual ?? 0;
+        $costoBase = floatval($this->costo_promedio_actual ?? 0);
 
         if ($costoBase <= 0) {
             return;
@@ -159,61 +169,53 @@ class BodegaProducto extends Model
         $margen = $producto->margen_ganancia ?? 5;
         $tipoMargen = $producto->tipo_margen ?? 'monto';
 
-        // Paso 1: Calcular precio normal con el margen configurado
         $precioCalculado = match ($tipoMargen) {
             'porcentaje' => $costoBase * (1 + ($margen / 100)),
             'monto' => $costoBase + $margen,
             default => $costoBase + 5,
         };
 
-        // Paso 2: Aplicar lógica de precio máximo si está configurado
         if ($producto->tienePrecioMaximo()) {
             $resultado = $producto->calcularPrecioConTope($costoBase, $precioCalculado);
             $precioFinal = $resultado['precio'];
-            
-            // Opcional: Log para debugging cuando hay alerta
-            // if ($resultado['alerta']) {
-            //     \Log::warning("Producto {$producto->id}: {$resultado['mensaje']}");
-            // }
         } else {
             $precioFinal = $precioCalculado;
         }
 
-        // Guardar precio final
         $this->precio_venta_sugerido = round($precioFinal, 2);
     }
 
     /**
-     * Reducir stock sin cambiar costo promedio
+     * Reducir stock con validacion
      */
-    public function reducirStock(float $cantidad): void
+    public function reducirStock(float $cantidad, bool $forzar = false): void
     {
-        $this->stock -= $cantidad;
-
-        if ($this->stock < 0) {
-            $this->stock = 0;
+        if ($cantidad <= 0) {
+            return;
         }
 
+        if (!$forzar) {
+            $this->validarReduccion($cantidad);
+        }
+
+        $this->stock = max(0, $this->stock - $cantidad);
         $this->save();
     }
 
-    /**
-     * Agregar stock con costo 0 (huevos de regalo, etc.)
-     */
     public function agregarStockSinCosto(float $cantidad): void
     {
+        if ($cantidad <= 0) {
+            return;
+        }
+
         $this->stock += $cantidad;
         $this->save();
     }
 
-    /**
-     * Obtener información de costos y precios
-     * 🆕 Incluye información sobre precio máximo
-     */
     public function getAnalisisCostos(): array
     {
-        $costoPromedio = $this->costo_promedio_actual ?? 0;
-        $precioVenta = $this->precio_venta_sugerido ?? 0;
+        $costoPromedio = floatval($this->costo_promedio_actual ?? 0);
+        $precioVenta = floatval($this->precio_venta_sugerido ?? 0);
         $margen = $precioVenta - $costoPromedio;
         $porcentajeMargen = $costoPromedio > 0 ? ($margen / $costoPromedio) * 100 : 0;
 
@@ -236,24 +238,17 @@ class BodegaProducto extends Model
             'ganancia_potencial' => $this->stock * $margen,
             'stock_minimo' => $this->stock_minimo,
             'necesita_reabastecimiento' => $this->stock <= ($this->stock_minimo ?? 0),
-            // 🆕 Campos de precio máximo
             'tiene_precio_maximo' => $tienePrecioMaximo,
             'precio_maximo' => $precioMaximo,
             'alerta_precio_maximo' => $alertaPrecio,
         ];
     }
 
-    /**
-     * Verificar si tiene stock disponible
-     */
     public function tieneStock(float $cantidadRequerida = 0): bool
     {
         return $this->getStockDisponible() >= $cantidadRequerida;
     }
 
-    /**
-     * Verificar si está por debajo del stock mínimo
-     */
     public function bajoDeMinimoStock(): bool
     {
         if (!$this->stock_minimo) {
@@ -263,12 +258,9 @@ class BodegaProducto extends Model
         return $this->stock <= $this->stock_minimo;
     }
 
-    /**
-     * Obtener valor total del inventario en esta bodega
-     */
     public function getValorInventario(): float
     {
-        return $this->stock * ($this->costo_promedio_actual ?? 0);
+        return $this->stock * floatval($this->costo_promedio_actual ?? 0);
     }
 
     // =======================
@@ -298,13 +290,8 @@ class BodegaProducto extends Model
         });
 
         static::saving(function ($bodegaProducto) {
-            if ($bodegaProducto->stock < 0) {
-                $bodegaProducto->stock = 0;
-            }
-
-            if ($bodegaProducto->stock_reservado < 0) {
-                $bodegaProducto->stock_reservado = 0;
-            }
+            $bodegaProducto->stock = max(0, $bodegaProducto->stock ?? 0);
+            $bodegaProducto->stock_reservado = max(0, $bodegaProducto->stock_reservado ?? 0);
         });
     }
 }

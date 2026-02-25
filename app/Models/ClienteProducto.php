@@ -23,6 +23,7 @@ class ClienteProducto extends Model
         'fecha_ultima_venta',
         'total_ventas',
         'cantidad_total_vendida',
+        'descuento_maximo_override',
     ];
 
     protected $casts = [
@@ -32,6 +33,7 @@ class ClienteProducto extends Model
         'fecha_ultima_venta' => 'datetime',
         'total_ventas' => 'integer',
         'cantidad_total_vendida' => 'decimal:2',
+        'descuento_maximo_override' => 'decimal:4',
     ];
 
     // ============================================
@@ -49,6 +51,30 @@ class ClienteProducto extends Model
     }
 
     // ============================================
+    // MÉTODOS DE DESCUENTO
+    // ============================================
+
+    /**
+     * Verificar si tiene un override de descuento configurado
+     */
+    public function tieneOverrideDescuento(): bool
+    {
+        return !is_null($this->descuento_maximo_override);
+    }
+
+    /**
+     * Obtener el descuento máximo override en Lempiras
+     */
+    public function getDescuentoOverride(): ?float
+    {
+        if (!$this->tieneOverrideDescuento()) {
+            return null;
+        }
+
+        return (float) $this->descuento_maximo_override;
+    }
+
+    // ============================================
     // HELPERS
     // ============================================
 
@@ -61,7 +87,6 @@ class ClienteProducto extends Model
             return $this->ultimo_precio_venta ?? 0;
         }
 
-        // Esto es aproximado, para un cálculo real necesitarías historial completo
         return $this->ultimo_precio_venta ?? 0;
     }
 

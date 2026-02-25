@@ -30,8 +30,8 @@ class Producto extends Model
         'margen_ganancia',
         'tipo_margen',
         'aplica_isv',
-        'precio_venta_maximo',       // 🆕 PRECIO MÁXIMO DE VENTA (precio competitivo)
-        'margen_minimo_seguridad',   // 🆕 MARGEN MÍNIMO DE SEGURIDAD
+        'precio_venta_maximo',
+        'margen_minimo_seguridad',
         'formato_empaque',
         'unidades_por_bulto',
     ];
@@ -108,8 +108,159 @@ class Producto extends Model
         return $this->hasMany(ReempaqueProducto::class, 'producto_id');
     }
 
+    /**
+     * Reglas de precio por tipo de cliente
+     */
+    public function preciosTipo()
+    {
+        return $this->hasMany(ProductoPrecioTipo::class, 'producto_id');
+    }
+
+    /**
+     * Clientes con historial de compra (pivote)
+     */
+    public function clienteProductos()
+    {
+        return $this->hasMany(ClienteProducto::class, 'producto_id');
+    }
+
     // =======================
-    // 🆕 MÉTODOS DE PRECIO MÁXIMO COMPETITIVO
+    // MÉTODOS DE DESCUENTO MÁXIMO POR CLIENTE
+    // =======================
+
+    /**
+     * Obtener el descuento máximo permitido para un cliente específico.
+     *
+     * Jerarquía:
+     * 1. Override individual en cliente_producto → si existe, usar ese
+     * 2. Regla por tipo de cliente en producto_precio_tipo → si existe, usar ese
+     * 3. Fallback → null (sin restricción)
+     *
+     * @param Cliente $cliente
+     * @return float|null Descuento máximo en Lempiras, o null si no hay restricción
+     */
+    public function obtenerDescuentoMaximo(Cliente $cliente): ?float
+    {
+        // 1. Buscar override individual en cliente_producto
+        $clienteProducto = ClienteProducto::where('cliente_id', $cliente->id)
+            ->where('producto_id', $this->id)
+            ->whereNotNull('descuento_maximo_override')
+            ->first();
+
+        if ($clienteProducto) {
+            return (float) $clienteProducto->descuento_maximo_override;
+        }
+
+        // 2. Buscar regla por tipo de cliente
+        $reglaTipo = ProductoPrecioTipo::where('producto_id', $this->id)
+            ->where('tipo_cliente', $cliente->tipo)
+            ->where('activo', true)
+            ->first();
+
+        if ($reglaTipo) {
+            // Si tiene precio mínimo fijo, retornar null y dejar que calcularPrecioMinimo lo maneje
+            if (!is_null($reglaTipo->precio_minimo_fijo) && $reglaTipo->precio_minimo_fijo > 0) {
+                return null; // Se manejará por precio mínimo fijo
+            }
+
+            return (float) $reglaTipo->descuento_maximo;
+        }
+
+        // 3. Sin restricción
+        return null;
+    }
+
+    /**
+     * Obtener el precio mínimo de venta para un cliente específico.
+     *
+     * @param Cliente $cliente
+     * @param float $precioVenta Precio de venta actual/sugerido
+     * @return array ['precio_minimo' => float|null, 'fuente' => string, 'descuento_maximo' => float|null]
+     */
+    public function obtenerPrecioMinimo(Cliente $cliente, float $precioVenta): array
+    {
+        // 1. Buscar override individual
+        $clienteProducto = ClienteProducto::where('cliente_id', $cliente->id)
+            ->where('producto_id', $this->id)
+            ->whereNotNull('descuento_maximo_override')
+            ->first();
+
+        if ($clienteProducto) {
+            $descuento = (float) $clienteProducto->descuento_maximo_override;
+            return [
+                'precio_minimo' => round($precioVenta - $descuento, 4),
+                'fuente' => 'cliente',
+                'descuento_maximo' => $descuento,
+            ];
+        }
+
+        // 2. Buscar regla por tipo de cliente
+        $reglaTipo = ProductoPrecioTipo::where('producto_id', $this->id)
+            ->where('tipo_cliente', $cliente->tipo)
+            ->where('activo', true)
+            ->first();
+
+        if ($reglaTipo) {
+            // Si tiene precio mínimo fijo, usarlo directamente
+            if (!is_null($reglaTipo->precio_minimo_fijo) && $reglaTipo->precio_minimo_fijo > 0) {
+                return [
+                    'precio_minimo' => (float) $reglaTipo->precio_minimo_fijo,
+                    'fuente' => 'tipo_fijo',
+                    'descuento_maximo' => round($precioVenta - (float) $reglaTipo->precio_minimo_fijo, 4),
+                ];
+            }
+
+            $descuento = (float) $reglaTipo->descuento_maximo;
+            return [
+                'precio_minimo' => round($precioVenta - $descuento, 4),
+                'fuente' => 'tipo',
+                'descuento_maximo' => $descuento,
+            ];
+        }
+
+        // 3. Sin restricción
+        return [
+            'precio_minimo' => null,
+            'fuente' => 'ninguna',
+            'descuento_maximo' => null,
+        ];
+    }
+
+    /**
+     * Validar si un precio es permitido para un cliente
+     *
+     * @param Cliente $cliente
+     * @param float $precioVenta Precio de venta actual/sugerido (precio base sin descuento)
+     * @param float $precioIntentado Precio que se quiere cobrar
+     * @return array ['permitido' => bool, 'precio_minimo' => float|null, 'mensaje' => string|null]
+     */
+    public function validarPrecioCliente(Cliente $cliente, float $precioVenta, float $precioIntentado): array
+    {
+        $resultado = $this->obtenerPrecioMinimo($cliente, $precioVenta);
+
+        // Sin restricción
+        if (is_null($resultado['precio_minimo'])) {
+            return [
+                'permitido' => true,
+                'precio_minimo' => null,
+                'mensaje' => null,
+            ];
+        }
+
+        $precioMinimo = $resultado['precio_minimo'];
+        $permitido = $precioIntentado >= $precioMinimo;
+
+        return [
+            'permitido' => $permitido,
+            'precio_minimo' => $precioMinimo,
+            'mensaje' => $permitido
+                ? null
+                : "El precio mínimo para este cliente es L " . number_format($precioMinimo, 2) . ". Descuento máximo: L " . number_format($resultado['descuento_maximo'], 2),
+        ];
+    }
+
+    // =======================
+    // MÉTODOS DE PRECIO MÁXIMO COMPETITIVO
     // =======================
 
     /**
@@ -130,21 +281,13 @@ class Producto extends Model
 
     /**
      * Calcular precio de venta usando el precio máximo competitivo
-     * 
-     * LÓGICA CORREGIDA:
+     *
+     * LÓGICA:
      * 1. Si costo < precio_maximo → Usar precio_maximo (igualar a la competencia)
      * 2. Si costo >= precio_maximo → Usar costo + margen_minimo% (proteger contra pérdidas)
-     * 
-     * Ejemplo 1: Costo L34, Precio máximo L42 → Vender a L42 (porque 34 < 42)
-     * Ejemplo 2: Costo L45, Precio máximo L42, Margen 3% → Vender a L46.35 (porque 45 >= 42)
-     * 
-     * @param float $costo Costo actual del producto
-     * @param float $precioCalculado Precio calculado con el margen normal (no se usa en esta lógica)
-     * @return array ['precio' => float, 'razon' => string, 'alerta' => bool, 'mensaje' => string|null]
      */
     public function calcularPrecioConTope(float $costo, float $precioCalculado): array
     {
-        // Si no hay precio máximo configurado, usar el precio calculado normal
         if (!$this->tienePrecioMaximo()) {
             return [
                 'precio' => $precioCalculado,
@@ -157,7 +300,6 @@ class Producto extends Model
         $precioMaximo = (float) $this->precio_venta_maximo;
         $margenMinimo = $this->getMargenMinimoSeguridad();
 
-        // Caso 1: El costo es MENOR que el precio máximo → Usar el precio máximo (competitivo)
         if ($costo < $precioMaximo) {
             return [
                 'precio' => $precioMaximo,
@@ -167,9 +309,8 @@ class Producto extends Model
             ];
         }
 
-        // Caso 2: El costo es IGUAL O MAYOR al precio máximo → Aplicar margen mínimo de seguridad
         $precioConMargenMinimo = $costo * (1 + ($margenMinimo / 100));
-        
+
         return [
             'precio' => round($precioConMargenMinimo, 2),
             'razon' => 'margen_minimo',
@@ -182,11 +323,6 @@ class Producto extends Model
     // MÉTODOS DE ISV
     // =======================
 
-    /**
-     * Calcular precio con ISV
-     * @param float $precioBase Precio sin ISV
-     * @return float Precio con ISV
-     */
     public function calcularPrecioConIsv(float $precioBase): float
     {
         if (!$this->aplica_isv) {
@@ -196,11 +332,6 @@ class Producto extends Model
         return $precioBase * (1 + self::ISV_RATE);
     }
 
-    /**
-     * Obtener el monto del ISV para un precio dado
-     * @param float $precioBase Precio sin ISV
-     * @return float Monto del ISV
-     */
     public function calcularMontoIsv(float $precioBase): float
     {
         if (!$this->aplica_isv) {
@@ -210,9 +341,6 @@ class Producto extends Model
         return $precioBase * self::ISV_RATE;
     }
 
-    /**
-     * Verificar si el producto aplica ISV
-     */
     public function tieneIsv(): bool
     {
         return $this->aplica_isv ?? true;
@@ -222,20 +350,11 @@ class Producto extends Model
     // MÉTODOS DE FORMATO DE EMPAQUE
     // =======================
 
-    /**
-     * Verificar si el producto tiene formato de empaque configurado
-     */
     public function tieneFormatoEmpaque(): bool
     {
         return !empty($this->formato_empaque) && !empty($this->unidades_por_bulto) && $this->unidades_por_bulto > 0;
     }
 
-    /**
-     * Calcular equivalencia en bultos/cajas a partir de unidades
-     * 
-     * @param float $cantidadUnidades Cantidad en unidades base (paquetes, bolsas, etc.)
-     * @return array ['bultos' => int, 'sueltos' => float, 'texto' => string]
-     */
     public function calcularEquivalenciaBultos(float $cantidadUnidades): array
     {
         if (!$this->tieneFormatoEmpaque()) {
@@ -249,11 +368,10 @@ class Producto extends Model
 
         $unidadesPorBulto = $this->unidades_por_bulto;
         $categoriaNombre = strtolower($this->categoria->nombre ?? '');
-        
-        // Para huevos: mostrar total de huevos individuales
+
         if (str_contains($categoriaNombre, 'huevo')) {
             $totalHuevos = $cantidadUnidades * $unidadesPorBulto;
-            
+
             return [
                 'bultos' => (int) $cantidadUnidades,
                 'sueltos' => 0,
@@ -263,16 +381,12 @@ class Producto extends Model
                 'total_unidades' => $totalHuevos,
             ];
         }
-        
-        // Para otros productos: calcular equivalencia en cajas
+
         $bultos = floor($cantidadUnidades / $unidadesPorBulto);
         $sueltos = fmod($cantidadUnidades, $unidadesPorBulto);
-
         $sueltos = round($sueltos, 3);
 
         $unidadNombre = $this->unidad->nombre ?? 'unidades';
-        
-        // Determinar nombre del empaque según la categoría
         $nombreEmpaque = $this->getNombreEmpaque();
         $nombreEmpaquePlural = $this->getNombreEmpaquePlural();
 
@@ -293,41 +407,28 @@ class Producto extends Model
         ];
     }
 
-    /**
-     * Obtener nombre del empaque en singular según la categoría
-     */
     public function getNombreEmpaque(): string
     {
         $categoriaNombre = strtolower($this->categoria->nombre ?? '');
-        
-        // Si es categoría de huevos, usar "cartón"
+
         if (str_contains($categoriaNombre, 'huevo')) {
             return 'cartón';
         }
-        
-        // Por defecto usar "caja"
+
         return 'caja';
     }
 
-    /**
-     * Obtener nombre del empaque en plural según la categoría
-     */
     public function getNombreEmpaquePlural(): string
     {
         $categoriaNombre = strtolower($this->categoria->nombre ?? '');
-        
-        // Si es categoría de huevos, usar "cartones"
+
         if (str_contains($categoriaNombre, 'huevo')) {
             return 'cartones';
         }
-        
-        // Por defecto usar "cajas"
+
         return 'cajas';
     }
 
-    /**
-     * Calcular unidades totales a partir de bultos
-     */
     public function bultosAUnidades(int $cantidadBultos): float
     {
         if (!$this->tieneFormatoEmpaque()) {
@@ -337,9 +438,6 @@ class Producto extends Model
         return $cantidadBultos * $this->unidades_por_bulto;
     }
 
-    /**
-     * Obtener texto descriptivo del formato de empaque
-     */
     public function getDescripcionFormato(): ?string
     {
         if (!$this->tieneFormatoEmpaque()) {
@@ -348,13 +446,10 @@ class Producto extends Model
 
         $unidadNombre = $this->unidad->nombre ?? 'unidades';
         $nombreEmpaque = $this->getNombreEmpaque();
-        
+
         return "1 {$nombreEmpaque} = {$this->unidades_por_bulto} {$unidadNombre}";
     }
 
-    /**
-     * Obtener nombre completo del producto con formato
-     */
     public function getNombreConFormato(): string
     {
         if ($this->tieneFormatoEmpaque()) {

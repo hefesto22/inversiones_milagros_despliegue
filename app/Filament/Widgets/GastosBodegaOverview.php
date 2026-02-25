@@ -33,9 +33,13 @@ class GastosBodegaOverview extends BaseWidget
         // Gastos pendientes de aprobar (siempre muestra todos los pendientes)
         $gastosPendientes = BodegaGasto::where('estado', 'pendiente')->count();
 
-        // Total gastado en el período (solo aprobados)
+        // Total gastado en el período (solo aprobados, SIN inversiones)
         $totalPeriodo = BodegaGasto::where('estado', 'aprobado')
             ->whereBetween('fecha', [$dateRange['inicio'], $dateRange['fin']])
+            ->where(function ($q) {
+                $q->where('categoria_contable', '!=', 'inversion')
+                  ->orWhereNull('categoria_contable');
+            })
             ->sum('monto');
 
         // Total en cartones del período
@@ -50,15 +54,24 @@ class GastosBodegaOverview extends BaseWidget
             ->whereBetween('fecha', [$dateRange['inicio'], $dateRange['fin']])
             ->sum('monto');
 
-        // Otros gastos (limpieza, papelería, herramientas, etc.)
+        // Otros gastos operativos (limpieza, papelería, herramientas, etc.)
+        // Excluye inversiones
         $otrosGastos = BodegaGasto::where('estado', 'aprobado')
             ->whereNotIn('tipo_gasto', ['cartones', 'empaque'])
             ->whereBetween('fecha', [$dateRange['inicio'], $dateRange['fin']])
+            ->where(function ($q) {
+                $q->where('categoria_contable', '!=', 'inversion')
+                  ->orWhereNull('categoria_contable');
+            })
             ->sum('monto');
 
-        // Comparación con período anterior
+        // Comparación con período anterior (sin inversiones)
         $totalPeriodoAnterior = BodegaGasto::where('estado', 'aprobado')
             ->whereBetween('fecha', [$previousRange['inicio'], $previousRange['fin']])
+            ->where(function ($q) {
+                $q->where('categoria_contable', '!=', 'inversion')
+                  ->orWhereNull('categoria_contable');
+            })
             ->sum('monto');
 
         $diferenciaPeriodo = $this->calculatePercentageChange($totalPeriodo, $totalPeriodoAnterior);

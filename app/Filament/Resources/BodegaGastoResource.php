@@ -317,7 +317,7 @@ class BodegaGastoResource extends Resource
                     ->openUrlInNewTab()
                     ->after(function ($record) {
                         $record->marcarEnviadoWhatsapp();
-                        
+
                         Notification::make()
                             ->success()
                             ->title('Enviado')
@@ -327,7 +327,7 @@ class BodegaGastoResource extends Resource
                     ->visible(fn($record) => !$record->enviado_whatsapp)
                     ->requiresConfirmation()
                     ->modalHeading('Enviar por WhatsApp')
-                    ->modalDescription(fn($record) => $record->tiene_factura 
+                    ->modalDescription(fn($record) => $record->tiene_factura
                         ? 'Se abrirá WhatsApp con los datos del gasto. Recuerda adjuntar la foto de la factura.'
                         : 'Se abrirá WhatsApp con los datos del gasto.')
                     ->modalSubmitActionLabel('Abrir WhatsApp'),

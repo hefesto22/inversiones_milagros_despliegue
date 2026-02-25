@@ -105,7 +105,9 @@ class Dashboard extends BaseDashboard
     public function getWidgets(): array
     {
         return [
+            \App\Filament\Widgets\EstadoResultados::class,  // NUEVO - primero
             \App\Filament\Widgets\StatsOverview::class,
+            \App\Filament\Widgets\RegaloAprovechadoOverview::class,
             \App\Filament\Widgets\GastosCamionOverview::class,
             \App\Filament\Widgets\GastosBodegaOverview::class,
             \App\Filament\Widgets\VentasChart::class,

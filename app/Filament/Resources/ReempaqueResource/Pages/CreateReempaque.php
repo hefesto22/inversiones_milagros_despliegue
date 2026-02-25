@@ -4,8 +4,11 @@ namespace App\Filament\Resources\ReempaqueResource\Pages;
 
 use App\Filament\Resources\ReempaqueResource;
 use Filament\Resources\Pages\CreateRecord;
+use Filament\Notifications\Notification;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 use App\Models\Lote;
 use App\Models\Producto;
 use App\Models\ReempaqueLote;
@@ -15,23 +18,185 @@ class CreateReempaque extends CreateRecord
 {
     protected static string $resource = ReempaqueResource::class;
 
-    // Datos calculados para compartir entre métodos
+    // Datos calculados para compartir entre metodos
     private array $datosCalculados = [];
 
+    /**
+     * Validar datos antes de crear
+     */
     protected function mutateFormDataBeforeCreate(array $data): array
     {
         $lotesSeleccionados = $data['lotes_seleccionados'] ?? [];
         $distribuciones = $data['distribuciones'] ?? [];
 
-        // Calcular datos una sola vez
+        // =============================================
+        // VALIDACION 1: Debe haber al menos un lote seleccionado
+        // =============================================
+        if (empty($lotesSeleccionados)) {
+            Notification::make()
+                ->title('Error de validacion')
+                ->body('Debe seleccionar al menos un lote.')
+                ->danger()
+                ->send();
+            
+            throw ValidationException::withMessages([
+                'lotes_seleccionados' => 'Debe seleccionar al menos un lote.',
+            ]);
+        }
+
+        // =============================================
+        // VALIDACION 2: Detectar lotes duplicados
+        // =============================================
+        $loteIds = [];
+        foreach ($lotesSeleccionados as $index => $loteData) {
+            $loteId = $loteData['lote_id'] ?? null;
+            if ($loteId) {
+                if (in_array($loteId, $loteIds)) {
+                    $lote = Lote::find($loteId);
+                    $nombreLote = $lote ? $lote->numero_lote : "ID {$loteId}";
+                    
+                    Notification::make()
+                        ->title('Lote duplicado')
+                        ->body("El lote {$nombreLote} esta seleccionado mas de una vez.")
+                        ->danger()
+                        ->send();
+                    
+                    throw ValidationException::withMessages([
+                        "lotes_seleccionados.{$index}.lote_id" => "Lote duplicado. Cada lote solo puede seleccionarse una vez.",
+                    ]);
+                }
+                $loteIds[] = $loteId;
+            }
+        }
+
+        // =============================================
+        // VALIDACION 3: Verificar cada lote
+        // =============================================
+        foreach ($lotesSeleccionados as $index => $loteData) {
+            $lote = Lote::find($loteData['lote_id'] ?? null);
+            
+            if (!$lote) {
+                throw ValidationException::withMessages([
+                    "lotes_seleccionados.{$index}.lote_id" => 'Lote no encontrado.',
+                ]);
+            }
+
+            $huevosAUsar = (float) ($loteData['cantidad_huevos'] ?? 0);
+            
+            // Validar cantidad > 0
+            if ($huevosAUsar <= 0) {
+                Notification::make()
+                    ->title('Cantidad invalida')
+                    ->body("Debe especificar una cantidad mayor a 0 para el lote {$lote->numero_lote}.")
+                    ->danger()
+                    ->send();
+                
+                throw ValidationException::withMessages([
+                    "lotes_seleccionados.{$index}.cantidad_c30" => 'Debe especificar una cantidad mayor a 0.',
+                ]);
+            }
+
+            // Refrescar para obtener datos actualizados (evitar race conditions)
+            $lote->refresh();
+            
+            // Verificar que el lote no este agotado
+            if ($lote->estado === 'agotado') {
+                Notification::make()
+                    ->title('Lote agotado')
+                    ->body("El lote {$lote->numero_lote} esta agotado y no puede usarse.")
+                    ->danger()
+                    ->send();
+                
+                throw ValidationException::withMessages([
+                    "lotes_seleccionados.{$index}.lote_id" => "El lote {$lote->numero_lote} esta agotado.",
+                ]);
+            }
+
+            // Verificar disponibilidad real
+            if ($huevosAUsar > $lote->cantidad_huevos_remanente) {
+                $disponibleCartones = floor($lote->cantidad_huevos_remanente / 30);
+                
+                Notification::make()
+                    ->title('Stock insuficiente')
+                    ->body("El lote {$lote->numero_lote} solo tiene " . number_format($lote->cantidad_huevos_remanente, 0) . " huevos disponibles ({$disponibleCartones} cartones).")
+                    ->danger()
+                    ->send();
+                
+                throw ValidationException::withMessages([
+                    "lotes_seleccionados.{$index}.cantidad_c30" => "Stock insuficiente. Disponible: {$disponibleCartones} cartones.",
+                ]);
+            }
+        }
+
+        // =============================================
+        // VALIDACION 4: Debe haber al menos una distribucion
+        // =============================================
+        if (empty($distribuciones)) {
+            throw ValidationException::withMessages([
+                'distribuciones' => 'Debe especificar al menos una linea de distribucion.',
+            ]);
+        }
+
+        // =============================================
+        // VALIDACION 5: Cada distribucion debe estar completa
+        // =============================================
+        foreach ($distribuciones as $index => $dist) {
+            $categoriaId = $dist['categoria_id'] ?? null;
+            $unidadId = $dist['unidad_id'] ?? null;
+            $cantidad = (int) ($dist['cantidad'] ?? 0);
+
+            if (!$categoriaId) {
+                throw ValidationException::withMessages([
+                    "distribuciones.{$index}.categoria_id" => 'Debe seleccionar una categoria.',
+                ]);
+            }
+
+            if (!$unidadId) {
+                throw ValidationException::withMessages([
+                    "distribuciones.{$index}.unidad_id" => 'Debe seleccionar una unidad.',
+                ]);
+            }
+
+            if ($cantidad <= 0) {
+                throw ValidationException::withMessages([
+                    "distribuciones.{$index}.cantidad" => 'La cantidad debe ser mayor a 0.',
+                ]);
+            }
+
+            // Verificar que existe el producto para esta combinacion
+            $producto = Producto::where('categoria_id', $categoriaId)
+                ->where('unidad_id', $unidadId)
+                ->where('activo', true)
+                ->first();
+
+            if (!$producto) {
+                $categoria = \App\Models\Categoria::find($categoriaId);
+                $unidad = \App\Models\Unidad::find($unidadId);
+                
+                Notification::make()
+                    ->title('Producto no encontrado')
+                    ->body("No existe un producto activo para {$categoria->nombre} con unidad {$unidad->nombre}.")
+                    ->danger()
+                    ->send();
+                
+                throw ValidationException::withMessages([
+                    "distribuciones.{$index}.categoria_id" => "No existe producto para esta combinacion de categoria y unidad.",
+                ]);
+            }
+        }
+
+        // Calcular datos con logica FIFO (facturados primero, regalo despues)
         $this->datosCalculados = $this->calcularDatosLotes($lotesSeleccionados);
 
         $totalHuevosUsados = $this->datosCalculados['total_huevos'];
-        $huevosUtiles = $totalHuevosUsados; // Ya no hay merma aquí
+        $huevosUtiles = $totalHuevosUsados;
 
-        // Calcular costo unitario (sin merma)
-        $costoUnitarioPromedio = $this->datosCalculados['total_huevos'] > 0
-            ? round($this->datosCalculados['costo_total'] / $this->datosCalculados['total_huevos'], 4)
+        // FIX: costo_total ya viene con 4 decimales de precisión
+        $costoTotal = $this->datosCalculados['costo_total'];
+
+        // Calcular costo unitario promedio (4 decimales)
+        $costoUnitarioPromedio = $totalHuevosUsados > 0
+            ? round($costoTotal / $totalHuevosUsados, 4)
             : 0;
 
         // Calcular totales de distribuciones usando unidad_id
@@ -52,24 +217,39 @@ class CreateReempaque extends CreateRecord
             }
         }
 
-        // Validar que el empaque cuadre
+        // =============================================
+        // VALIDACION 6: El empaque debe cuadrar exactamente
+        // =============================================
         $totalEmpacado = ($cartones30Total * 30) + ($cartones15Total * 15);
 
         if (abs($totalEmpacado - $huevosUtiles) > 0.01) {
-            throw new \Exception("Error: El total empacado ({$totalEmpacado}) no coincide con los huevos útiles ({$huevosUtiles})");
+            $diferencia = $huevosUtiles - $totalEmpacado;
+            $mensaje = $diferencia > 0 
+                ? "Faltan {$diferencia} huevos por asignar." 
+                : "Exceso de " . abs($diferencia) . " huevos.";
+            
+            Notification::make()
+                ->title('Distribucion incompleta')
+                ->body($mensaje)
+                ->danger()
+                ->send();
+            
+            throw ValidationException::withMessages([
+                'distribuciones' => $mensaje,
+            ]);
         }
 
         $data['numero_reempaque'] = $this->generarNumeroReempaque($data['bodega_id']);
         $data['total_huevos_usados'] = $totalHuevosUsados;
         $data['huevos_utiles'] = $huevosUtiles;
-        $data['costo_total'] = $this->datosCalculados['costo_total'];
+        $data['costo_total'] = round($costoTotal, 4);
         $data['costo_unitario_promedio'] = $costoUnitarioPromedio;
         $data['estado'] = 'completado';
         $data['created_by'] = Auth::id();
         $data['cartones_30'] = $cartones30Total;
         $data['cartones_15'] = $cartones15Total;
-        $data['huevos_sueltos'] = 0; // Ya no hay sueltos
-        $data['merma'] = 0; // Ya no hay merma aquí
+        $data['huevos_sueltos'] = 0;
+        $data['merma'] = 0;
 
         return $data;
     }
@@ -79,85 +259,136 @@ class CreateReempaque extends CreateRecord
         $reempaque = $this->record;
         $data = $this->data;
 
-        DB::transaction(function () use ($reempaque, $data) {
-            $lotesSeleccionados = $data['lotes_seleccionados'] ?? [];
-            $distribuciones = $data['distribuciones'] ?? [];
-            $bodegaId = $reempaque->bodega_id;
+        try {
+            DB::transaction(function () use ($reempaque, $data) {
+                $lotesSeleccionados = $data['lotes_seleccionados'] ?? [];
+                $distribuciones = $data['distribuciones'] ?? [];
+                $bodegaId = $reempaque->bodega_id;
 
-            // 1. Procesar lotes origen
-            foreach ($lotesSeleccionados as $loteData) {
-                $this->procesarLoteOrigen($reempaque, $loteData);
-            }
+                // 1. Procesar lotes origen con logica FIFO
+                foreach ($lotesSeleccionados as $loteData) {
+                    $this->procesarLoteOrigen($reempaque, $loteData);
+                }
 
-            // 2. Crear productos destino
-            foreach ($distribuciones as $dist) {
-                $this->crearProductoDestino($reempaque, $dist, $bodegaId);
-            }
-        });
+                // 2. Crear productos destino
+                foreach ($distribuciones as $dist) {
+                    $this->crearProductoDestino($reempaque, $dist, $bodegaId);
+                }
+            });
+
+        } catch (\Exception $e) {
+            // Si falla el procesamiento, marcar el reempaque como cancelado
+            $reempaque->update([
+                'estado' => 'cancelado',
+                'nota' => ($reempaque->nota ? $reempaque->nota . "\n" : '') . 
+                          '[ERROR] Fallo en procesamiento: ' . $e->getMessage(),
+            ]);
+
+            Log::error('Error en reempaque', [
+                'reempaque_id' => $reempaque->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            Notification::make()
+                ->title('Error al procesar reempaque')
+                ->body('Ocurrio un error durante el procesamiento. El reempaque ha sido cancelado. Error: ' . $e->getMessage())
+                ->danger()
+                ->persistent()
+                ->send();
+
+            throw $e;
+        }
     }
 
     /**
-     * Calcular datos de los lotes una sola vez
-     * IMPORTANTE: Usa costo_por_carton_facturado del lote para mayor precisión
+     * CALCULAR DATOS DE LOTES CON LOGICA FIFO
      */
     private function calcularDatosLotes(array $lotesSeleccionados): array
     {
         $costoTotal = 0;
         $totalHuevos = 0;
+        $totalHuevosRegaloUsados = 0;
+        $totalHuevosFacturadosUsados = 0;
 
         foreach ($lotesSeleccionados as $loteData) {
             $lote = Lote::find($loteData['lote_id']);
             if (!$lote) continue;
 
-            $huevosUsados = (int) ($loteData['cantidad_huevos'] ?? 0);
+            $huevosUsados = (float) ($loteData['cantidad_huevos'] ?? 0);
             $totalHuevos += $huevosUsados;
 
-            // Usar costo_por_carton_facturado para mayor precisión
-            // (es el mismo valor que se muestra en el formulario)
-            $cartonesUsados = (int) ($loteData['cantidad_c30'] ?? 0);
-            $costoPorCarton = $lote->costo_por_carton_facturado ?? 0;
-            $costoTotal += $cartonesUsados * $costoPorCarton;
+            // Usar el metodo del modelo para calcular consumo FIFO
+            $resultado = $lote->calcularConsumoHuevos($huevosUsados);
+
+            $totalHuevosFacturadosUsados += $resultado['huevos_facturados_usados'];
+            $totalHuevosRegaloUsados += $resultado['huevos_regalo_usados'];
+
+            // Solo los huevos facturados tienen costo
+            $costoTotal += $resultado['costo'];
         }
 
         return [
-            'costo_total' => round($costoTotal, 2),
+            // FIX: 4 decimales para preservar precisión en toda la cadena
+            'costo_total' => round($costoTotal, 4),
             'total_huevos' => $totalHuevos,
+            'huevos_facturados_usados' => $totalHuevosFacturadosUsados,
+            'huevos_regalo_usados' => $totalHuevosRegaloUsados,
         ];
     }
+
+    /**
+     * PROCESAR LOTE ORIGEN CON LOGICA FIFO
+     */
     private function procesarLoteOrigen($reempaque, array $loteData): void
     {
         $lote = Lote::find($loteData['lote_id']);
-        if (!$lote) return;
+        if (!$lote) {
+            throw new \Exception("Lote ID {$loteData['lote_id']} no encontrado.");
+        }
 
-        $cartonesC30 = (int) ($loteData['cantidad_c30'] ?? 0);
-        $huevosUsados = (int) ($loteData['cantidad_huevos'] ?? 0);
+        // Refrescar para obtener datos actualizados
+        $lote->refresh();
 
-        // Usar costo_por_carton_facturado para mayor precisión
-        $costoPorCarton = $lote->costo_por_carton_facturado ?? 0;
-        $costoParcial = round($cartonesC30 * $costoPorCarton, 2);
+        $huevosUsados = (float) ($loteData['cantidad_huevos'] ?? 0);
+        
+        // Validar stock antes de procesar
+        if ($huevosUsados > $lote->cantidad_huevos_remanente) {
+            throw new \Exception(
+                "Stock insuficiente en lote {$lote->numero_lote}. " .
+                "Requerido: {$huevosUsados}, Disponible: {$lote->cantidad_huevos_remanente}"
+            );
+        }
 
-        // Calcular proporción de cartones usados
-        $proporcion = $lote->cantidad_huevos_original > 0
-            ? $huevosUsados / $lote->cantidad_huevos_original
-            : 0;
-        $cartonesFacturadosUsados = round(($lote->cantidad_cartones_facturados ?? 0) * $proporcion, 2);
-        $cartonesRegaloUsados = round(($lote->cantidad_cartones_regalo ?? 0) * $proporcion, 2);
+        $huevosPorCarton = $lote->huevos_por_carton ?? 30;
+
+        // Usar el metodo del modelo para calcular consumo FIFO
+        $resultado = $lote->calcularConsumoHuevos($huevosUsados);
+
+        // Convertir huevos a cartones para el registro
+        $cartonesFacturadosUsados = $resultado['huevos_facturados_usados'] / $huevosPorCarton;
+        $cartonesRegaloUsados = $resultado['huevos_regalo_usados'] / $huevosPorCarton;
+        $cartonesTotalesUsados = $cartonesFacturadosUsados + $cartonesRegaloUsados;
+
+        // El costo parcial solo incluye los huevos facturados
+        $costoParcial = $resultado['costo'];
 
         ReempaqueLote::create([
             'reempaque_id' => $reempaque->id,
             'lote_id' => $loteData['lote_id'],
-            'cantidad_cartones_usados' => $cartonesC30,
+            'cantidad_cartones_usados' => round($cartonesTotalesUsados, 3),
             'cantidad_huevos_usados' => $huevosUsados,
-            'cartones_facturados_usados' => $cartonesFacturadosUsados,
-            'cartones_regalo_usados' => $cartonesRegaloUsados,
-            'costo_parcial' => $costoParcial,
+            'cartones_facturados_usados' => round($cartonesFacturadosUsados, 3),
+            'cartones_regalo_usados' => round($cartonesRegaloUsados, 3),
+            'costo_parcial' => round($costoParcial, 4),
         ]);
 
-        $lote->reducirRemanente($huevosUsados);
+        // Reducir remanente del lote Y registrar huevos de regalo consumidos
+        $lote->reducirRemanente($huevosUsados, $resultado['huevos_regalo_usados']);
     }
 
     /**
-     * Crear producto destino desde distribución
+     * Crear producto destino desde distribucion
      */
     private function crearProductoDestino($reempaque, array $dist, int $bodegaId): void
     {
@@ -171,7 +402,7 @@ class CreateReempaque extends CreateRecord
         $unidad = \App\Models\Unidad::find($unidadId);
         $huevosPorUnidad = ($unidad && str_contains($unidad->nombre, '15')) ? 15 : 30;
 
-        // Buscar producto por categoría y unidad
+        // Buscar producto por categoria y unidad
         $producto = Producto::where('categoria_id', $categoriaId)
             ->where('unidad_id', $unidadId)
             ->where('activo', true)
@@ -180,134 +411,78 @@ class CreateReempaque extends CreateRecord
         if (!$producto) {
             $categoria = \App\Models\Categoria::find($categoriaId);
             throw new \Exception(
-                "No se encontró producto para categoría '{$categoria?->nombre}' con unidad '{$unidad?->nombre}'."
+                "No existe un producto activo para la categoria '{$categoria->nombre}' con unidad '{$unidad->nombre}'. " .
+                "Por favor, cree el producto primero."
             );
         }
 
-        $costoUnitario = ceil($reempaque->costo_unitario_promedio * $huevosPorUnidad * 100) / 100;
-        $costoTotal = round($cantidad * $costoUnitario, 2);
+        // FIX: Sin redondeo intermedio, preservar precisión completa
+        $costoUnitario = ($reempaque->total_huevos_usados > 0)
+        ? ($reempaque->costo_total / $reempaque->total_huevos_usados) * $huevosPorUnidad
+        : 0;
+        $costoTotal = $costoUnitario * $cantidad;
 
-        $reempaqueProducto = ReempaqueProducto::create([
+        // Registrar en reempaque_productos
+        ReempaqueProducto::create([
             'reempaque_id' => $reempaque->id,
             'producto_id' => $producto->id,
             'bodega_id' => $bodegaId,
-            'categoria_id' => $categoriaId,
             'cantidad' => $cantidad,
-            'costo_unitario' => $costoUnitario,
-            'costo_total' => $costoTotal,
-            'agregado_a_stock' => false,
+            'huevos_por_unidad' => $huevosPorUnidad,
+            'costo_unitario' => round($costoUnitario, 4),
+            'costo_total' => round($costoTotal, 4),
+            'agregado_a_stock' => true,
         ]);
 
-        $reempaqueProducto->agregarAStock();
-    }
-
-    /**
-     * Consolidar sueltos en lote único por bodega y producto
-     */
-    private function consolidarSueltos($reempaque, array $lotesSeleccionados, int $bodegaId): void
-    {
-        $primerLoteData = reset($lotesSeleccionados);
-        $primerLote = Lote::find($primerLoteData['lote_id']);
-
-        if (!$primerLote) return;
-
-        $productoId = $primerLote->producto_id;
-        $proveedorId = $primerLote->proveedor_id;
-        $cantidadNueva = (int) $reempaque->huevos_sueltos;
-
-        // Calcular costo original (sin ajuste por merma)
-        $costoNuevo = $this->calcularCostoOriginalLotes($lotesSeleccionados);
-
-        $numeroLote = "SUELTOS-B{$bodegaId}-P{$productoId}";
-
-        $loteExistente = Lote::where('numero_lote', $numeroLote)
-            ->where('bodega_id', $bodegaId)
-            ->where('producto_id', $productoId)
-            ->first();
-
-        if ($loteExistente) {
-            $cantidadActual = (int) $loteExistente->cantidad_huevos_remanente;
-            $costoActual = (float) $loteExistente->costo_por_huevo;
-            $cantidadTotal = $cantidadActual + $cantidadNueva;
-
-            $costoPromedio = ($cantidadTotal > 0 && $cantidadActual > 0)
-                ? (($cantidadActual * $costoActual) + ($cantidadNueva * $costoNuevo)) / $cantidadTotal
-                : $costoNuevo;
-
-            $loteExistente->update([
-                'cantidad_huevos_original' => $loteExistente->cantidad_huevos_original + $cantidadNueva,
-                'cantidad_huevos_remanente' => $cantidadTotal,
-                'costo_total_lote' => round($cantidadTotal * $costoPromedio, 2),
-                'costo_por_huevo' => round($costoPromedio, 4),
-                'estado' => 'disponible',
-                'reempaque_origen_id' => $reempaque->id,
-            ]);
-        } else {
-            Lote::create([
-                'reempaque_origen_id' => $reempaque->id,
-                'producto_id' => $productoId,
-                'proveedor_id' => $proveedorId,
+        // Agregar al stock de bodega_producto
+        $bodegaProducto = \App\Models\BodegaProducto::firstOrCreate(
+            [
                 'bodega_id' => $bodegaId,
-                'numero_lote' => $numeroLote,
-                'cantidad_cartones_facturados' => 0,
-                'cantidad_cartones_regalo' => 0,
-                'cantidad_cartones_recibidos' => 0,
-                'huevos_por_carton' => 30,
-                'cantidad_huevos_original' => $cantidadNueva,
-                'cantidad_huevos_remanente' => $cantidadNueva,
-                'costo_total_lote' => round($cantidadNueva * $costoNuevo, 2),
-                'costo_por_carton_facturado' => 0,
-                'costo_por_huevo' => $costoNuevo,
-                'estado' => 'disponible',
-                'created_by' => Auth::id(),
-            ]);
-        }
+                'producto_id' => $producto->id,
+            ],
+            [
+                'stock' => 0,
+                'stock_minimo' => 0,
+                'costo_promedio_actual' => 0,
+                'precio_venta_sugerido' => 0,
+                'activo' => true,
+            ]
+        );
+
+        // Usar metodo de costo promedio ponderado
+        $bodegaProducto->actualizarCostoPromedio($cantidad, $costoUnitario);
     }
 
     /**
-     * Calcular costo original de los lotes (sin ajuste por merma)
+     * Generar numero de reempaque
      */
-    private function calcularCostoOriginalLotes(array $lotesSeleccionados): float
-    {
-        $costoTotal = 0;
-        $huevosTotal = 0;
-
-        foreach ($lotesSeleccionados as $loteData) {
-            $lote = Lote::find($loteData['lote_id']);
-            if (!$lote) continue;
-
-            $huevosUsados = (int) ($loteData['cantidad_huevos'] ?? 0);
-
-            if ($lote->esLoteSueltos()) {
-                $costoTotal += ($lote->costo_por_huevo ?? 0) * $huevosUsados;
-            } else {
-                $huevosFacturados = ($lote->cantidad_cartones_facturados ?? 0) * 30;
-                $costoPorHuevo = $huevosFacturados > 0
-                    ? ($lote->costo_total_lote ?? 0) / $huevosFacturados
-                    : 0;
-                $costoTotal += $huevosUsados * $costoPorHuevo;
-            }
-            $huevosTotal += $huevosUsados;
-        }
-
-        return $huevosTotal > 0 ? round($costoTotal / $huevosTotal, 4) : 0;
-    }
-
     private function generarNumeroReempaque(int $bodegaId): string
     {
-        $ultimo = \App\Models\Reempaque::where('numero_reempaque', 'LIKE', "R-B{$bodegaId}-%")
-            ->orderBy('numero_reempaque', 'desc')
-            ->value('numero_reempaque');
+        $ultimoReempaque = \App\Models\Reempaque::where('bodega_id', $bodegaId)
+            ->orderBy('id', 'desc')
+            ->first();
 
-        $numero = $ultimo
-            ? (int) str_replace("R-B{$bodegaId}-", '', $ultimo) + 1
+        $secuencial = $ultimoReempaque
+            ? intval(substr($ultimoReempaque->numero_reempaque, -6)) + 1
             : 1;
 
-        return "R-B{$bodegaId}-" . str_pad($numero, 6, '0', STR_PAD_LEFT);
+        return sprintf('R-B%d-%06d', $bodegaId, $secuencial);
     }
 
     protected function getRedirectUrl(): string
     {
         return $this->getResource()::getUrl('view', ['record' => $this->record]);
+    }
+
+    protected function getCreatedNotificationTitle(): ?string
+    {
+        $regaloUsados = $this->datosCalculados['huevos_regalo_usados'] ?? 0;
+        
+        if ($regaloUsados > 0) {
+            $cartonesRegalo = $regaloUsados / 30;
+            return "Reempaque creado - Incluye " . number_format($cartonesRegalo, 1) . " cartones de regalo (costo L 0)";
+        }
+        
+        return 'Reempaque creado exitosamente';
     }
 }

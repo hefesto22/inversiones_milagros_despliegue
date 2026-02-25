@@ -9,6 +9,7 @@ use App\Http\Controllers\CotizacionPdfController;
 use App\Http\Controllers\FacturaVentaController;
 use App\Http\Controllers\LiquidacionViajePdfController;
 use App\Http\Controllers\CargaChoferPdfController;
+use App\Http\Controllers\EstadoResultadosPdfController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -84,6 +85,18 @@ Route::middleware(['auth'])->group(function () {
     // Carga Chofer - Descargar
     Route::get('/pdf/carga-chofer/{viaje}/download', [CargaChoferPdfController::class, 'download'])
         ->name('pdf.carga-chofer.download');
+
+    // =====================================================
+    // RUTAS PDF - Reportes Financieros
+    // =====================================================
+
+    // Estado de Resultados - Ver en navegador
+    Route::get('/pdf/estado-resultados', [EstadoResultadosPdfController::class, 'generate'])
+        ->name('estado-resultados.pdf');
+
+    // Estado de Resultados - Descargar
+    Route::get('/pdf/estado-resultados/download', [EstadoResultadosPdfController::class, 'download'])
+        ->name('estado-resultados.download');
 });
 
 require __DIR__.'/auth.php';

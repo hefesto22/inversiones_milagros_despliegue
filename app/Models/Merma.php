@@ -5,6 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
 
 class Merma extends Model
 {
@@ -62,11 +64,11 @@ class Merma extends Model
     }
 
     // ============================================
-    // MÉTODOS ESTÁTICOS
+    // METODOS ESTATICOS
     // ============================================
 
     /**
-     * Generar número de merma automático
+     * Generar numero de merma automatico
      */
     public static function generarNumeroMerma(int $bodegaId): string
     {
@@ -88,11 +90,11 @@ class Merma extends Model
     }
 
     // ============================================
-    // MÉTODOS DE INSTANCIA
+    // METODOS DE INSTANCIA
     // ============================================
 
     /**
-     * Verificar si hubo pérdida económica
+     * Verificar si hubo perdida economica
      */
     public function tuvoPerdidaEconomica(): bool
     {
@@ -120,7 +122,7 @@ class Merma extends Model
             'rotos' => 'Rotos',
             'podridos' => 'Podridos',
             'vencidos' => 'Vencidos',
-            'dañados_transporte' => 'Dañados en Transporte',
+            'dañados_transporte' => 'Danados en Transporte',
             'otros' => 'Otros',
             default => $this->motivo,
         };
@@ -141,5 +143,99 @@ class Merma extends Model
             'tuvo_perdida' => $this->tuvoPerdidaEconomica(),
             'porcentaje_cubierto' => $this->getPorcentajeCubierto(),
         ];
+    }
+
+    /**
+     * Eliminar merma y revertir cambios en el lote
+     * 
+     * IMPORTANTE: Este metodo revierte todos los cambios que se hicieron
+     * al registrar la merma, incluyendo:
+     * - Devolver huevos al remanente
+     * - Reducir merma_total_acumulada
+     * - Recalcular costo si hubo perdida economica
+     * 
+     * @param string|null $motivo Motivo de la eliminacion (para auditoria)
+     * @return array Resumen de lo que se revirtio
+     */
+    public function eliminarYRevertir(?string $motivo = null): array
+    {
+        $resumen = [
+            'merma_numero' => $this->numero_merma,
+            'huevos_devueltos' => $this->cantidad_huevos,
+            'buffer_restaurado' => $this->cubierto_por_regalo,
+            'perdida_revertida' => $this->perdida_real_lempiras,
+            'motivo_eliminacion' => $motivo,
+        ];
+
+        DB::transaction(function () {
+            $lote = $this->lote;
+
+            if (!$lote) {
+                throw new \Exception("No se encontro el lote asociado a esta merma.");
+            }
+
+            // 1. Devolver huevos al remanente
+            $lote->cantidad_huevos_remanente += $this->cantidad_huevos;
+
+            // 2. Reducir merma total acumulada
+            $lote->merma_total_acumulada = max(0, $lote->merma_total_acumulada - $this->cantidad_huevos);
+
+            // 3. Si hubo perdida economica, revertir los huevos facturados
+            if ($this->perdida_real_huevos > 0) {
+                $lote->huevos_facturados_acumulados += $this->perdida_real_huevos;
+
+                // Recalcular costo por huevo
+                if ($lote->huevos_facturados_acumulados > 0) {
+                    $lote->costo_por_huevo = round(
+                        $lote->costo_total_acumulado / $lote->huevos_facturados_acumulados,
+                        4
+                    );
+                    $lote->costo_por_carton_facturado = round(
+                        $lote->costo_por_huevo * ($lote->huevos_por_carton ?? 30),
+                        4
+                    );
+                }
+            }
+
+            // 4. Cambiar estado si ahora tiene stock
+            if ($lote->cantidad_huevos_remanente > 0) {
+                $lote->estado = 'disponible';
+            }
+
+            $lote->save();
+
+            // 5. Eliminar el registro de merma
+            $this->delete();
+        });
+
+        return $resumen;
+    }
+
+    /**
+     * Verificar si la merma puede ser eliminada
+     * 
+     * Reglas:
+     * - Solo se pueden eliminar mermas recientes (menos de 24 horas)
+     * - O si el usuario tiene permisos especiales (Jefe/Super Admin)
+     */
+    public function puedeSerEliminada(): bool
+    {
+        $user = Auth::user();
+        $esJefeOAdmin = $user && $user->roles->whereIn('name', ['Jefe', 'Super Admin'])->count();
+
+        if ($esJefeOAdmin) {
+            return $this->created_at->diffInDays(now()) <= 7;
+        }
+
+        return $this->created_at->diffInHours(now()) < 24;
+    }
+
+    /**
+     * Obtener mensaje de por que no se puede eliminar
+     */
+    public function getMensajeNoPuedeEliminar(): string
+    {
+        $dias = $this->created_at->diffInDays(now());
+        return "Esta merma fue registrada hace {$dias} días. Las mermas mayores a 7 días no pueden eliminarse.";
     }
 }

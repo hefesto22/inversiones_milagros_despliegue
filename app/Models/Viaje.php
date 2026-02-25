@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use App\Models\ViajeVenta;
 use App\Models\Traits\CalculaComisionesViaje;
 
@@ -130,6 +131,7 @@ class Viaje extends Model
     {
         return $this->hasMany(Venta::class, 'viaje_id');
     }
+
     /**
      * Ventas realizadas en ruta (Punto de Venta del Chofer)
      */
@@ -137,6 +139,7 @@ class Viaje extends Model
     {
         return $this->hasMany(ViajeVenta::class, 'viaje_id');
     }
+
     public function liquidacionViajes(): HasMany
     {
         return $this->hasMany(LiquidacionViaje::class, 'viaje_id');
@@ -216,24 +219,81 @@ class Viaje extends Model
     /**
      * Cancelar viaje y devolver stock a bodega
      * 
-     * 🎯 CORREGIDO: Ahora devuelve el stock de todos los productos cargados
+     * 🎯 FIX INTEGRAL:
+     * - Valida que no tenga ventas activas (confirmadas/completadas)
+     * - Separa correctamente unidades de bodega vs reempaque
+     * - Usa costo_bodega_original para promedio ponderado correcto
+     * - Cancela reempaques asociados para devolver huevos a lotes
      */
     public function cancelar(?string $motivo = null): void
     {
-        DB::transaction(function () use ($motivo) {
-            // 🎯 DEVOLVER STOCK DE LAS CARGAS A LA BODEGA
-            foreach ($this->cargas as $carga) {
-                $bodegaProducto = BodegaProducto::where('bodega_id', $this->bodega_origen_id)
-                    ->where('producto_id', $carga->producto_id)
-                    ->first();
+        // FIX: Validar que no tenga ventas activas
+        $ventasActivas = $this->ventasRuta()
+            ->whereIn('estado', ['borrador', 'confirmada', 'completada'])
+            ->count();
 
-                if ($bodegaProducto) {
-                    // Devolver la cantidad cargada al stock
-                    // Usamos el costo original de la carga para mantener el promedio ponderado
-                    $bodegaProducto->actualizarCostoPromedio(
-                        $carga->cantidad,
-                        $carga->costo_unitario
-                    );
+        if ($ventasActivas > 0) {
+            throw new \Exception(
+                "No se puede cancelar el viaje. Tiene {$ventasActivas} venta(s) activa(s). " .
+                "Cancele todas las ventas primero."
+            );
+        }
+
+        DB::transaction(function () use ($motivo) {
+            // Cargar relaciones necesarias
+            $this->load('cargas');
+
+            foreach ($this->cargas as $carga) {
+                $cantidadTotal = floatval($carga->cantidad);
+                $cantidadDeBodega = $cantidadTotal;
+
+                // FIX: Si tiene reempaque, separar y cancelar
+                if ($carga->reempaque_id) {
+                    $reempaque = Reempaque::find($carga->reempaque_id);
+
+                    if ($reempaque && !$reempaque->estaCancelado()) {
+                        $reempaqueProducto = $reempaque->reempaqueProductos()
+                            ->where('producto_id', $carga->producto_id)
+                            ->first();
+
+                        if ($reempaqueProducto) {
+                            $cantidadReempacada = floatval($reempaqueProducto->cantidad);
+                            $cantidadDeBodega = $cantidadTotal - $cantidadReempacada;
+
+                            $reempaqueProducto->agregado_a_stock = false;
+                            $reempaqueProducto->save();
+                        }
+
+                        // Cancelar reempaque: devuelve huevos al lote
+                        $reempaque->cancelar("Viaje #{$this->id} cancelado");
+                    }
+                }
+
+                // FIX: Devolver unidades de bodega con promedio ponderado correcto
+                if ($cantidadDeBodega > 0) {
+                    $bodegaProducto = BodegaProducto::where('bodega_id', $this->bodega_origen_id)
+                        ->where('producto_id', $carga->producto_id)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($bodegaProducto) {
+                        // FIX: Usar costo_bodega_original (NO costo_unitario que es promedio contaminado)
+                        $costoOriginal = floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? 0);
+                        $bodegaProducto->actualizarCostoPromedio($cantidadDeBodega, $costoOriginal);
+                    } else {
+                        // Caso raro: crear BodegaProducto
+                        $costoOriginal = floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? 0);
+                        $bp = BodegaProducto::create([
+                            'bodega_id' => $this->bodega_origen_id,
+                            'producto_id' => $carga->producto_id,
+                            'stock' => $cantidadDeBodega,
+                            'costo_promedio_actual' => round($costoOriginal, 4),
+                            'stock_minimo' => 0,
+                            'activo' => true,
+                        ]);
+                        $bp->actualizarPrecioVentaSegunCosto();
+                        $bp->save();
+                    }
                 }
             }
 
@@ -252,13 +312,8 @@ class Viaje extends Model
     /**
      * Procesar reintegro de descargas al cerrar el viaje
      * 
-     * 🎯 LÓGICA MEJORADA:
-     * - Unidades COMPLETAS → van a bodega_producto (stock normal)
-     * - Unidades FRACCIONADAS (sueltos) → van al lote SUELTOS-{producto_id}-{bodega_id}
-     * 
-     * Ejemplo: Si devuelven 1.2670 cartones (38 huevos):
-     * - 1 cartón completo (30 huevos) → bodega_producto
-     * - 0.2670 cartones (8 huevos) → lote SUELTOS
+     * 🎯 FIX: Usa costo_bodega_original de la carga correspondiente
+     * para que el promedio ponderado en bodega sea correcto
      */
     protected function procesarReintegroDescargas(): void
     {
@@ -276,21 +331,25 @@ class Viaje extends Model
 
             $producto = $descarga->producto;
             $cantidadTotal = $descarga->cantidad;
-            $costoUnitario = $descarga->costo_unitario;
             $unidadesPorBulto = $producto->unidades_por_bulto ?? 1;
 
-            // Si el producto no tiene subunidades (unidades_por_bulto <= 1), 
-            // todo va directo a bodega_producto
+            // 🎯 FIX: Obtener el costo correcto desde la carga original (costo_bodega_original)
+            $carga = $this->cargas()->where('producto_id', $descarga->producto_id)->first();
+            $costoParaReintegro = $carga
+                ? floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? $descarga->costo_unitario)
+                : $descarga->costo_unitario;
+
+            // Si el producto no tiene subunidades, todo va directo a bodega_producto
             if ($unidadesPorBulto <= 1) {
                 $this->reintegrarABodegaProducto(
                     $descarga->producto_id,
                     $cantidadTotal,
-                    $costoUnitario
+                    $costoParaReintegro
                 );
                 continue;
             }
 
-            // 🎯 SEPARAR UNIDADES COMPLETAS DE SUELTOS
+            // SEPARAR UNIDADES COMPLETAS DE SUELTOS
             $unidadesCompletas = floor($cantidadTotal);
             $fraccion = $cantidadTotal - $unidadesCompletas;
 
@@ -299,19 +358,19 @@ class Viaje extends Model
                 $this->reintegrarABodegaProducto(
                     $descarga->producto_id,
                     $unidadesCompletas,
-                    $costoUnitario
+                    $costoParaReintegro
                 );
             }
 
             // Reingresar fracción (sueltos) al lote SUELTOS
-            if ($fraccion > 0.0001) { // Usar tolerancia para evitar errores de punto flotante
+            if ($fraccion > 0.0001) {
                 $huevosSueltos = round($fraccion * $unidadesPorBulto);
                 
                 if ($huevosSueltos > 0) {
                     $this->reintegrarALoteSueltos(
                         $descarga->producto_id,
                         $huevosSueltos,
-                        $costoUnitario,
+                        $costoParaReintegro,
                         $unidadesPorBulto
                     );
                 }
@@ -321,6 +380,7 @@ class Viaje extends Model
 
     /**
      * Reingresar stock a bodega_producto (unidades completas)
+     * Usa actualizarCostoPromedio() que ya hace promedio ponderado correcto
      */
     protected function reintegrarABodegaProducto(int $productoId, float $cantidad, float $costoUnitario): void
     {
@@ -338,17 +398,12 @@ class Viaje extends Model
             ]
         );
 
-        // Reingresar stock usando el costo de la descarga
+        // actualizarCostoPromedio ya hace promedio ponderado correcto con 4 decimales
         $bodegaProducto->actualizarCostoPromedio($cantidad, $costoUnitario);
     }
 
     /**
      * Reingresar huevos sueltos al lote SUELTOS
-     * 
-     * @param int $productoId ID del producto
-     * @param int $cantidadHuevos Cantidad de huevos sueltos a agregar
-     * @param float $costoUnitarioBulto Costo por bulto/cartón
-     * @param int $unidadesPorBulto Huevos por cartón
      */
     protected function reintegrarALoteSueltos(
         int $productoId, 
@@ -359,25 +414,21 @@ class Viaje extends Model
         $bodegaId = $this->bodega_origen_id;
         $numeroLote = "SUELTOS-P{$productoId}-B{$bodegaId}";
 
-
         // Calcular costo por huevo individual
         $costoPorHuevo = $costoUnitarioBulto / $unidadesPorBulto;
 
-        // Buscar lote SUELTOS existente para este producto y bodega (sin importar estado)
+        // Buscar lote SUELTOS existente
         $loteSueltos = Lote::where('numero_lote', $numeroLote)
             ->where('producto_id', $productoId)
             ->where('bodega_id', $bodegaId)
             ->first();
 
         if ($loteSueltos) {
-            // 🎯 AGREGAR AL LOTE EXISTENTE
-            // Recalcular costo promedio ponderado
             $huevosExistentes = $loteSueltos->cantidad_huevos_remanente;
             $costoExistente = $loteSueltos->costo_por_huevo;
 
             $totalHuevos = $huevosExistentes + $cantidadHuevos;
             
-            // Costo promedio ponderado (solo si hay huevos existentes)
             if ($huevosExistentes > 0) {
                 $nuevoCostoPorHuevo = (
                     ($huevosExistentes * $costoExistente) + 
@@ -387,35 +438,29 @@ class Viaje extends Model
                 $nuevoCostoPorHuevo = $costoPorHuevo;
             }
 
-            // Actualizar lote y cambiar estado a disponible
             $loteSueltos->update([
                 'cantidad_huevos_remanente' => $totalHuevos,
                 'cantidad_huevos_original' => $loteSueltos->cantidad_huevos_original + $cantidadHuevos,
                 'costo_por_huevo' => round($nuevoCostoPorHuevo, 4),
                 'costo_total_lote' => round($totalHuevos * $nuevoCostoPorHuevo, 2),
-                'estado' => 'disponible', // 🎯 Reactivar si estaba agotado
+                'estado' => 'disponible',
             ]);
 
         } else {
-            // 🎯 CREAR NUEVO LOTE SUELTOS
-            $producto = Producto::find($productoId);
-
             Lote::create([
                 'numero_lote' => $numeroLote,
                 'producto_id' => $productoId,
                 'bodega_id' => $bodegaId,
-                'proveedor_id' => 1, // Proveedor interno/sistema para lotes SUELTOS
+                'proveedor_id' => 1,
                 'compra_id' => null,
                 'compra_detalle_id' => null,
                 'reempaque_origen_id' => null,
-                // Cantidades en términos de huevos individuales
                 'cantidad_cartones_facturados' => 0,
                 'cantidad_cartones_regalo' => 0,
                 'cantidad_cartones_recibidos' => 0,
                 'huevos_por_carton' => $unidadesPorBulto,
                 'cantidad_huevos_original' => $cantidadHuevos,
                 'cantidad_huevos_remanente' => $cantidadHuevos,
-                // Costos
                 'costo_total_lote' => round($cantidadHuevos * $costoPorHuevo, 2),
                 'costo_por_carton_facturado' => 0,
                 'costo_por_huevo' => round($costoPorHuevo, 4),
@@ -428,6 +473,28 @@ class Viaje extends Model
     // ============================================
     // MÉTODOS DE VERIFICACIÓN
     // ============================================
+
+    /**
+     * 🎯 NUEVO: Verificar si tiene ventas activas (no canceladas)
+     */
+    public function tieneVentasActivas(): bool
+    {
+        return $this->ventasRuta()
+            ->whereIn('estado', ['borrador', 'confirmada', 'completada'])
+            ->exists();
+    }
+
+    /**
+     * 🎯 NUEVO: Verificar si se puede cancelar el viaje
+     */
+    public function puedeCancelarse(): bool
+    {
+        if (in_array($this->estado, [self::ESTADO_CERRADO, self::ESTADO_CANCELADO])) {
+            return false;
+        }
+
+        return !$this->tieneVentasActivas();
+    }
 
     public function estaActivo(): bool
     {
@@ -470,33 +537,24 @@ class Viaje extends Model
 
     public function recalcularTotales(): void
     {
-        // Totales de carga
         $this->total_cargado_costo = $this->cargas()->sum('subtotal_costo');
         $this->total_cargado_venta = $this->cargas()->sum('subtotal_venta');
 
-        // Totales de ventas - CAMBIAR ventas() por ventasRuta()
         $this->total_vendido = $this->ventasRuta()
             ->whereIn('estado', ['confirmada', 'completada'])
             ->sum('total');
 
-        // Totales de merma
         $this->total_merma_costo = $this->mermas()->sum('subtotal_costo');
-
-        // Totales de devolución
         $this->total_devuelto_costo = $this->descargas()->sum('subtotal_costo');
 
-        // Comisiones
         $this->comision_ganada = $this->comisionesDetalle()->sum('comision_total');
 
-        // Cobros por devoluciones (descargas + mermas)
         $cobrosDescargas = $this->descargas()->where('cobrar_chofer', true)->sum('monto_cobrar');
         $cobrosMermas = $this->mermas()->where('cobrar_chofer', true)->sum('monto_cobrar');
         $this->cobros_devoluciones = $cobrosDescargas + $cobrosMermas;
 
-        // Neto chofer
         $this->neto_chofer = $this->comision_ganada - $this->cobros_devoluciones;
 
-        // Efectivo - CAMBIAR ventas() por ventasRuta()
         $ventasEfectivo = $this->ventasRuta()
             ->whereIn('estado', ['confirmada', 'completada'])
             ->where('tipo_pago', '!=', 'credito')
@@ -510,10 +568,8 @@ class Viaje extends Model
 
     public function calcularComisiones(): void
     {
-        // Eliminar comisiones anteriores
         $this->comisionesDetalle()->delete();
 
-        // Usar ventasRuta() en lugar de ventas() - estas son las ventas en ruta (ViajeVenta)
         $ventas = $this->ventasRuta()
             ->whereIn('estado', ['confirmada', 'completada'])
             ->with(['detalles.producto.categoria'])
@@ -525,7 +581,6 @@ class Viaje extends Model
             }
         }
 
-        // Actualizar total de comisiones
         $this->comision_ganada = $this->comisionesDetalle()->sum('comision_total');
         $this->neto_chofer = $this->comision_ganada - $this->cobros_devoluciones;
         $this->save();
@@ -541,22 +596,16 @@ class Viaje extends Model
     
         $categoriaId = $producto->categoria_id;
     
-        // Obtener unidad desde la carga del viaje
         $carga = $this->cargas()->where('producto_id', $producto->id)->first();
         $unidadId = $carga?->unidad_id;
     
-        // Obtener configuración de comisión del chofer
         $comisionConfig = $this->chofer->getComisionPara($producto->id, $categoriaId, $unidadId);
     
-        // Si no hay comisión configurada, saltar
         if ($comisionConfig['normal'] <= 0) {
             return;
         }
     
-        // Obtener precio sugerido de la carga
         $precioSugerido = $carga?->precio_venta_sugerido ?? $detalle->precio_base;
-    
-        // Determinar tipo de comisión basado en precio de venta vs precio sugerido
         $precioVendido = $detalle->precio_base;
     
         $tipoComision = $precioVendido >= $precioSugerido
@@ -567,7 +616,6 @@ class Viaje extends Model
             ? $comisionConfig['normal']
             : ($comisionConfig['reducida'] ?? $comisionConfig['normal']);
     
-        // 🎯 OBTENER FACTOR DE LA UNIDAD
         $unidad = $carga?->unidad;
         $factorUnidad = 1;
         
@@ -575,22 +623,16 @@ class Viaje extends Model
             $factorUnidad = (float) $unidad->simbolo;
         }
     
-        // 🎯 CALCULAR COMISIÓN SEGÚN TIPO (FIJO O PORCENTAJE)
         $esPorcentaje = ($comisionConfig['tipo_comision'] ?? ChoferComisionConfig::TIPO_FIJO) === ChoferComisionConfig::TIPO_PORCENTAJE;
     
         if ($esPorcentaje) {
-            // PORCENTAJE: comisión = precio_venta × cantidad × (tasa / 100)
-            // El factor de unidad NO aplica en porcentaje (ya está implícito en el precio)
             $comisionUnitaria = $precioVendido * ($tasaComision / 100);
             $comisionTotal = $detalle->cantidad * $comisionUnitaria;
         } else {
-            // FIJO: comisión = tasa × cantidad × factor de unidad
-            // Ejemplo: 2 medios cartones × L1.50 × 0.5 = L1.50
             $comisionUnitaria = $tasaComision * $factorUnidad;
             $comisionTotal = $detalle->cantidad * $comisionUnitaria;
         }
     
-        // Crear registro de comisión
         ViajeComisionDetalle::create([
             'viaje_id' => $this->id,
             'viaje_venta_id' => $venta->id,
@@ -612,18 +654,15 @@ class Viaje extends Model
         $categoriaId = $producto->categoria_id;
         $unidadId = $detalle->unidad_id;
 
-        // Obtener configuración de comisión
         $comisionConfig = $this->chofer->getComisionPara($producto->id, $categoriaId, $unidadId);
 
         if ($comisionConfig['normal'] <= 0) {
-            return; // Sin comisión configurada
+            return;
         }
 
-        // Obtener precio sugerido de la carga
         $carga = $this->cargas()->where('producto_id', $producto->id)->first();
         $precioSugerido = $carga?->precio_venta_sugerido ?? $detalle->precio_unitario;
 
-        // Determinar tipo de comisión
         $tipoComision = $detalle->precio_unitario >= $precioSugerido ? 'normal' : 'reducida';
         $comisionUnitaria = $tipoComision === 'normal'
             ? $comisionConfig['normal']
@@ -651,13 +690,8 @@ class Viaje extends Model
      */
     public function liquidarCompleto(): array
     {
-        // 1. Primero recalcular totales (incluye cobros de descargas y mermas)
         $this->recalcularTotales();
-
-        // 2. Calcular comisiones
         $this->calcularComisiones();
-
-        // 3. Recalcular totales finales con las comisiones
         $this->recalcularTotales();
 
         return [

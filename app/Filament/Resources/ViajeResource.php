@@ -561,7 +561,7 @@ class ViajeResource extends Resource
                     ->form(function ($record) {
                         $productosRegresan = [];
                         $totalCosto = 0;
-                        
+
                         foreach ($record->cargas as $carga) {
                             $disponible = $carga->getCantidadDisponible();
                             if ($disponible > 0) {
@@ -580,7 +580,7 @@ class ViajeResource extends Resource
                                 $totalCosto += $subtotal;
                             }
                         }
-                        
+
                         // Si no hay productos para descargar - mostrar mensaje y permitir continuar
                         if (empty($productosRegresan)) {
                             return [
@@ -595,12 +595,12 @@ class ViajeResource extends Resource
                                         </div>'
                                     ))
                                     ->columnSpanFull(),
-                                
+
                                 Forms\Components\Hidden::make('sin_descargas')
                                     ->default(true),
                             ];
                         }
-                        
+
                         return [
                             Forms\Components\Section::make('Productos que Regresan')
                                 ->description('Total devolución: L ' . number_format($totalCosto, 2) . ' | Marque los productos que desea cobrar al chofer')
@@ -624,24 +624,24 @@ class ViajeResource extends Resource
                                                             }
                                                             $set('../../total_cobrar', $total);
                                                         }),
-                                                    
+
                                                     Forms\Components\Placeholder::make('producto_nombre')
                                                         ->label('')
-                                                        ->content(fn (Forms\Get $get) => $get('producto_nombre'))
+                                                        ->content(fn(Forms\Get $get) => $get('producto_nombre'))
                                                         ->columnSpan(4),
-                                                    
+
                                                     Forms\Components\Placeholder::make('cantidad_display')
                                                         ->label('')
-                                                        ->content(fn (Forms\Get $get) => number_format($get('cantidad'), 2) . ' ' . $get('unidad_nombre'))
+                                                        ->content(fn(Forms\Get $get) => number_format($get('cantidad'), 2) . ' ' . $get('unidad_nombre'))
                                                         ->columnSpan(3),
-                                                    
+
                                                     Forms\Components\Placeholder::make('subtotal_display')
                                                         ->label('')
-                                                        ->content(fn (Forms\Get $get) => new \Illuminate\Support\HtmlString(
+                                                        ->content(fn(Forms\Get $get) => new \Illuminate\Support\HtmlString(
                                                             '<span class="font-bold ' . ($get('cobrar') ? 'text-danger-500' : '') . '">L ' . number_format($get('subtotal'), 2) . '</span>'
                                                         ))
                                                         ->columnSpan(4),
-                                                    
+
                                                     Forms\Components\Hidden::make('carga_id'),
                                                     Forms\Components\Hidden::make('producto_id'),
                                                     Forms\Components\Hidden::make('unidad_id'),
@@ -652,14 +652,14 @@ class ViajeResource extends Resource
                                                 ]),
                                         ])
                                         ->default($productosRegresan)
-                                        ->disabled(fn () => false)
+                                        ->disabled(fn() => false)
                                         ->addable(false)
                                         ->deletable(false)
                                         ->reorderable(false)
                                         ->columnSpanFull()
-                                        ->itemLabel(fn (array $state): ?string => null),
+                                        ->itemLabel(fn(array $state): ?string => null),
                                 ]),
-                            
+
                             Forms\Components\Section::make('')
                                 ->schema([
                                     Forms\Components\Grid::make(2)
@@ -667,7 +667,7 @@ class ViajeResource extends Resource
                                             Forms\Components\Placeholder::make('label_total')
                                                 ->label('')
                                                 ->content(new \Illuminate\Support\HtmlString('<span class="text-lg font-bold">TOTAL A COBRAR AL CHOFER:</span>')),
-                                            
+
                                             Forms\Components\TextInput::make('total_cobrar')
                                                 ->label('')
                                                 ->prefix('L')
@@ -676,12 +676,12 @@ class ViajeResource extends Resource
                                                 ->numeric()
                                                 ->extraAttributes(['class' => 'text-2xl font-bold text-danger-600']),
                                         ]),
-                                    
+
                                     Forms\Components\Textarea::make('observacion_cobro')
                                         ->label('Motivo del Cobro (opcional)')
                                         ->rows(2)
                                         ->placeholder('Ej: Producto dañado por descuido, producto no entregado, etc.')
-                                        ->visible(fn (Forms\Get $get) => ($get('total_cobrar') ?? 0) > 0)
+                                        ->visible(fn(Forms\Get $get) => ($get('total_cobrar') ?? 0) > 0)
                                         ->columnSpanFull(),
                                 ])
                                 ->extraAttributes(['class' => 'bg-gray-50 dark:bg-gray-800 border-2 border-warning-500 rounded-xl']),
@@ -695,7 +695,7 @@ class ViajeResource extends Resource
                                 $record->iniciarLiquidacion();
                                 $record->liquidarCompleto();
                             });
-                            
+
                             \Filament\Notifications\Notification::make()
                                 ->title('Viaje listo para cerrar')
                                 ->body("Todo vendido. Comisión: L " . number_format($record->comision_ganada, 2))
@@ -703,9 +703,9 @@ class ViajeResource extends Resource
                                 ->send();
                             return;
                         }
-                        
+
                         $productos = $data['productos'] ?? [];
-                        
+
                         if (empty($productos)) {
                             $record->iniciarDescarga();
                             \Filament\Notifications\Notification::make()
@@ -715,26 +715,26 @@ class ViajeResource extends Resource
                                 ->send();
                             return;
                         }
-                        
+
                         $observacion = $data['observacion_cobro'] ?? null;
                         $descargasCreadas = 0;
                         $totalCobrado = 0;
                         $productosCobrados = [];
-                        
+
                         DB::transaction(function () use ($record, $productos, $observacion, &$descargasCreadas, &$totalCobrado, &$productosCobrados) {
                             foreach ($productos as $item) {
                                 $cobrar = $item['cobrar'] ?? false;
                                 $subtotal = floatval($item['subtotal'] ?? 0);
                                 $montoCobrar = $cobrar ? $subtotal : 0;
-                                
+
                                 $carga = $record->cargas()->find($item['carga_id']);
                                 $productoNombre = $carga?->producto?->nombre ?? 'Producto';
-                                
+
                                 if ($cobrar) {
                                     $totalCobrado += $montoCobrar;
                                     $productosCobrados[] = $productoNombre;
                                 }
-                                
+
                                 \App\Models\ViajeDescarga::create([
                                     'viaje_id' => $record->id,
                                     'producto_id' => $item['producto_id'],
@@ -748,11 +748,11 @@ class ViajeResource extends Resource
                                     'monto_cobrar' => $montoCobrar,
                                     'observaciones' => $cobrar ? $observacion : null,
                                 ]);
-                                
+
                                 if ($carga) {
                                     $carga->increment('cantidad_devuelta', $item['cantidad']);
                                 }
-                                
+
                                 $descargasCreadas++;
                             }
 
@@ -840,6 +840,16 @@ class ViajeResource extends Resource
                     ->icon('heroicon-o-x-circle')
                     ->color('danger')
                     ->requiresConfirmation()
+                    ->modalHeading('Cancelar Viaje')
+                    ->modalDescription(function ($record) {
+                        if ($record->tieneVentasActivas()) {
+                            $count = $record->ventasRuta()
+                                ->whereIn('estado', ['borrador', 'confirmada', 'completada'])
+                                ->count();
+                            return "⚠️ Este viaje tiene {$count} venta(s) activa(s). Debe cancelar todas las ventas antes de cancelar el viaje.";
+                        }
+                        return 'Se devolverá el stock a bodega y se revertirán los reempaques. Esta acción no se puede deshacer.';
+                    })
                     ->form([
                         Forms\Components\Textarea::make('motivo')
                             ->label('Motivo de cancelación')
@@ -847,11 +857,21 @@ class ViajeResource extends Resource
                     ])
                     ->visible(fn($record) => !in_array($record->estado, [Viaje::ESTADO_CERRADO, Viaje::ESTADO_CANCELADO]))
                     ->action(function ($record, array $data) {
-                        $record->cancelar($data['motivo']);
-                        \Filament\Notifications\Notification::make()
-                            ->title('Viaje cancelado')
-                            ->warning()
-                            ->send();
+                        try {
+                            $record->cancelar($data['motivo']);
+                            \Filament\Notifications\Notification::make()
+                                ->title('Viaje cancelado')
+                                ->body('Stock devuelto a bodega correctamente.')
+                                ->warning()
+                                ->send();
+                        } catch (\Exception $e) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('No se puede cancelar')
+                                ->body($e->getMessage())
+                                ->danger()
+                                ->persistent()
+                                ->send();
+                        }
                     }),
 
                 Tables\Actions\DeleteAction::make()
