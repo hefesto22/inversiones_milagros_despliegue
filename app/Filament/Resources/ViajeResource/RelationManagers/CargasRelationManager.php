@@ -32,7 +32,8 @@ class CargasRelationManager extends RelationManager
     {
         return !in_array($this->getOwnerRecord()->estado, [
             Viaje::ESTADO_PLANIFICADO,
-            Viaje::ESTADO_CARGANDO
+            Viaje::ESTADO_CARGANDO,
+            Viaje::ESTADO_RECARGANDO,
         ]);
     }
 
@@ -541,7 +542,7 @@ class CargasRelationManager extends RelationManager
 
     /**
      * Devolver stock a bodega con promedio ponderado correcto.
-     * 
+     *
      * SIEMPRE recalcula el costo promedio ponderado entre lo que hay
      * en bodega y lo que se devuelve con su costo original.
      * Esto garantiza que las finanzas cuadren sin importar el orden
@@ -634,6 +635,7 @@ class CargasRelationManager extends RelationManager
                     ->label('Vendido')->numeric(decimalPlaces: 2)->color('success')
                     ->visible(fn() => in_array($this->getOwnerRecord()->estado, [
                         Viaje::ESTADO_EN_RUTA,
+                        Viaje::ESTADO_RECARGANDO,
                         Viaje::ESTADO_REGRESANDO,
                         Viaje::ESTADO_DESCARGANDO,
                         Viaje::ESTADO_LIQUIDANDO,
@@ -644,6 +646,7 @@ class CargasRelationManager extends RelationManager
                     ->label('Merma')->numeric(decimalPlaces: 2)->color('danger')
                     ->visible(fn() => in_array($this->getOwnerRecord()->estado, [
                         Viaje::ESTADO_EN_RUTA,
+                        Viaje::ESTADO_RECARGANDO,
                         Viaje::ESTADO_REGRESANDO,
                         Viaje::ESTADO_DESCARGANDO,
                         Viaje::ESTADO_LIQUIDANDO,
@@ -656,6 +659,7 @@ class CargasRelationManager extends RelationManager
                     ->numeric(decimalPlaces: 2)->color('warning')
                     ->visible(fn() => in_array($this->getOwnerRecord()->estado, [
                         Viaje::ESTADO_EN_RUTA,
+                        Viaje::ESTADO_RECARGANDO,
                         Viaje::ESTADO_REGRESANDO,
                     ])),
             ])
@@ -664,12 +668,17 @@ class CargasRelationManager extends RelationManager
                     ->label('Agregar Producto')
                     ->visible(fn() => in_array($this->getOwnerRecord()->estado, [
                         Viaje::ESTADO_PLANIFICADO,
-                        Viaje::ESTADO_CARGANDO
+                        Viaje::ESTADO_CARGANDO,
+                        Viaje::ESTADO_RECARGANDO,
                     ]))
                     ->using(function (array $data, string $model) {
                         $viaje = $this->getOwnerRecord();
 
-                        if (!in_array($viaje->estado, [Viaje::ESTADO_PLANIFICADO, Viaje::ESTADO_CARGANDO])) {
+                        if (!in_array($viaje->estado, [
+                            Viaje::ESTADO_PLANIFICADO,
+                            Viaje::ESTADO_CARGANDO,
+                            Viaje::ESTADO_RECARGANDO,
+                        ])) {
                             Notification::make()->title('Viaje no editable')
                                 ->body('No se pueden agregar productos a un viaje en este estado.')->danger()->send();
                             return null;
@@ -830,7 +839,8 @@ class CargasRelationManager extends RelationManager
                 Tables\Actions\EditAction::make()
                     ->visible(fn() => in_array($this->getOwnerRecord()->estado, [
                         Viaje::ESTADO_PLANIFICADO,
-                        Viaje::ESTADO_CARGANDO
+                        Viaje::ESTADO_CARGANDO,
+                        Viaje::ESTADO_RECARGANDO,
                     ]))
                     ->mutateRecordDataUsing(function (array $data, $record): array {
                         $viaje = $this->getOwnerRecord();
@@ -842,6 +852,7 @@ class CargasRelationManager extends RelationManager
                         $costoSinIsv = $data['costo_unitario'] ?? 0;
                         $precioSinIsv = $data['precio_venta_sugerido'] ?? 0;
 
+                        // Cuánto de esta carga vino de bodega (descontando lo reempacado)
                         $cantidadDeBodega = floatval($record->cantidad);
                         if ($record->reempaque_id) {
                             $reempaqueProducto = ReempaqueProducto::where('reempaque_id', $record->reempaque_id)
@@ -849,11 +860,36 @@ class CargasRelationManager extends RelationManager
                             $cantidadDeBodega = $cantidadDeBodega - floatval($reempaqueProducto->cantidad ?? 0);
                         }
 
-                        $stockDisponible = floatval($bodegaProducto->stock ?? 0) + $cantidadDeBodega;
+                        $categoria = $producto?->categoria;
+                        $usaLotes = $categoria && $categoria->categoria_origen_id;
+                        $stockEnBodega = floatval($bodegaProducto->stock ?? 0);
 
-                        $data['stock_disponible'] = number_format($stockDisponible, 2);
-                        $data['stock_maximo'] = $stockDisponible;
-                        $data['usa_lotes'] = false;
+                        if ($usaLotes) {
+                            // stock_maximo = cantidad actual cargada + stock libre en bodega + stock libre en lote
+                            $categoriaLoteId = $categoria->categoria_origen_id;
+                            $huevosPorUnidad = 30;
+                            if ($producto->unidad && str_contains(strtolower($producto->unidad->nombre ?? ''), '15')) {
+                                $huevosPorUnidad = 15;
+                            }
+                            $totalHuevosEnLotes = Lote::where('bodega_id', $viaje->bodega_origen_id)
+                                ->whereHas('producto', fn($q) => $q->where('categoria_id', $categoriaLoteId))
+                                ->where('estado', 'disponible')
+                                ->where('cantidad_huevos_remanente', '>', 0)
+                                ->sum('cantidad_huevos_remanente');
+                            $stockDesdeLote = floor($totalHuevosEnLotes / $huevosPorUnidad);
+                            $stockMaximo = floatval($record->cantidad) + $stockEnBodega + $stockDesdeLote;
+
+                            $data['stock_disponible'] = number_format($stockEnBodega + $stockDesdeLote, 0) . " adicionales disponibles";
+                            $data['stock_maximo'] = $stockMaximo;
+                            $data['usa_lotes'] = true;
+                        } else {
+                            // stock_maximo = cantidad actual + stock libre en bodega
+                            $stockMaximo = floatval($record->cantidad) + $stockEnBodega;
+                            $data['stock_disponible'] = number_format($stockEnBodega, 2) . " adicionales en bodega";
+                            $data['stock_maximo'] = $stockMaximo;
+                            $data['usa_lotes'] = false;
+                        }
+
                         $data['aplica_isv'] = $aplicaIsv;
                         $data['costo_con_isv'] = $aplicaIsv ? round($costoSinIsv * 1.15, 2) : $costoSinIsv;
                         $data['precio_con_isv'] = $aplicaIsv
@@ -864,7 +900,11 @@ class CargasRelationManager extends RelationManager
                     ->using(function ($record, array $data) {
                         $viaje = $this->getOwnerRecord();
 
-                        if (!in_array($viaje->estado, [Viaje::ESTADO_PLANIFICADO, Viaje::ESTADO_CARGANDO])) {
+                        if (!in_array($viaje->estado, [
+                            Viaje::ESTADO_PLANIFICADO,
+                            Viaje::ESTADO_CARGANDO,
+                            Viaje::ESTADO_RECARGANDO,
+                        ])) {
                             Notification::make()->title('Viaje no editable')
                                 ->body('No se pueden modificar productos de un viaje en este estado.')->danger()->send();
                             return $record;
@@ -880,12 +920,11 @@ class CargasRelationManager extends RelationManager
                                     throw new \Exception('Cantidad inválida');
                                 }
 
-                                if ($record->reempaque_id) {
-                                    Notification::make()->title('No se puede editar')
-                                        ->body('Esta carga tiene un reempaque asociado. Elimínela y cree una nueva si necesita cambiar la cantidad.')
-                                        ->warning()->send();
-                                    throw new \Exception('No se puede editar carga con reempaque');
-                                }
+                                // FIX: Ya NO bloqueamos cargas con reempaque — ahora se soporta aumento desde lote
+                                $producto = Producto::with('categoria.categoriaOrigen', 'unidad')
+                                    ->find($record->producto_id);
+                                $categoria = $producto?->categoria;
+                                $usaLotes = $categoria && $categoria->categoria_origen_id;
 
                                 $bodegaProducto = BodegaProducto::where('bodega_id', $viaje->bodega_origen_id)
                                     ->where('producto_id', $record->producto_id)
@@ -895,34 +934,129 @@ class CargasRelationManager extends RelationManager
                                 $diferencia = $cantidadNueva - $cantidadAnterior;
                                 $stockActual = floatval($bodegaProducto->stock ?? 0);
 
-                                if ($diferencia > 0 && $stockActual < $diferencia) {
-                                    Notification::make()->title('Stock insuficiente')
-                                        ->body("No hay suficiente stock para aumentar la cantidad. Necesita: {$diferencia}, Disponible: {$stockActual}")
-                                        ->danger()->persistent()->send();
-                                    throw new \Exception('Stock insuficiente');
+                                // Sin cambio de cantidad: solo actualizar precio u otros campos
+                                if ($diferencia == 0) {
+                                    $record->update($data);
+                                    Notification::make()->title('Carga actualizada')->success()->send();
+                                    return $record;
                                 }
 
-                                $record->update($data);
+                                if ($diferencia < 0) {
+                                    // ── REDUCIR: devolver diferencia a bodega ──────────────────
+                                    $record->update($data);
+                                    $costoOriginal = floatval($record->costo_bodega_original ?? $record->costo_unitario ?? 0);
+                                    $this->devolverStockABodega($bodegaProducto, abs($diferencia), $costoOriginal);
 
-                                if ($diferencia != 0) {
-                                    if ($diferencia < 0) {
-                                        // FIX: Devolviendo unidades a bodega con promedio ponderado
-                                        $costoOriginal = floatval($record->costo_bodega_original ?? $record->costo_unitario ?? 0);
-                                        $this->devolverStockABodega($bodegaProducto, abs($diferencia), $costoOriginal);
-                                    } else {
-                                        // Sacando mas unidades de bodega
-                                        $bodegaProducto->stock = max(0, $stockActual - $diferencia);
+                                    Notification::make()->title('Carga actualizada')
+                                        ->body("Cantidad reducida de {$cantidadAnterior} a {$cantidadNueva}. " . abs($diferencia) . " unidades devueltas a bodega.")
+                                        ->success()->send();
+                                    return $record;
+                                }
+
+                                // ── AUMENTAR (diferencia > 0) ─────────────────────────────────
+                                if ($usaLotes) {
+                                    // Primero agotar bodega, luego ir al lote
+                                    $tomarDeBodega = min($stockActual, $diferencia);
+                                    $tomarDeLote = $diferencia - $tomarDeBodega;
+
+                                    if ($tomarDeLote > 0) {
+                                        $categoriaLoteId = $categoria->categoria_origen_id;
+                                        $huevosPorUnidad = 30;
+                                        if ($producto->unidad && str_contains(strtolower($producto->unidad->nombre ?? ''), '15')) {
+                                            $huevosPorUnidad = 15;
+                                        }
+                                        $huevosNecesarios = intval($tomarDeLote) * $huevosPorUnidad;
+
+                                        $totalHuevosEnLotes = Lote::where('bodega_id', $viaje->bodega_origen_id)
+                                            ->whereHas('producto', fn($q) => $q->where('categoria_id', $categoriaLoteId))
+                                            ->where('estado', 'disponible')
+                                            ->where('cantidad_huevos_remanente', '>', 0)
+                                            ->sum('cantidad_huevos_remanente');
+
+                                        if ($totalHuevosEnLotes < $huevosNecesarios) {
+                                            $unidadesDisponibles = floor($totalHuevosEnLotes / $huevosPorUnidad) + $stockActual;
+                                            Notification::make()->title('Stock insuficiente')
+                                                ->body("Disponible: {$unidadesDisponibles} unidades adicionales. Necesita: {$diferencia}")
+                                                ->danger()->persistent()->send();
+                                            throw new \Exception('Stock insuficiente');
+                                        }
+                                    }
+
+                                    // Reempaque para las unidades del lote
+                                    $costoDelReempaque = 0;
+                                    $nuevoReempaqueId = null;
+
+                                    if ($tomarDeLote > 0) {
+                                        $resultado = $this->ejecutarReempaqueAutomatico(
+                                            $record->producto_id,
+                                            $viaje->bodega_origen_id,
+                                            (int) $tomarDeLote,
+                                            $viaje->id
+                                        );
+                                        $nuevoReempaqueId = $resultado['reempaque_id'];
+                                        $costoDelReempaque = $resultado['costo_unitario'];
+                                    }
+
+                                    // Descontar de bodega si aplica
+                                    if ($tomarDeBodega > 0) {
+                                        $bodegaProducto->stock = max(0, $stockActual - $tomarDeBodega);
                                         $bodegaProducto->save();
                                     }
-                                }
 
-                                Notification::make()->title('Carga actualizada')
-                                    ->body("Cantidad actualizada de {$cantidadAnterior} a {$cantidadNueva}")->success()->send();
-                                return $record;
+                                    // Recalcular costo promedio ponderado de TODA la carga:
+                                    // (valor anterior) + (valor bodega nueva) + (valor lote nuevo) / cantidad total nueva
+                                    $costoEnBodegaOriginal = floatval($record->costo_bodega_original ?? 0);
+                                    $valorAnterior = $cantidadAnterior * floatval($record->costo_unitario);
+                                    $valorBodegaNueva = $tomarDeBodega * $costoEnBodegaOriginal;
+                                    $valorLoteNuevo = $tomarDeLote * $costoDelReempaque;
+                                    $costoNuevo = $cantidadNueva > 0
+                                        ? round(($valorAnterior + $valorBodegaNueva + $valorLoteNuevo) / $cantidadNueva, 4)
+                                        : floatval($record->costo_unitario);
+
+                                    $data['costo_unitario'] = $costoNuevo;
+                                    $data['subtotal_costo'] = round($costoNuevo * $cantidadNueva, 2);
+
+                                    // Asociar nuevo reempaque si la carga no tenía uno antes
+                                    if (!$record->reempaque_id && $nuevoReempaqueId) {
+                                        $data['reempaque_id'] = $nuevoReempaqueId;
+                                    }
+
+                                    $record->update($data);
+
+                                    $mensaje = "Cantidad aumentada de {$cantidadAnterior} a {$cantidadNueva}.";
+                                    if ($tomarDeBodega > 0 && $tomarDeLote > 0) {
+                                        $mensaje .= " {$tomarDeBodega} de bodega + {$tomarDeLote} del lote (reempaque automático).";
+                                    } elseif ($tomarDeLote > 0) {
+                                        $mensaje .= " {$tomarDeLote} unidades desde lote (reempaque automático).";
+                                    } else {
+                                        $mensaje .= " {$tomarDeBodega} unidades desde bodega.";
+                                    }
+
+                                    Notification::make()->title('Carga actualizada')->body($mensaje)->success()->send();
+                                    return $record;
+
+                                } else {
+                                    // ── PRODUCTO SIN LOTES: solo bodega ──────────────────────
+                                    if ($stockActual < $diferencia) {
+                                        Notification::make()->title('Stock insuficiente')
+                                            ->body("No hay suficiente stock para aumentar la cantidad. Necesita: {$diferencia}, Disponible: {$stockActual}")
+                                            ->danger()->persistent()->send();
+                                        throw new \Exception('Stock insuficiente');
+                                    }
+
+                                    $record->update($data);
+                                    $bodegaProducto->stock = max(0, $stockActual - $diferencia);
+                                    $bodegaProducto->save();
+
+                                    Notification::make()->title('Carga actualizada')
+                                        ->body("Cantidad actualizada de {$cantidadAnterior} a {$cantidadNueva}")
+                                        ->success()->send();
+                                    return $record;
+                                }
                             });
                         } catch (\Exception $e) {
                             Log::error("Error al editar carga: " . $e->getMessage());
-                            if (!in_array($e->getMessage(), ['Stock insuficiente', 'Cantidad inválida', 'No se puede editar carga con reempaque'])) {
+                            if (!in_array($e->getMessage(), ['Stock insuficiente', 'Cantidad inválida'])) {
                                 Notification::make()->title('Error')
                                     ->body('Ocurrio un error al actualizar. Por favor intente nuevamente.')->danger()->send();
                             }
@@ -933,7 +1067,8 @@ class CargasRelationManager extends RelationManager
                 Tables\Actions\DeleteAction::make()
                     ->visible(fn() => in_array($this->getOwnerRecord()->estado, [
                         Viaje::ESTADO_PLANIFICADO,
-                        Viaje::ESTADO_CARGANDO
+                        Viaje::ESTADO_CARGANDO,
+                        Viaje::ESTADO_RECARGANDO,
                     ]))
                     ->requiresConfirmation()
                     ->modalHeading('Eliminar carga')
@@ -944,7 +1079,11 @@ class CargasRelationManager extends RelationManager
                     ->using(function ($record) {
                         $viaje = $this->getOwnerRecord();
 
-                        if (!in_array($viaje->estado, [Viaje::ESTADO_PLANIFICADO, Viaje::ESTADO_CARGANDO])) {
+                        if (!in_array($viaje->estado, [
+                            Viaje::ESTADO_PLANIFICADO,
+                            Viaje::ESTADO_CARGANDO,
+                            Viaje::ESTADO_RECARGANDO,
+                        ])) {
                             Notification::make()->title('Viaje no editable')
                                 ->body('No se pueden eliminar productos de un viaje en este estado.')->danger()->send();
                             return false;

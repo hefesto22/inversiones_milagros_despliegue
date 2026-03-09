@@ -77,6 +77,8 @@ class Viaje extends Model
     public const ESTADO_LIQUIDANDO = 'liquidando';
     public const ESTADO_CERRADO = 'cerrado';
     public const ESTADO_CANCELADO = 'cancelado';
+    public const ESTADO_RECARGANDO = 'recargando';
+
 
     // ============================================
     // RELACIONES
@@ -198,6 +200,10 @@ class Viaje extends Model
     {
         $this->cambiarEstado(self::ESTADO_LIQUIDANDO);
     }
+    public function iniciarRecarga(): void
+    {
+        $this->cambiarEstado(self::ESTADO_RECARGANDO);
+    }
 
     public function cerrar(): void
     {
@@ -235,7 +241,7 @@ class Viaje extends Model
         if ($ventasActivas > 0) {
             throw new \Exception(
                 "No se puede cancelar el viaje. Tiene {$ventasActivas} venta(s) activa(s). " .
-                "Cancele todas las ventas primero."
+                    "Cancele todas las ventas primero."
             );
         }
 
@@ -365,7 +371,7 @@ class Viaje extends Model
             // Reingresar fracción (sueltos) al lote SUELTOS
             if ($fraccion > 0.0001) {
                 $huevosSueltos = round($fraccion * $unidadesPorBulto);
-                
+
                 if ($huevosSueltos > 0) {
                     $this->reintegrarALoteSueltos(
                         $descarga->producto_id,
@@ -406,8 +412,8 @@ class Viaje extends Model
      * Reingresar huevos sueltos al lote SUELTOS
      */
     protected function reintegrarALoteSueltos(
-        int $productoId, 
-        int $cantidadHuevos, 
+        int $productoId,
+        int $cantidadHuevos,
         float $costoUnitarioBulto,
         int $unidadesPorBulto
     ): void {
@@ -428,10 +434,10 @@ class Viaje extends Model
             $costoExistente = $loteSueltos->costo_por_huevo;
 
             $totalHuevos = $huevosExistentes + $cantidadHuevos;
-            
+
             if ($huevosExistentes > 0) {
                 $nuevoCostoPorHuevo = (
-                    ($huevosExistentes * $costoExistente) + 
+                    ($huevosExistentes * $costoExistente) +
                     ($cantidadHuevos * $costoPorHuevo)
                 ) / $totalHuevos;
             } else {
@@ -445,7 +451,6 @@ class Viaje extends Model
                 'costo_total_lote' => round($totalHuevos * $nuevoCostoPorHuevo, 2),
                 'estado' => 'disponible',
             ]);
-
         } else {
             Lote::create([
                 'numero_lote' => $numeroLote,
@@ -513,7 +518,7 @@ class Viaje extends Model
 
     public function puedeCargar(): bool
     {
-        return in_array($this->estado, [self::ESTADO_PLANIFICADO, self::ESTADO_CARGANDO]);
+        return in_array($this->estado, [self::ESTADO_PLANIFICADO, self::ESTADO_CARGANDO, self::ESTADO_RECARGANDO]);
     }
 
     public function puedeVender(): bool
@@ -589,42 +594,42 @@ class Viaje extends Model
     protected function calcularComisionDetalleRuta(ViajeVenta $venta, ViajeVentaDetalle $detalle): void
     {
         $producto = $detalle->producto;
-    
+
         if (!$producto) {
             return;
         }
-    
+
         $categoriaId = $producto->categoria_id;
-    
+
         $carga = $this->cargas()->where('producto_id', $producto->id)->first();
         $unidadId = $carga?->unidad_id;
-    
+
         $comisionConfig = $this->chofer->getComisionPara($producto->id, $categoriaId, $unidadId);
-    
+
         if ($comisionConfig['normal'] <= 0) {
             return;
         }
-    
+
         $precioSugerido = $carga?->precio_venta_sugerido ?? $detalle->precio_base;
         $precioVendido = $detalle->precio_base;
-    
+
         $tipoComision = $precioVendido >= $precioSugerido
             ? ViajeComisionDetalle::TIPO_NORMAL
             : ViajeComisionDetalle::TIPO_REDUCIDA;
-    
+
         $tasaComision = $tipoComision === ViajeComisionDetalle::TIPO_NORMAL
             ? $comisionConfig['normal']
             : ($comisionConfig['reducida'] ?? $comisionConfig['normal']);
-    
+
         $unidad = $carga?->unidad;
         $factorUnidad = 1;
-        
+
         if ($unidad && is_numeric($unidad->simbolo)) {
             $factorUnidad = (float) $unidad->simbolo;
         }
-    
+
         $esPorcentaje = ($comisionConfig['tipo_comision'] ?? ChoferComisionConfig::TIPO_FIJO) === ChoferComisionConfig::TIPO_PORCENTAJE;
-    
+
         if ($esPorcentaje) {
             $comisionUnitaria = $precioVendido * ($tasaComision / 100);
             $comisionTotal = $detalle->cantidad * $comisionUnitaria;
@@ -632,7 +637,7 @@ class Viaje extends Model
             $comisionUnitaria = $tasaComision * $factorUnidad;
             $comisionTotal = $detalle->cantidad * $comisionUnitaria;
         }
-    
+
         ViajeComisionDetalle::create([
             'viaje_id' => $this->id,
             'viaje_venta_id' => $venta->id,
@@ -701,7 +706,7 @@ class Viaje extends Model
             'total_vendido' => $this->total_vendido,
         ];
     }
-    
+
     // ============================================
     // MÉTODOS DE CONSULTA
     // ============================================

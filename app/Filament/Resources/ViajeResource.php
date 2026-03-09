@@ -208,6 +208,7 @@ class ViajeResource extends Resource
                                         Viaje::ESTADO_PLANIFICADO => 'Planificado',
                                         Viaje::ESTADO_CARGANDO => 'Cargando',
                                         Viaje::ESTADO_EN_RUTA => 'En Ruta',
+                                        Viaje::ESTADO_RECARGANDO => 'Recargando',
                                         Viaje::ESTADO_REGRESANDO => 'Regresando',
                                         Viaje::ESTADO_DESCARGANDO => 'Descargando',
                                         Viaje::ESTADO_LIQUIDANDO => 'Liquidando',
@@ -385,6 +386,7 @@ class ViajeResource extends Resource
                         Viaje::ESTADO_PLANIFICADO => 'Planificado',
                         Viaje::ESTADO_CARGANDO => 'Cargando',
                         Viaje::ESTADO_EN_RUTA => 'En Ruta',
+                        Viaje::ESTADO_RECARGANDO => 'Recargando',   // ← AGREGAR
                         Viaje::ESTADO_REGRESANDO => 'Regresando',
                         Viaje::ESTADO_DESCARGANDO => 'Descargando',
                         Viaje::ESTADO_LIQUIDANDO => 'Liquidando',
@@ -396,6 +398,7 @@ class ViajeResource extends Resource
                         Viaje::ESTADO_PLANIFICADO => 'gray',
                         Viaje::ESTADO_CARGANDO => 'info',
                         Viaje::ESTADO_EN_RUTA => 'warning',
+                        Viaje::ESTADO_RECARGANDO => 'warning',       // ← AGREGAR
                         Viaje::ESTADO_REGRESANDO => 'primary',
                         Viaje::ESTADO_DESCARGANDO => 'info',
                         Viaje::ESTADO_LIQUIDANDO => 'warning',
@@ -407,6 +410,7 @@ class ViajeResource extends Resource
                         Viaje::ESTADO_PLANIFICADO => 'heroicon-o-clipboard-document-list',
                         Viaje::ESTADO_CARGANDO => 'heroicon-o-archive-box-arrow-down',
                         Viaje::ESTADO_EN_RUTA => 'heroicon-o-truck',
+                        Viaje::ESTADO_RECARGANDO => 'heroicon-o-arrow-path',  // ← AGREGAR
                         Viaje::ESTADO_REGRESANDO => 'heroicon-o-arrow-uturn-left',
                         Viaje::ESTADO_DESCARGANDO => 'heroicon-o-archive-box-x-mark',
                         Viaje::ESTADO_LIQUIDANDO => 'heroicon-o-calculator',
@@ -448,6 +452,7 @@ class ViajeResource extends Resource
                         Viaje::ESTADO_PLANIFICADO => 'Planificado',
                         Viaje::ESTADO_CARGANDO => 'Cargando',
                         Viaje::ESTADO_EN_RUTA => 'En Ruta',
+                        Viaje::ESTADO_RECARGANDO => 'Recargando',  // ← AGREGAR
                         Viaje::ESTADO_REGRESANDO => 'Regresando',
                         Viaje::ESTADO_DESCARGANDO => 'Descargando',
                         Viaje::ESTADO_LIQUIDANDO => 'Liquidando',
@@ -533,6 +538,42 @@ class ViajeResource extends Resource
                             ->send();
                     }),
 
+                Tables\Actions\Action::make('recargar')
+                    ->label('Recargar')
+                    ->icon('heroicon-o-arrow-path')
+                    ->color('info')
+                    ->requiresConfirmation()
+                    ->modalHeading('Recargar Camión')
+                    ->modalDescription('El viaje pasará a estado "Recargando". Podrá agregar más productos y luego continuar la ruta.')
+                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_EN_RUTA)
+                    ->action(function ($record) {
+                        $record->iniciarRecarga();
+                        \Filament\Notifications\Notification::make()
+                            ->title('Listo para recargar')
+                            ->body('Agregue los productos desde la pestaña "Productos Cargados" y luego presione "Continuar Ruta".')
+                            ->info()
+                            ->duration(8000)
+                            ->send();
+                    }),
+
+                // Acción: Continuar Ruta (desde recargando)
+                Tables\Actions\Action::make('continuar_ruta')
+                    ->label('Continuar Ruta')
+                    ->icon('heroicon-o-truck')
+                    ->color('warning')
+                    ->requiresConfirmation()
+                    ->modalHeading('Continuar Ruta')
+                    ->modalDescription('El viaje volverá a estado "En Ruta" con los nuevos productos cargados.')
+                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_RECARGANDO)
+                    ->action(function ($record) {
+                        $record->recalcularTotales();
+                        $record->iniciarRuta();
+                        \Filament\Notifications\Notification::make()
+                            ->title('Viaje en ruta')
+                            ->body('El camión continúa en ruta con los productos recargados.')
+                            ->success()
+                            ->send();
+                    }),
                 // Acción: Iniciar Regreso
                 Tables\Actions\Action::make('iniciar_regreso')
                     ->label('Regresar')
@@ -540,7 +581,7 @@ class ViajeResource extends Resource
                     ->color('primary')
                     ->requiresConfirmation()
                     ->modalDescription('El viaje cambiará a estado "Regresando".')
-                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_EN_RUTA)
+                    ->visible(fn($record) => in_array($record->estado, [Viaje::ESTADO_EN_RUTA, Viaje::ESTADO_RECARGANDO]))
                     ->action(function ($record) {
                         $record->iniciarRegreso();
                         \Filament\Notifications\Notification::make()

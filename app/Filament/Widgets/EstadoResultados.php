@@ -10,6 +10,7 @@ class EstadoResultados extends Widget
 {
     use HasWidgetShield;
     use HasDateFilters;
+    
 
     protected static string $view = 'filament.widgets.estado-resultados';
 
