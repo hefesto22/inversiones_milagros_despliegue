@@ -468,6 +468,7 @@ class CompraResource extends Resource
                                             ->minValue(0)
                                             ->step(0.01)
                                             ->default(0)
+                                            ->dehydrateStateUsing(fn ($state) => $state ?? 0)
                                             ->live(onBlur: true)
                                             ->afterStateUpdated(function ($state, Forms\Set $set, Forms\Get $get) {
                                                 $facturada = (float)($get('cantidad_facturada') ?? 0);

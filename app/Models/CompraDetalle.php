@@ -149,6 +149,11 @@ class CompraDetalle extends Model
         parent::boot();
 
         static::saving(function ($detalle) {
+            // Asegurar que cantidad_regalo nunca sea null
+            if (is_null($detalle->cantidad_regalo)) {
+                $detalle->cantidad_regalo = 0;
+            }
+
             // Calcular cantidad_recibida automáticamente si no está definida
             if (is_null($detalle->cantidad_recibida)) {
                 $detalle->cantidad_recibida = ($detalle->cantidad_facturada ?? 0) + ($detalle->cantidad_regalo ?? 0);
