@@ -148,16 +148,21 @@ class LiquidarComisionesHistorico extends Command
                     $liquidacion->agregarViaje($viaje);
                 }
 
-                // 3. Marcar como aprobada y pagada (ya fue pagado en efectivo)
+                // 3. Forzar saldo_anterior = 0 (histórico: ya se pagó en efectivo, no había deuda)
+                $liquidacion->saldo_anterior = 0;
+                $liquidacion->total_pagar = $liquidacion->total_comisiones - $liquidacion->total_cobros;
+                $liquidacion->save();
+
+                // 4. Marcar como aprobada y pagada (ya fue pagado en efectivo)
                 $liquidacion->estado = Liquidacion::ESTADO_PAGADA;
                 $liquidacion->aprobado_por = null;
-                $liquidacion->fecha_pago = $fechaFin; // Último día del mes correspondiente
+                $liquidacion->fecha_pago = $fechaFin;
                 $liquidacion->metodo_pago = 'efectivo';
                 $liquidacion->referencia_pago = "Registro histórico - {$mesLabel}";
                 $liquidacion->pagado_por = null;
                 $liquidacion->save();
 
-                // 4. Registrar movimiento en cuenta del chofer
+                // 5. Registrar movimiento en cuenta del chofer (neto real sin saldo anterior)
                 $cuenta = $chofer->getOrCreateCuenta();
                 if ($liquidacion->total_pagar > 0) {
                     $cuenta->pagarLiquidacion(
@@ -167,7 +172,7 @@ class LiquidarComisionesHistorico extends Command
                     );
                 }
 
-                // 5. Marcar viajes como pagados
+                // 6. Marcar viajes como pagados
                 Viaje::whereIn('id', $viajes->pluck('id'))
                     ->update([
                         'comision_pagada' => true,
