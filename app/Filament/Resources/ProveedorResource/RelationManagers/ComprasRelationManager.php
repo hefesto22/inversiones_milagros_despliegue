@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\ProveedorResource\RelationManagers;
 
+use App\Enums\CompraEstado;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Tables;
 use Filament\Tables\Table;
@@ -58,38 +59,12 @@ class ComprasRelationManager extends RelationManager
 
                 Tables\Columns\TextColumn::make('estado')
                     ->badge()
-                    ->formatStateUsing(fn ($state) => match($state) {
-                        'borrador' => 'Borrador',
-                        'ordenada' => 'Ordenada',
-                        'recibida_pagada' => 'Recibida y Pagada ✅',
-                        'recibida_pendiente_pago' => 'Recibida - Debo Pagar 📦',
-                        'por_recibir_pagada' => 'Pagada - Falta Recibir 💰',
-                        'por_recibir_pendiente_pago' => 'Pendiente Todo ⏳',
-                        'cancelada' => 'Cancelada ❌',
-                        default => $state,
-                    })
-                    ->color(fn ($state) => match($state) {
-                        'borrador' => 'gray',
-                        'ordenada' => 'info',
-                        'recibida_pagada' => 'success',
-                        'recibida_pendiente_pago' => 'warning',
-                        'por_recibir_pagada' => 'info',
-                        'por_recibir_pendiente_pago' => 'danger',
-                        'cancelada' => 'danger',
-                        default => 'gray',
-                    }),
+                    ->formatStateUsing(fn ($state) => $state instanceof CompraEstado ? $state->label() : (CompraEstado::tryFrom($state)?->label() ?? $state))
+                    ->color(fn ($state) => $state instanceof CompraEstado ? $state->color() : (CompraEstado::tryFrom($state)?->color() ?? 'gray')),
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('estado')
-                    ->options([
-                        'borrador' => 'Borrador',
-                        'ordenada' => 'Ordenada',
-                        'recibida_pagada' => 'Recibida y Pagada ✅',
-                        'recibida_pendiente_pago' => 'Recibida - Debo Pagar 📦',
-                        'por_recibir_pagada' => 'Pagada - Falta Recibir 💰',
-                        'por_recibir_pendiente_pago' => 'Pendiente Todo ⏳',
-                        'cancelada' => 'Cancelada ❌',
-                    ]),
+                    ->options(CompraEstado::options()),
 
                 Tables\Filters\SelectFilter::make('tipo_pago')
                     ->label('Tipo de Pago')
@@ -100,17 +75,14 @@ class ComprasRelationManager extends RelationManager
 
                 Tables\Filters\Filter::make('pendiente_pago')
                     ->label('Pendiente de Pago')
-                    ->query(fn ($query) => $query->whereIn('estado', [
-                        'recibida_pendiente_pago',
-                        'por_recibir_pendiente_pago'
-                    ])),
+                    ->query(fn ($query) => $query->whereIn('estado', CompraEstado::conDeudaPendiente())),
 
                 Tables\Filters\Filter::make('pendiente_recibir')
                     ->label('Pendiente de Recibir')
                     ->query(fn ($query) => $query->whereIn('estado', [
-                        'ordenada',
-                        'por_recibir_pagada',
-                        'por_recibir_pendiente_pago'
+                        CompraEstado::Ordenada,
+                        CompraEstado::PorRecibirPagada,
+                        CompraEstado::PorRecibirPendientePago,
                     ])),
             ])
             ->actions([

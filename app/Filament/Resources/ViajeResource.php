@@ -32,45 +32,38 @@ class ViajeResource extends Resource
     protected static ?string $pluralModelLabel = 'Viajes';
 
     /**
-     * Verificar si el usuario actual es Super Admin o Jefe
+     * Verificar si el usuario actual es Super Admin o Jefe.
+     * Usa Spatie HasRoles (cacheado) en lugar de queries DB directas.
      */
     protected static function esSuperAdminOJefe(): bool
     {
+        /** @var \App\Models\User|null $currentUser */
         $currentUser = Auth::user();
 
         if (!$currentUser) {
             return false;
         }
 
-        return DB::table('model_has_roles')
-            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-            ->where('model_has_roles.model_id', '=', $currentUser->id)
-            ->whereIn('roles.name', ['Super Admin', 'Jefe'])
-            ->exists();
+        return $currentUser->hasAnyRole(['Super Admin', 'Jefe']);
     }
 
     /**
-     * Obtener la bodega del usuario actual (directa o desde bodega_user)
+     * Obtener la bodega del usuario actual usando la relación Eloquent.
+     * Evita queries DB directas y respeta el modelo de datos.
      */
     protected static function getBodegaUsuario(): ?int
     {
+        /** @var \App\Models\User|null $currentUser */
         $currentUser = Auth::user();
 
         if (!$currentUser) {
             return null;
         }
 
-        if ($currentUser->bodega_id) {
-            return $currentUser->bodega_id;
-        }
-
-        $bodegaAsignada = DB::table('bodega_user')
-            ->where('user_id', $currentUser->id)
-            ->where('activo', true)
-            ->value('bodega_id');
-
-        return $bodegaAsignada;
+        // Usar la relación Eloquent definida en el modelo User
+        return $currentUser->bodegas()
+            ->wherePivot('activo', true)
+            ->value('bodegas.id');
     }
 
     /**
@@ -875,28 +868,20 @@ class ViajeResource extends Resource
                         }
                     }),
 
-                // Acción: Cancelar
+                // Acción: Cancelar — solo visible si no hay ventas activas
                 Tables\Actions\Action::make('cancelar')
                     ->label('Cancelar')
                     ->icon('heroicon-o-x-circle')
                     ->color('danger')
                     ->requiresConfirmation()
                     ->modalHeading('Cancelar Viaje')
-                    ->modalDescription(function ($record) {
-                        if ($record->tieneVentasActivas()) {
-                            $count = $record->ventasRuta()
-                                ->whereIn('estado', ['borrador', 'confirmada', 'completada'])
-                                ->count();
-                            return "⚠️ Este viaje tiene {$count} venta(s) activa(s). Debe cancelar todas las ventas antes de cancelar el viaje.";
-                        }
-                        return 'Se devolverá el stock a bodega y se revertirán los reempaques. Esta acción no se puede deshacer.';
-                    })
+                    ->modalDescription('Se devolverá el stock a bodega y se revertirán los reempaques. Esta acción no se puede deshacer.')
                     ->form([
                         Forms\Components\Textarea::make('motivo')
                             ->label('Motivo de cancelación')
                             ->required(),
                     ])
-                    ->visible(fn($record) => !in_array($record->estado, [Viaje::ESTADO_CERRADO, Viaje::ESTADO_CANCELADO]))
+                    ->visible(fn($record) => $record->puedeCancelarse())
                     ->action(function ($record, array $data) {
                         try {
                             $record->cancelar($data['motivo']);

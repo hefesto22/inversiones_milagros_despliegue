@@ -83,7 +83,7 @@ class ViewCamionGasto extends ViewRecord
                                     ->badge()
                                     ->formatStateUsing(fn($state) => \App\Models\CamionGasto::TIPOS_GASTO[$state] ?? $state)
                                     ->color(fn($state) => match ($state) {
-                                        'gasolina' => 'warning',
+                                        'gasolina', 'diesel' => 'warning',
                                         'mantenimiento' => 'info',
                                         'reparacion' => 'danger',
                                         default => 'gray',
@@ -122,7 +122,7 @@ class ViewCamionGasto extends ViewRecord
                                     ->placeholder('-'),
                             ]),
                     ])
-                    ->visible(fn($record) => $record->tipo_gasto === 'gasolina'),
+                    ->visible(fn($record) => in_array($record->tipo_gasto, \App\Models\CamionGasto::TIPOS_COMBUSTIBLE)),
 
                 Infolists\Components\Section::make('Comprobante')
                     ->schema([

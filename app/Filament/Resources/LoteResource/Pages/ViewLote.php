@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\LoteResource\Pages;
 
+use App\Enums\LoteEstado;
 use App\Filament\Resources\LoteResource;
 use Filament\Actions;
 use Filament\Resources\Pages\ViewRecord;
@@ -63,15 +64,9 @@ class ViewLote extends ViewRecord
                     \Filament\Forms\Components\Select::make('motivo')
                         ->label('Motivo')
                         ->required()
-                        ->options([
-                            'rotos' => 'Rotos',
-                            'podridos' => 'Podridos',
-                            'vencidos' => 'Vencidos',
-                            'dañados_transporte' => 'Daniados en Transporte',
-                            'otros' => 'Otros',
-                        ])
+                        ->options(\App\Enums\MermaMotivo::options())
                         ->native(false)
-                        ->default('rotos'),
+                        ->default(\App\Enums\MermaMotivo::Rotos->value),
 
                     \Filament\Forms\Components\Textarea::make('descripcion')
                         ->label('Descripcion (opcional)')
@@ -181,7 +176,7 @@ class ViewLote extends ViewRecord
                             ->send();
                     }
                 })
-                ->visible(fn() => $this->record->estado === 'disponible' && $this->record->cantidad_huevos_remanente > 0)
+                ->visible(fn() => $this->record->estado === LoteEstado::Disponible && $this->record->cantidad_huevos_remanente > 0)
                 ->modalWidth('lg'),
 
             Actions\Action::make('reempacar')
@@ -189,7 +184,7 @@ class ViewLote extends ViewRecord
                 ->icon('heroicon-o-arrow-path')
                 ->color('success')
                 ->url(fn() => route('filament.admin.resources.reempaques.create'))
-                ->visible(fn() => $this->record->estado === 'disponible' && $this->record->cantidad_huevos_remanente > 0),
+                ->visible(fn() => $this->record->estado === LoteEstado::Disponible && $this->record->cantidad_huevos_remanente > 0),
         ];
     }
 
@@ -219,8 +214,8 @@ class ViewLote extends ViewRecord
 
                                 Infolists\Components\TextEntry::make('estado')
                                     ->badge()
-                                    ->formatStateUsing(fn($state) => $state === 'disponible' ? 'Disponible' : 'Agotado')
-                                    ->color(fn($state) => $state === 'disponible' ? 'success' : 'gray'),
+                                    ->formatStateUsing(fn($state) => $state instanceof \App\Enums\LoteEstado ? $state->label() : (\App\Enums\LoteEstado::tryFrom($state)?->label() ?? $state))
+                                    ->color(fn($state) => $state instanceof \App\Enums\LoteEstado ? $state->color() : (\App\Enums\LoteEstado::tryFrom($state)?->color() ?? 'gray')),
                             ]),
                     ]),
 
@@ -389,21 +384,8 @@ class ViewLote extends ViewRecord
                                 Infolists\Components\TextEntry::make('motivo')
                                     ->label('Motivo')
                                     ->badge()
-                                    ->formatStateUsing(fn($state) => match ($state) {
-                                        'rotos' => 'Rotos',
-                                        'podridos' => 'Podridos',
-                                        'vencidos' => 'Vencidos',
-                                        'dañados_transporte' => 'Transporte',
-                                        'otros' => 'Otros',
-                                        default => $state,
-                                    })
-                                    ->color(fn($state) => match ($state) {
-                                        'rotos' => 'warning',
-                                        'podridos' => 'danger',
-                                        'vencidos' => 'gray',
-                                        'dañados_transporte' => 'info',
-                                        default => 'gray',
-                                    }),
+                                    ->formatStateUsing(fn($state) => $state instanceof \App\Enums\MermaMotivo ? $state->label() : (\App\Enums\MermaMotivo::tryFrom($state)?->label() ?? $state))
+                                    ->color(fn($state) => $state instanceof \App\Enums\MermaMotivo ? $state->color() : (\App\Enums\MermaMotivo::tryFrom($state)?->color() ?? 'gray')),
 
                                 Infolists\Components\TextEntry::make('cubierto_por_regalo')
                                     ->label('Cubierto')

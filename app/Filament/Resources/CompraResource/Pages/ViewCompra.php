@@ -2,12 +2,15 @@
 
 namespace App\Filament\Resources\CompraResource\Pages;
 
+use App\Enums\CompraEstado;
 use App\Filament\Resources\CompraResource;
+use App\Services\Compra\CompraStateManager;
 use Filament\Actions;
 use Filament\Resources\Pages\ViewRecord;
 use Filament\Infolists;
 use Filament\Infolists\Infolist;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use App\Models\Lote;
 use App\Models\BodegaProducto;
 use Illuminate\Support\Facades\Log;
@@ -16,6 +19,56 @@ use Filament\Notifications\Notification;
 class ViewCompra extends ViewRecord
 {
     protected static string $resource = CompraResource::class;
+
+    /**
+     * Relaciones que se cargan siempre con el record.
+     * Previene LazyLoadingViolationException en Laravel 12.
+     */
+    private const EAGER_RELATIONS = [
+        'detalles.producto',
+        'detalles.unidad',
+        'proveedor',
+        'bodega',
+    ];
+
+    /**
+     * Eager load en mount inicial (GET request).
+     */
+    protected function resolveRecord(int|string $key): \Illuminate\Database\Eloquent\Model
+    {
+        return \App\Models\Compra::with(self::EAGER_RELATIONS)->findOrFail($key);
+    }
+
+    /**
+     * Eager load en cada request subsiguiente (POST/Livewire).
+     * Livewire rehidrata el model como Compra::find($id) sin relaciones.
+     * Este hook corre después de la hidratación, antes de cualquier acción.
+     */
+    public function hydrate(): void
+    {
+        if ($this->record) {
+            $this->record->loadMissing(self::EAGER_RELATIONS);
+        }
+    }
+
+    /**
+     * Recarga el record con lock pesimista + eager loading.
+     * Usar dentro de DB::transaction() para garantizar atomicidad.
+     */
+    protected function lockAndReloadRecord(): void
+    {
+        \App\Models\Compra::where('id', $this->record->id)->lockForUpdate()->first();
+        $this->record = \App\Models\Compra::with(self::EAGER_RELATIONS)->find($this->record->id);
+    }
+
+    /**
+     * Después de refrescar datos, recargar relaciones que parent::refreshFormData() pudo limpiar.
+     */
+    public function refreshFormData(array $attributes): void
+    {
+        parent::refreshFormData($attributes);
+        $this->record->load(self::EAGER_RELATIONS);
+    }
 
     /**
      * Verificar si una unidad es de tipo carton (para huevos)
@@ -34,7 +87,7 @@ class ViewCompra extends ViewRecord
 
         $nombreLower = strtolower($unidad->nombre);
 
-        return str_contains($nombreLower, 'carton') 
+        return str_contains($nombreLower, 'carton')
             || str_contains($nombreLower, 'cartón')
             || str_contains($nombreLower, '1x30')
             || str_contains($nombreLower, '30');
@@ -50,24 +103,21 @@ class ViewCompra extends ViewRecord
             $cantidadRegalo = $detalle->cantidad_regalo ?? 0;
             $cantidadTotal = $cantidadFacturada + $cantidadRegalo;
 
-            // Validar que haya al menos alguna cantidad
             if ($cantidadTotal <= 0) {
                 $producto = \App\Models\Producto::find($detalle->producto_id);
                 $nombreProducto = $producto ? $producto->nombre : "ID: {$detalle->producto_id}";
-                
+
                 Notification::make()
                     ->title('Error en detalle de compra')
                     ->body("El producto '{$nombreProducto}' tiene cantidad 0. Edite la compra para corregir.")
                     ->danger()
                     ->send();
-                
+
                 throw new \Exception("Producto '{$nombreProducto}' tiene cantidad 0.");
             }
 
-            // Para cartones: validar que si solo hay regalo, tenga sentido
             if ($this->esUnidadCarton($detalle->unidad_id)) {
                 if ($cantidadFacturada == 0 && $cantidadRegalo > 0) {
-                    // Solo regalo sin facturado - advertir pero permitir
                     Log::warning("Compra {$this->record->numero_compra}: Producto {$detalle->producto_id} tiene solo regalo sin facturados.");
                 }
             }
@@ -78,7 +128,7 @@ class ViewCompra extends ViewRecord
     {
         return [
             Actions\EditAction::make()
-                ->visible(fn() => $this->record->estado === 'borrador'),
+                ->visible(fn () => $this->record->estado === CompraEstado::Borrador),
 
             // CONFIRMAR ORDEN
             Actions\Action::make('confirmar_orden')
@@ -94,20 +144,20 @@ class ViewCompra extends ViewRecord
                         ->placeholder('Agregar alguna nota sobre esta orden...')
                         ->rows(2),
                 ])
-                ->visible(fn() => $this->record->estado === 'borrador')
+                ->visible(fn () => $this->record->estado === CompraEstado::Borrador)
                 ->action(function (array $data) {
-                    $nota = $data['nota'] ?? null;
-                    if ($nota && $this->record->nota) {
-                        $nota = $this->record->nota . "\n\n" . $nota;
-                    } elseif (!$nota) {
-                        $nota = $this->record->nota;
-                    }
+                    DB::transaction(function () use ($data) {
+                        $this->lockAndReloadRecord();
 
-                    $this->record->update([
-                        'estado' => 'ordenada',
-                        'nota' => $nota,
-                        'updated_by' => Auth::id(),
-                    ]);
+                        $nota = $this->buildNota($data['nota'] ?? null);
+
+                        CompraStateManager::transicionar($this->record, CompraEstado::Ordenada);
+
+                        $this->record->update([
+                            'nota' => $nota,
+                            'updated_by' => Auth::id(),
+                        ]);
+                    });
 
                     $this->refreshFormData(['estado', 'nota']);
 
@@ -142,7 +192,7 @@ class ViewCompra extends ViewRecord
                                 ->where('activo', true)
                                 ->with('bodega')
                                 ->get()
-                                ->filter(fn($bu) => $bu->bodega && $bu->bodega->activo)
+                                ->filter(fn ($bu) => $bu->bodega && $bu->bodega->activo)
                                 ->pluck('bodega.nombre', 'bodega.id');
                         })
                         ->searchable()
@@ -154,46 +204,61 @@ class ViewCompra extends ViewRecord
                         ->placeholder('Detalles sobre la recepcion de mercancia...')
                         ->rows(2),
                 ])
-                ->visible(fn() => in_array($this->record->estado, ['ordenada', 'por_recibir_pagada', 'por_recibir_pendiente_pago']))
+                ->visible(fn () => in_array($this->record->estado, [
+                    CompraEstado::Ordenada,
+                    CompraEstado::PorRecibirPagada,
+                    CompraEstado::PorRecibirPendientePago,
+                ]))
                 ->action(function (array $data) {
                     $this->validarDetallesAntesDeRecibir();
 
-                    $nuevoEstado = match ($this->record->estado) {
-                        'por_recibir_pagada' => 'recibida_pagada',
-                        default => 'recibida_pendiente_pago',
-                    };
+                    $resultado = DB::transaction(function () use ($data) {
+                        $this->lockAndReloadRecord();
 
-                    $nota = $data['nota'] ?? null;
-                    if ($nota) {
-                        $nota = ($this->record->nota ? $this->record->nota . "\n\n" : '') . "RECIBIDA en bodega: " . $nota;
-                    } else {
-                        $nota = $this->record->nota;
-                    }
+                        // Guard de idempotencia
+                        if (CompraStateManager::yaFueProcesadoInventario($this->record)) {
+                            throw new \RuntimeException('Esta compra ya tiene inventario procesado. No se puede procesar de nuevo.');
+                        }
 
-                    $bodegaId = $data['bodega_id'];
-                    $bodega = \App\Models\Bodega::find($bodegaId);
+                        $nuevoEstado = match ($this->record->estado) {
+                            CompraEstado::PorRecibirPagada => CompraEstado::RecibidaPagada,
+                            default => CompraEstado::RecibidaPendientePago,
+                        };
 
-                    $resultado = $this->procesarInventarioDesdeCompra($bodegaId);
+                        $bodegaId = $data['bodega_id'];
+                        $resultado = $this->procesarInventarioDesdeCompra($bodegaId);
 
-                    $this->record->update([
-                        'estado' => $nuevoEstado,
-                        'nota' => ($nota ? $nota . "\n\n" : '') . "Bodega: {$bodega->nombre}",
-                        'updated_by' => Auth::id(),
-                    ]);
+                        CompraStateManager::transicionar($this->record, $nuevoEstado);
+
+                        $nota = $data['nota'] ?? null;
+                        $notaTexto = $nota
+                            ? ($this->record->nota ? $this->record->nota . "\n\n" : '') . "RECIBIDA en bodega: " . $nota
+                            : $this->record->nota;
+
+                        $bodega = \App\Models\Bodega::find($bodegaId);
+                        $this->record->update([
+                            'bodega_id' => $bodegaId,
+                            'nota' => ($notaTexto ? $notaTexto . "\n\n" : '') . "Bodega: {$bodega->nombre}",
+                            'updated_by' => Auth::id(),
+                        ]);
+
+                        return ['resultado' => $resultado, 'nuevoEstado' => $nuevoEstado, 'bodega' => $bodega];
+                    });
 
                     $this->refreshFormData(['estado', 'nota']);
 
-                    $mensaje = $nuevoEstado === 'recibida_pagada' ? "Compra completada! " : "";
+                    $res = $resultado['resultado'];
+                    $mensaje = $resultado['nuevoEstado'] === CompraEstado::RecibidaPagada ? "Compra completada! " : "";
 
-                    if ($resultado['lotes_actualizados'] > 0) {
-                        $mensaje .= "Se actualizaron {$resultado['lotes_actualizados']} lote(s). ";
+                    if ($res['lotes_actualizados'] > 0) {
+                        $mensaje .= "Se actualizaron {$res['lotes_actualizados']} lote(s). ";
                     }
-                    if ($resultado['productos_stock'] > 0) {
-                        $mensaje .= "Se agregaron {$resultado['productos_stock']} producto(s) al stock. ";
+                    if ($res['productos_stock'] > 0) {
+                        $mensaje .= "Se agregaron {$res['productos_stock']} producto(s) al stock. ";
                     }
-                    $mensaje .= "Bodega: '{$bodega->nombre}'.";
+                    $mensaje .= "Bodega: '{$resultado['bodega']->nombre}'.";
 
-                    if ($nuevoEstado !== 'recibida_pagada') {
+                    if ($resultado['nuevoEstado'] !== CompraEstado::RecibidaPagada) {
                         $mensaje .= " Pendiente de pago.";
                     }
 
@@ -219,29 +284,39 @@ class ViewCompra extends ViewRecord
                         ->placeholder('Detalles sobre el pago realizado...')
                         ->rows(2),
                 ])
-                ->visible(fn() => in_array($this->record->estado, ['ordenada', 'recibida_pendiente_pago', 'por_recibir_pendiente_pago']))
+                ->visible(fn () => in_array($this->record->estado, [
+                    CompraEstado::Ordenada,
+                    CompraEstado::RecibidaPendientePago,
+                    CompraEstado::PorRecibirPendientePago,
+                ]))
                 ->action(function (array $data) {
-                    $nuevoEstado = match ($this->record->estado) {
-                        'recibida_pendiente_pago' => 'recibida_pagada',
-                        default => 'por_recibir_pagada',
-                    };
+                    DB::transaction(function () use ($data) {
+                        $this->lockAndReloadRecord();
 
-                    $nota = $data['nota'] ?? null;
-                    if ($nota) {
-                        $nota = ($this->record->nota ? $this->record->nota . "\n\n" : '') . "PAGADA: " . $nota;
-                    } else {
-                        $nota = $this->record->nota;
-                    }
+                        $nuevoEstado = match ($this->record->estado) {
+                            CompraEstado::RecibidaPendientePago => CompraEstado::RecibidaPagada,
+                            CompraEstado::PorRecibirPendientePago => CompraEstado::PorRecibirPagada,
+                            CompraEstado::Ordenada => CompraEstado::PorRecibirPagada,
+                            default => CompraEstado::PorRecibirPagada,
+                        };
 
-                    $this->record->update([
-                        'estado' => $nuevoEstado,
-                        'nota' => $nota,
-                        'updated_by' => Auth::id(),
-                    ]);
+                        CompraStateManager::transicionar($this->record, $nuevoEstado);
+
+                        $nota = $data['nota'] ?? null;
+                        $notaTexto = $nota
+                            ? ($this->record->nota ? $this->record->nota . "\n\n" : '') . "PAGADA: " . $nota
+                            : $this->record->nota;
+
+                        $this->record->update([
+                            'nota' => $notaTexto,
+                            'updated_by' => Auth::id(),
+                        ]);
+                    });
 
                     $this->refreshFormData(['estado', 'nota']);
 
-                    $mensaje = $nuevoEstado === 'recibida_pagada'
+                    $esCompleta = $this->record->estado === CompraEstado::RecibidaPagada;
+                    $mensaje = $esCompleta
                         ? 'Compra completada! Pagada y recibida.'
                         : 'Pago registrado. Pendiente de recibir mercancia.';
 
@@ -276,7 +351,7 @@ class ViewCompra extends ViewRecord
                                 ->where('activo', true)
                                 ->with('bodega')
                                 ->get()
-                                ->filter(fn($bu) => $bu->bodega && $bu->bodega->activo)
+                                ->filter(fn ($bu) => $bu->bodega && $bu->bodega->activo)
                                 ->pluck('bodega.nombre', 'bodega.id');
                         })
                         ->searchable()
@@ -288,38 +363,52 @@ class ViewCompra extends ViewRecord
                         ->placeholder('Detalles sobre la recepcion y pago...')
                         ->rows(2),
                 ])
-                ->visible(fn() => in_array($this->record->estado, ['ordenada', 'por_recibir_pendiente_pago']))
+                ->visible(fn () => in_array($this->record->estado, [
+                    CompraEstado::Ordenada,
+                    CompraEstado::PorRecibirPendientePago,
+                ]))
                 ->action(function (array $data) {
                     $this->validarDetallesAntesDeRecibir();
 
-                    $nota = $data['nota'] ?? null;
-                    $bodegaId = $data['bodega_id'];
-                    $bodega = \App\Models\Bodega::find($bodegaId);
+                    $resultado = DB::transaction(function () use ($data) {
+                        $this->lockAndReloadRecord();
 
-                    $resultado = $this->procesarInventarioDesdeCompra($bodegaId);
+                        // Guard de idempotencia
+                        if (CompraStateManager::yaFueProcesadoInventario($this->record)) {
+                            throw new \RuntimeException('Esta compra ya tiene inventario procesado. No se puede procesar de nuevo.');
+                        }
 
-                    if ($nota) {
-                        $nota = ($this->record->nota ? $this->record->nota . "\n\n" : '') . "COMPLETADA (recibida y pagada): " . $nota;
-                    } else {
-                        $nota = $this->record->nota;
-                    }
+                        $bodegaId = $data['bodega_id'];
+                        $resultado = $this->procesarInventarioDesdeCompra($bodegaId);
 
-                    $this->record->update([
-                        'estado' => 'recibida_pagada',
-                        'nota' => ($nota ? $nota . "\n\n" : '') . "Bodega: {$bodega->nombre}",
-                        'updated_by' => Auth::id(),
-                    ]);
+                        CompraStateManager::transicionar($this->record, CompraEstado::RecibidaPagada);
+
+                        $nota = $data['nota'] ?? null;
+                        $notaTexto = $nota
+                            ? ($this->record->nota ? $this->record->nota . "\n\n" : '') . "COMPLETADA (recibida y pagada): " . $nota
+                            : $this->record->nota;
+
+                        $bodega = \App\Models\Bodega::find($bodegaId);
+                        $this->record->update([
+                            'bodega_id' => $bodegaId,
+                            'nota' => ($notaTexto ? $notaTexto . "\n\n" : '') . "Bodega: {$bodega->nombre}",
+                            'updated_by' => Auth::id(),
+                        ]);
+
+                        return ['resultado' => $resultado, 'bodega' => $bodega];
+                    });
 
                     $this->refreshFormData(['estado', 'nota']);
 
+                    $res = $resultado['resultado'];
                     $mensaje = "Compra completada! ";
-                    if ($resultado['lotes_actualizados'] > 0) {
-                        $mensaje .= "Se actualizaron {$resultado['lotes_actualizados']} lote(s). ";
+                    if ($res['lotes_actualizados'] > 0) {
+                        $mensaje .= "Se actualizaron {$res['lotes_actualizados']} lote(s). ";
                     }
-                    if ($resultado['productos_stock'] > 0) {
-                        $mensaje .= "Se agregaron {$resultado['productos_stock']} producto(s) al stock. ";
+                    if ($res['productos_stock'] > 0) {
+                        $mensaje .= "Se agregaron {$res['productos_stock']} producto(s) al stock. ";
                     }
-                    $mensaje .= "Bodega: '{$bodega->nombre}'.";
+                    $mensaje .= "Bodega: '{$resultado['bodega']->nombre}'.";
 
                     Notification::make()
                         ->title('Compra completada!')
@@ -329,14 +418,19 @@ class ViewCompra extends ViewRecord
                         ->send();
                 }),
 
-            // CANCELAR COMPRA (solo si no ha sido recibida)
+            // CANCELAR COMPRA — alineada con CompraStateManager::puedeCancelarse()
             Actions\Action::make('cancelar_compra')
                 ->label('Cancelar Compra')
                 ->icon('heroicon-o-x-circle')
                 ->color('danger')
                 ->requiresConfirmation()
                 ->modalHeading('Cancelar Compra')
-                ->modalDescription('Estas seguro de cancelar esta compra? Debes proporcionar un motivo.')
+                ->modalDescription(function () {
+                    if (CompraStateManager::tieneInventarioProcesado($this->record->estado)) {
+                        return 'ATENCION: Esta compra ya tiene inventario procesado. Cancelar revertira el inventario (lotes y stock). Esto solo es posible si no se han vendido productos de esta compra.';
+                    }
+                    return 'Estas seguro de cancelar esta compra? Debes proporcionar un motivo.';
+                })
                 ->form([
                     \Filament\Forms\Components\Textarea::make('motivo_cancelacion')
                         ->label('Motivo de Cancelacion')
@@ -345,71 +439,97 @@ class ViewCompra extends ViewRecord
                         ->rows(3)
                         ->helperText('Este motivo quedara registrado en la nota de la compra.'),
                 ])
-                ->visible(fn() => !in_array($this->record->estado, ['cancelada', 'recibida_pagada', 'recibida_pendiente_pago']))
+                ->visible(fn () => CompraStateManager::puedeCancelarse($this->record->estado))
                 ->action(function (array $data) {
-                    $nota = "CANCELADA: " . $data['motivo_cancelacion'];
-                    if ($this->record->nota) {
-                        $nota = $this->record->nota . "\n\n" . $nota;
+                    try {
+                        $reversionInfo = DB::transaction(function () use ($data) {
+                            $this->lockAndReloadRecord();
+
+                            $reversionResult = null;
+
+                            // Si tiene inventario procesado, revertirlo primero
+                            if (CompraStateManager::tieneInventarioProcesado($this->record->estado)) {
+                                $reversionResult = CompraStateManager::revertirInventario($this->record);
+                            }
+
+                            CompraStateManager::transicionar($this->record, CompraEstado::Cancelada);
+
+                            $nota = "CANCELADA: " . $data['motivo_cancelacion'];
+                            if ($reversionResult) {
+                                $nota .= "\n[Inventario revertido: {$reversionResult['lotes_revertidos']} lote(s), {$reversionResult['productos_revertidos']} producto(s)]";
+                            }
+                            if ($this->record->nota) {
+                                $nota = $this->record->nota . "\n\n" . $nota;
+                            }
+
+                            $this->record->update([
+                                'nota' => $nota,
+                                'updated_by' => Auth::id(),
+                            ]);
+
+                            return $reversionResult;
+                        });
+
+                        $this->refreshFormData(['estado', 'nota']);
+
+                        $mensaje = 'La compra ha sido cancelada.';
+                        if ($reversionInfo) {
+                            $mensaje .= " Se revirtio inventario: {$reversionInfo['lotes_revertidos']} lote(s), {$reversionInfo['productos_revertidos']} producto(s).";
+                            if (!empty($reversionInfo['advertencias'])) {
+                                $mensaje .= " Advertencias: " . implode('; ', $reversionInfo['advertencias']);
+                            }
+                        }
+
+                        Notification::make()
+                            ->title('Compra cancelada')
+                            ->body($mensaje)
+                            ->danger()
+                            ->duration(8000)
+                            ->send();
+                    } catch (\RuntimeException $e) {
+                        Notification::make()
+                            ->title('No se puede cancelar')
+                            ->body($e->getMessage())
+                            ->danger()
+                            ->duration(10000)
+                            ->send();
                     }
-
-                    $this->record->update([
-                        'estado' => 'cancelada',
-                        'nota' => $nota,
-                        'updated_by' => Auth::id(),
-                    ]);
-
-                    $this->refreshFormData(['estado', 'nota']);
-
-                    Notification::make()
-                        ->title('Compra cancelada')
-                        ->body('La compra ha sido cancelada.')
-                        ->danger()
-                        ->send();
                 }),
 
-            // INFO: Por que no se puede editar/eliminar compras recibidas
+            // INFO: Por que no se puede editar compras completadas
             Actions\Action::make('info_compra_recibida')
                 ->label('Info')
                 ->icon('heroicon-o-information-circle')
                 ->color('gray')
-                ->visible(fn() => in_array($this->record->estado, ['recibida_pagada', 'recibida_pendiente_pago']))
+                ->visible(fn () => $this->record->estado === CompraEstado::RecibidaPagada)
                 ->action(function () {
                     Notification::make()
-                        ->title('Compra ya procesada')
-                        ->body('Esta compra ya fue recibida y procesada en el inventario. No se puede editar ni cancelar para mantener la integridad de los datos. Si hay un error, contacte al administrador para hacer ajustes manuales.')
+                        ->title('Compra completada')
+                        ->body('Esta compra esta completa (recibida y pagada). No se puede editar para mantener la integridad de los datos.')
                         ->warning()
                         ->duration(10000)
                         ->send();
                 }),
 
-            // CAMBIO MANUAL DE ESTADO (SOLO JEFE/SUPER ADMIN)
+            // CAMBIO MANUAL DE ESTADO — BLINDADO con CompraStateManager
             Actions\Action::make('cambiar_estado_manual')
                 ->label('Cambiar Estado')
                 ->icon('heroicon-o-arrow-path')
                 ->color('gray')
-                ->form([
+                ->form(fn () => [
                     \Filament\Forms\Components\Placeholder::make('advertencia')
                         ->content(new \Illuminate\Support\HtmlString("
                             <div class='rounded-lg bg-red-50 dark:bg-red-900/20 p-4 text-red-800 dark:text-red-200'>
                                 <p class='font-bold'>ADVERTENCIA</p>
-                                <p class='text-sm mt-1'>Cambiar el estado manualmente puede causar inconsistencias en el inventario. Use solo si sabe lo que hace.</p>
+                                <p class='text-sm mt-1'>Solo se permiten las transiciones validas desde el estado actual. Cambios que afectan inventario ejecutaran los procesos correspondientes.</p>
                             </div>
                         ")),
 
                     \Filament\Forms\Components\Select::make('estado')
                         ->label('Nuevo Estado')
-                        ->options([
-                            'borrador' => 'Borrador',
-                            'ordenada' => 'Ordenada',
-                            'recibida_pagada' => 'Recibida y Pagada',
-                            'recibida_pendiente_pago' => 'Recibida - Pendiente Pago',
-                            'por_recibir_pagada' => 'Pagada - Pendiente Recibir',
-                            'por_recibir_pendiente_pago' => 'Pendiente Todo',
-                            'cancelada' => 'Cancelada',
-                        ])
+                        ->options(CompraStateManager::opcionesTransicion($this->record->estado))
                         ->required()
-                        ->native(false)
-                        ->default(fn() => $this->record->estado),
+                        ->native(false),
 
                     \Filament\Forms\Components\Textarea::make('motivo_cambio')
                         ->label('Motivo del cambio')
@@ -419,78 +539,96 @@ class ViewCompra extends ViewRecord
                 ])
                 ->visible(function () {
                     $user = Auth::user();
-                    if (!$user) return false;
-
-                    return $user->roles->whereIn('name', ['Jefe', 'Super Admin'])->isNotEmpty();
+                    if (!$user) {
+                        return false;
+                    }
+                    // Solo visible si hay transiciones disponibles Y es admin
+                    return $user->roles->whereIn('name', ['Jefe', 'Super Admin'])->isNotEmpty()
+                        && !CompraStateManager::esEstadoFinal($this->record->estado);
                 })
                 ->action(function (array $data) {
-                    $estadoAnterior = $this->getEstadoLabel($this->record->estado);
-                    $estadoNuevo = $this->getEstadoLabel($data['estado']);
+                    try {
+                        $nuevoEstado = CompraEstado::from($data['estado']);
 
-                    $nota = "CAMBIO MANUAL: {$estadoAnterior} -> {$estadoNuevo}. Motivo: " . $data['motivo_cambio'];
-                    if ($this->record->nota) {
-                        $nota = $this->record->nota . "\n\n" . $nota;
+                        DB::transaction(function () use ($data, $nuevoEstado) {
+                            $this->lockAndReloadRecord();
+
+                            $estadoAnterior = $this->record->estado;
+
+                            // Si va a Cancelada y tiene inventario, revertir
+                            if ($nuevoEstado === CompraEstado::Cancelada
+                                && CompraStateManager::tieneInventarioProcesado($estadoAnterior)) {
+                                CompraStateManager::revertirInventario($this->record);
+                            }
+
+                            // Validar y ejecutar transición vía State Machine
+                            CompraStateManager::transicionar($this->record, $nuevoEstado);
+
+                            $nota = "CAMBIO MANUAL: {$estadoAnterior->label()} -> {$nuevoEstado->label()}. Motivo: " . $data['motivo_cambio'];
+                            if ($this->record->nota) {
+                                $nota = $this->record->nota . "\n\n" . $nota;
+                            }
+
+                            $this->record->update([
+                                'nota' => $nota,
+                                'updated_by' => Auth::id(),
+                            ]);
+                        });
+
+                        $this->refreshFormData(['estado', 'nota']);
+
+                        Notification::make()
+                            ->title('Estado actualizado')
+                            ->body("Estado cambiado a: {$nuevoEstado->label()}")
+                            ->warning()
+                            ->send();
+                    } catch (InvalidArgumentException $e) {
+                        Notification::make()
+                            ->title('Transición no permitida')
+                            ->body($e->getMessage())
+                            ->danger()
+                            ->duration(8000)
+                            ->send();
+                    } catch (\RuntimeException $e) {
+                        Notification::make()
+                            ->title('No se puede completar')
+                            ->body($e->getMessage())
+                            ->danger()
+                            ->duration(10000)
+                            ->send();
                     }
-
-                    $this->record->update([
-                        'estado' => $data['estado'],
-                        'nota' => $nota,
-                        'updated_by' => Auth::id(),
-                    ]);
-
-                    $this->refreshFormData(['estado', 'nota']);
-
-                    Notification::make()
-                        ->title('Estado actualizado manualmente')
-                        ->body("Estado: {$estadoAnterior} -> {$estadoNuevo}")
-                        ->warning()
-                        ->send();
-                }),
-
-            // VER RESUMEN
-            Actions\Action::make('ver_resumen')
-                ->label('Ver Resumen')
-                ->icon('heroicon-o-document-text')
-                ->color('info')
-                ->action(function () {
-                    $totalProductos = $this->record->detalles()->count();
-                    $totalUnidadesFacturadas = $this->record->detalles()->sum('cantidad_facturada');
-                    $totalUnidadesRegalo = $this->record->detalles()->sum('cantidad_regalo');
-                    $totalIsvCredito = $this->record->detalles()->sum('isv_credito');
-
-                    $mensaje = "RESUMEN DE COMPRA #{$this->record->numero_compra}\n\n";
-                    $mensaje .= "Proveedor: {$this->record->proveedor->nombre}\n";
-                    $mensaje .= "Estado: " . $this->getEstadoLabel($this->record->estado) . "\n";
-                    $mensaje .= "Tipo de pago: " . ($this->record->tipo_pago === 'contado' ? 'Contado' : 'Credito') . "\n\n";
-                    $mensaje .= "Productos diferentes: {$totalProductos}\n";
-                    $mensaje .= "Total unidades facturadas: " . number_format($totalUnidadesFacturadas, 0) . "\n";
-                    
-                    if ($totalUnidadesRegalo > 0) {
-                        $mensaje .= "Total unidades regalo: " . number_format($totalUnidadesRegalo, 0) . "\n";
-                    }
-                    
-                    $mensaje .= "Total a pagar: L " . number_format($this->record->total, 2) . "\n";
-
-                    if ($totalIsvCredito > 0) {
-                        $mensaje .= "ISV Credito Fiscal: L " . number_format($totalIsvCredito, 2) . "\n";
-                    }
-
-                    Notification::make()
-                        ->title('Resumen de Compra')
-                        ->body($mensaje)
-                        ->icon('heroicon-o-document-text')
-                        ->color('info')
-                        ->duration(15000)
-                        ->send();
                 }),
 
             Actions\DeleteAction::make()
-                ->visible(fn() => $this->record->estado === 'borrador'),
+                ->visible(fn () => $this->record->estado === CompraEstado::Borrador),
         ];
+    }
+
+    // ========================================
+    // HELPERS PRIVADOS
+    // ========================================
+
+    /**
+     * Construir nota concatenando con la existente.
+     */
+    private function buildNota(?string $nuevaNota, ?string $prefijo = null): ?string
+    {
+        if (!$nuevaNota && !$prefijo) {
+            return $this->record->nota;
+        }
+
+        $texto = $prefijo ? "{$prefijo}: {$nuevaNota}" : $nuevaNota;
+
+        if ($this->record->nota && $texto) {
+            return $this->record->nota . "\n\n" . $texto;
+        }
+
+        return $texto ?: $this->record->nota;
     }
 
     /**
      * PROCESAR INVENTARIO DESDE LA COMPRA - CON LOTE UNICO
+     * DEBE llamarse dentro de una DB::transaction()
      */
     protected function procesarInventarioDesdeCompra(int $bodegaId): array
     {
@@ -607,18 +745,14 @@ class ViewCompra extends ViewRecord
         }
     }
 
-    protected function getEstadoLabel(string $estado): string
+    protected function getEstadoLabel(string|\App\Enums\CompraEstado $estado): string
     {
-        return match ($estado) {
-            'borrador' => 'Borrador',
-            'ordenada' => 'Ordenada',
-            'recibida_pagada' => 'Recibida y Pagada',
-            'recibida_pendiente_pago' => 'Recibida - Debo Pagar',
-            'por_recibir_pagada' => 'Pagada - Falta Recibir',
-            'por_recibir_pendiente_pago' => 'Pendiente Todo',
-            'cancelada' => 'Cancelada',
-            default => $estado,
-        };
+        if ($estado instanceof \App\Enums\CompraEstado) {
+            return $estado->label();
+        }
+
+        $enum = \App\Enums\CompraEstado::tryFrom($estado);
+        return $enum ? $enum->label() : $estado;
     }
 
     public function infolist(Infolist $infolist): Infolist
@@ -648,22 +782,13 @@ class ViewCompra extends ViewRecord
                                 Infolists\Components\TextEntry::make('tipo_pago')
                                     ->label('Tipo de Pago')
                                     ->badge()
-                                    ->formatStateUsing(fn($state) => $state === 'contado' ? 'Contado' : 'Credito')
-                                    ->color(fn($state) => $state === 'contado' ? 'success' : 'warning'),
+                                    ->formatStateUsing(fn ($state) => $state === 'contado' ? 'Contado' : 'Credito')
+                                    ->color(fn ($state) => $state === 'contado' ? 'success' : 'warning'),
 
                                 Infolists\Components\TextEntry::make('estado')
                                     ->badge()
-                                    ->formatStateUsing(fn($state) => $this->getEstadoLabel($state))
-                                    ->color(fn($state) => match ($state) {
-                                        'borrador' => 'gray',
-                                        'ordenada' => 'info',
-                                        'recibida_pagada' => 'success',
-                                        'recibida_pendiente_pago' => 'warning',
-                                        'por_recibir_pagada' => 'info',
-                                        'por_recibir_pendiente_pago' => 'danger',
-                                        'cancelada' => 'danger',
-                                        default => 'gray',
-                                    }),
+                                    ->formatStateUsing(fn ($state) => $this->getEstadoLabel($state))
+                                    ->color(fn ($state) => $state instanceof CompraEstado ? $state->color() : (CompraEstado::tryFrom($state)?->color() ?? 'gray')),
 
                                 Infolists\Components\TextEntry::make('created_at')
                                     ->label('Fecha de Creacion')
@@ -679,7 +804,7 @@ class ViewCompra extends ViewRecord
                                 Infolists\Components\TextEntry::make('nota')
                                     ->label('Notas')
                                     ->columnSpanFull()
-                                    ->visible(fn($record) => !empty($record->nota))
+                                    ->visible(fn ($record) => !empty($record->nota))
                                     ->markdown()
                                     ->color('warning'),
                             ]),
@@ -708,7 +833,7 @@ class ViewCompra extends ViewRecord
                                     ->numeric(decimalPlaces: 0)
                                     ->suffix(' reg.')
                                     ->color('success')
-                                    ->visible(fn($state) => $state > 0),
+                                    ->visible(fn ($state) => $state > 0),
 
                                 Infolists\Components\TextEntry::make('precio_unitario')
                                     ->label('Precio Unit.')

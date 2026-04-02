@@ -9,6 +9,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 
+// Nota: Viaje se referencia en la relación viaje() – el autoloader lo resuelve dentro del namespace App\Models
+
 class Venta extends Model
 {
     use HasFactory;
@@ -20,6 +22,12 @@ class Venta extends Model
         'bodega_id',
         'numero_venta',
         'tipo_pago',
+        // Campos agregados en migración 2025_11_12_191444 (origen del viaje)
+        'origen',
+        'viaje_id',
+        'estado_entrega',
+        'fecha_entrega',
+        'entregado_por',
         'subtotal',
         'total_isv',
         'descuento',
@@ -35,6 +43,9 @@ class Venta extends Model
     ];
 
     protected $casts = [
+        // Campos de origen del viaje
+        'fecha_entrega' => 'datetime',
+        // Financieros
         'subtotal' => 'decimal:2',
         'total_isv' => 'decimal:2',
         'descuento' => 'decimal:2',
@@ -83,12 +94,25 @@ class Venta extends Model
         return $this->hasMany(Devolucion::class, 'venta_id');
     }
 
+    /**
+     * Viaje asociado si la venta es de origen 'viaje'
+     */
+    public function viaje(): BelongsTo
+    {
+        return $this->belongsTo(Viaje::class, 'viaje_id');
+    }
+
+    public function entregadoPor(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'entregado_por');
+    }
+
     // ============================================
-    // MÉTODOS DE CÁLCULO
+    // MÉTODOS LEGACY - USAR VentaService EN SU LUGAR
     // ============================================
 
     /**
-     * Recalcular totales desde los detalles
+     * @deprecated Usar VentaService::recalcularTotales() en su lugar
      */
     public function recalcularTotales(): void
     {
@@ -104,7 +128,7 @@ class Venta extends Model
     }
 
     /**
-     * Calcular ganancia de la venta
+     * @deprecated Usar VentaDomainService::calcularGanancia() en su lugar
      */
     public function calcularGanancia(): float
     {
@@ -112,12 +136,8 @@ class Venta extends Model
         return $this->subtotal - $costoTotal;
     }
 
-    // ============================================
-    // MÉTODOS DE PAGO
-    // ============================================
-
     /**
-     * Registrar un pago
+     * @deprecated Usar VentaService::registrarPago() en su lugar
      */
     public function registrarPago(
         float $monto,
@@ -193,93 +213,27 @@ class Venta extends Model
     // ============================================
 
     /**
-     * Completar venta (descontar stock, actualizar precios cliente)
+     * Completar venta — delega al servicio para garantizar
+     * soporte correcto de lotes, reempaques y costos.
+     *
+     * Nota: Este método existe como conveniencia para mantener
+     * la API del modelo. Toda la lógica vive en VentaService.
      */
     public function completar(): bool
     {
-        if ($this->estado !== 'borrador') {
-            return false;
-        }
-
-        DB::transaction(function () {
-            if (!$this->numero_venta) {
-                $this->numero_venta = $this->generarNumeroVenta();
-            }
-
-            foreach ($this->detalles as $detalle) {
-                $bodegaProducto = BodegaProducto::where('bodega_id', $this->bodega_id)
-                    ->where('producto_id', $detalle->producto_id)
-                    ->first();
-
-                if ($bodegaProducto) {
-                    $bodegaProducto->reducirStock($detalle->cantidad);
-                }
-
-                $this->cliente->actualizarUltimoPrecio(
-                    $detalle->producto_id,
-                    $detalle->precio_unitario,
-                    $detalle->precio_con_isv,
-                    $detalle->cantidad
-                );
-            }
-
-            if ($this->tipo_pago === 'credito') {
-                $this->estado = 'pendiente_pago';
-                $this->estado_pago = 'pendiente';
-                $this->saldo_pendiente = $this->total;
-
-                if ($this->cliente->dias_credito > 0) {
-                    $this->fecha_vencimiento = now()->addDays($this->cliente->dias_credito);
-                }
-
-                $this->cliente->agregarDeuda($this->total);
-            } else {
-                $this->estado = 'pagada';
-                $this->estado_pago = 'pagado';
-                $this->monto_pagado = $this->total;
-                $this->saldo_pendiente = 0;
-            }
-
-            $this->save();
-        });
-
+        app(\App\Application\Services\VentaService::class)->completarVenta($this->id);
+        $this->refresh();
         return true;
     }
 
     /**
-     * Cancelar venta
+     * Cancelar venta — delega al servicio para garantizar
+     * reversión correcta de stock por origen (bodega/lote).
      */
     public function cancelar(?string $motivo = null): bool
     {
-        if ($this->estado === 'cancelada') {
-            return false;
-        }
-
-        DB::transaction(function () use ($motivo) {
-            if (in_array($this->estado, ['completada', 'pendiente_pago', 'pagada'])) {
-                foreach ($this->detalles as $detalle) {
-                    $bodegaProducto = BodegaProducto::where('bodega_id', $this->bodega_id)
-                        ->where('producto_id', $detalle->producto_id)
-                        ->first();
-
-                    if ($bodegaProducto) {
-                        $bodegaProducto->agregarStockSinCosto($detalle->cantidad);
-                    }
-                }
-
-                if ($this->tipo_pago === 'credito' && $this->saldo_pendiente > 0) {
-                    $this->cliente->registrarPago($this->saldo_pendiente);
-                }
-            }
-
-            $this->estado = 'cancelada';
-            $this->nota = $this->nota
-                ? $this->nota . "\n[CANCELADA] " . $motivo
-                : "[CANCELADA] " . $motivo;
-
-            $this->save();
-        });
-
+        app(\App\Application\Services\VentaService::class)->cancelarVenta($this->id, $motivo);
+        $this->refresh();
         return true;
     }
 
@@ -409,6 +363,16 @@ class Venta extends Model
 
             if (!$venta->estado_pago) {
                 $venta->estado_pago = 'pendiente';
+            }
+        });
+
+        // Última línea de defensa: impedir borrado de ventas que ya movieron inventario
+        static::deleting(function ($venta) {
+            if ($venta->estado !== 'borrador') {
+                throw new \LogicException(
+                    "No se puede eliminar una venta en estado '{$venta->estado}'. " .
+                    "Usa cancelarVenta() para revertir el inventario correctamente."
+                );
             }
         });
     }

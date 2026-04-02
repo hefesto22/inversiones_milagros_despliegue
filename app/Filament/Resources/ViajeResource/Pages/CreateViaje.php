@@ -12,7 +12,7 @@ class CreateViaje extends CreateRecord
 
     protected function mutateFormDataBeforeCreate(array $data): array
     {
-        $data['user_id'] = Auth::id();
+        $data['created_by'] = Auth::id();
 
         // Generar número de viaje
         if (!isset($data['numero_viaje'])) {

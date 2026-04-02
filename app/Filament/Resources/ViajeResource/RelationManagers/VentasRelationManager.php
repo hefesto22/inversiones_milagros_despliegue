@@ -167,10 +167,13 @@ class VentasRelationManager extends RelationManager
                     ->modalDescription('¿Está seguro de cancelar esta venta? Se devolverá el stock al viaje.')
                     ->visible(fn ($record) => in_array($record->estado, ['borrador', 'confirmada', 'completada']))
                     ->action(function ($record) {
+                        // Cargar relaciones para evitar lazy loading
+                        $record->load(['detalles.viajeCarga', 'viaje']);
+
                         // Devolver stock a las cargas
                         foreach ($record->detalles as $detalle) {
-                            if ($detalle->viaje_carga_id) {
-                                $detalle->viajeCarga?->decrement('cantidad_vendida', $detalle->cantidad);
+                            if ($detalle->viaje_carga_id && $detalle->viajeCarga) {
+                                $detalle->viajeCarga->decrement('cantidad_vendida', $detalle->cantidad);
                             }
                         }
 

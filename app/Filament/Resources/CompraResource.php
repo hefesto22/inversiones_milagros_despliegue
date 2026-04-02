@@ -2,11 +2,15 @@
 
 namespace App\Filament\Resources;
 
+use App\Enums\CompraEstado;
 use App\Filament\Resources\CompraResource\Pages;
+use App\Services\Compra\CompraStateManager;
 use App\Filament\Resources\CompraResource\RelationManagers;
 use App\Models\Compra;
+use App\Models\Concerns\HasBodegaScope;
 use App\Models\Producto;
 use App\Models\Unidad;
+use App\Services\Fiscal\IsvCalculator;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -18,6 +22,7 @@ use Illuminate\Support\Facades\DB;
 
 class CompraResource extends Resource
 {
+    use HasBodegaScope;
     protected static ?string $model = Compra::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-shopping-cart';
@@ -30,65 +35,11 @@ class CompraResource extends Resource
 
     public static function getEloquentQuery(): Builder
     {
-        $query = parent::getEloquentQuery();
-        $currentUser = Auth::user();
-
-        if (!$currentUser) {
-            return $query->whereRaw('1 = 0');
-        }
-
-        $esSuperAdminOJefe = DB::table('model_has_roles')
-            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-            ->where('model_has_roles.model_id', '=', $currentUser->id)
-            ->whereIn('roles.name', ['Super Admin', 'Jefe'])
-            ->exists();
-
-        if ($esSuperAdminOJefe) {
-            return $query;
-        }
-
-        $bodegasUsuario = DB::table('bodega_user')
-            ->where('user_id', $currentUser->id)
-            ->where('activo', true)
-            ->pluck('bodega_id')
-            ->toArray();
-
-        return $query->whereIn('bodega_id', $bodegasUsuario);
+        return self::scopeQueryPorBodega(parent::getEloquentQuery());
     }
 
-    /**
-     * Verificar si un producto tiene categoría con ISV
-     */
-    protected static function productoAplicaIsv(?int $productoId): bool
-    {
-        if (!$productoId) {
-            return false;
-        }
-
-        $producto = Producto::with('categoria')->find($productoId);
-
-        if (!$producto || !$producto->categoria) {
-            return false;
-        }
-
-        return (bool) $producto->categoria->aplica_isv;
-    }
-
-    /**
-     * Calcular desglose de ISV (15%)
-     */
-    protected static function calcularDesgloseIsv(float $precioConIsv): array
-    {
-        $costoSinIsv = round($precioConIsv / 1.15, 2);
-        $isvCredito = round($precioConIsv - $costoSinIsv, 2);
-
-        return [
-            'precio_con_isv' => round($precioConIsv, 2),
-            'costo_sin_isv' => $costoSinIsv,
-            'isv_credito' => $isvCredito,
-        ];
-    }
+    // ISV: Delegado a App\Services\Fiscal\IsvCalculator
+    // Autorización: Delegada a App\Models\Concerns\HasBodegaScope
 
     public static function form(Form $form): Form
     {
@@ -114,97 +65,16 @@ class CompraResource extends Resource
 
                                 Forms\Components\Select::make('bodega_id')
                                     ->label('Bodega')
-                                    ->options(function () {
-                                        $currentUser = Auth::user();
-
-                                        if (!$currentUser) {
-                                            return [];
-                                        }
-
-                                        $esSuperAdminOJefe = DB::table('model_has_roles')
-                                            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-                                            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-                                            ->where('model_has_roles.model_id', '=', $currentUser->id)
-                                            ->whereIn('roles.name', ['super_admin', 'jefe'])
-                                            ->exists();
-
-                                        if ($esSuperAdminOJefe) {
-                                            return \App\Models\Bodega::where('activo', true)
-                                                ->pluck('nombre', 'id')
-                                                ->toArray();
-                                        }
-
-                                        return DB::table('bodega_user')
-                                            ->join('bodegas', 'bodega_user.bodega_id', '=', 'bodegas.id')
-                                            ->where('bodega_user.user_id', $currentUser->id)
-                                            ->where('bodegas.activo', true)
-                                            ->pluck('bodegas.nombre', 'bodegas.id')
-                                            ->toArray();
-                                    })
+                                    ->options(fn () => self::getBodegasOptions())
                                     ->required()
                                     ->searchable()
                                     ->preload()
-                                    ->default(function () {
-                                        $currentUser = Auth::user();
-
-                                        if (!$currentUser) {
-                                            return null;
-                                        }
-
-                                        $esSuperAdminOJefe = DB::table('model_has_roles')
-                                            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-                                            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-                                            ->where('model_has_roles.model_id', '=', $currentUser->id)
-                                            ->whereIn('roles.name', ['super_admin', 'jefe'])
-                                            ->exists();
-
-                                        if (!$esSuperAdminOJefe) {
-                                            return DB::table('bodega_user')
-                                                ->join('bodegas', 'bodega_user.bodega_id', '=', 'bodegas.id')
-                                                ->where('bodega_user.user_id', $currentUser->id)
-                                                ->where('bodegas.activo', true)
-                                                ->value('bodegas.id');
-                                        }
-
-                                        return null;
-                                    })
-                                    ->disabled(function () {
-                                        $currentUser = Auth::user();
-
-                                        if (!$currentUser) {
-                                            return true;
-                                        }
-
-                                        $esSuperAdminOJefe = DB::table('model_has_roles')
-                                            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-                                            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-                                            ->where('model_has_roles.model_id', '=', $currentUser->id)
-                                            ->whereIn('roles.name', ['super_admin', 'jefe'])
-                                            ->exists();
-
-                                        return !$esSuperAdminOJefe;
-                                    })
+                                    ->default(fn () => self::getBodegaDefault())
+                                    ->disabled(fn () => !self::esSuperAdminOJefe())
                                     ->dehydrated()
-                                    ->helperText(function () {
-                                        $currentUser = Auth::user();
-
-                                        if (!$currentUser) {
-                                            return '';
-                                        }
-
-                                        $esSuperAdminOJefe = DB::table('model_has_roles')
-                                            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-                                            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-                                            ->where('model_has_roles.model_id', '=', $currentUser->id)
-                                            ->whereIn('roles.name', ['super_admin', 'jefe'])
-                                            ->exists();
-
-                                        if ($esSuperAdminOJefe) {
-                                            return 'Selecciona la bodega donde se registrará esta compra';
-                                        }
-
-                                        return 'Se asignará automáticamente a tu bodega';
-                                    }),
+                                    ->helperText(fn () => self::esSuperAdminOJefe()
+                                        ? 'Selecciona la bodega donde se registrará esta compra'
+                                        : 'Se asignará automáticamente a tu bodega'),
 
                                 Forms\Components\Select::make('tipo_pago')
                                     ->label('Tipo de Pago')
@@ -299,12 +169,6 @@ class CompraResource extends Resource
                                         Forms\Components\Select::make('producto_id')
                                             ->label('Producto')
                                             ->options(function () {
-                                                $currentUser = Auth::user();
-
-                                                if (!$currentUser) {
-                                                    return [];
-                                                }
-
                                                 // Excluir productos con unidad "1x15" o "Medio" (no se compran, se reempaquetan)
                                                 $unidadesExcluidas = Unidad::where('activo', true)
                                                     ->where(function($query) {
@@ -314,45 +178,22 @@ class CompraResource extends Resource
                                                     ->pluck('id')
                                                     ->toArray();
 
-                                                $esSuperAdminOJefe = DB::table('model_has_roles')
-                                                    ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-                                                    ->where('model_has_roles.model_type', '=', get_class($currentUser))
-                                                    ->where('model_has_roles.model_id', '=', $currentUser->id)
-                                                    ->whereIn('roles.name', ['Super Admin', 'Jefe'])
-                                                    ->exists();
-
-                                                if ($esSuperAdminOJefe) {
-                                                    return Producto::where('activo', true)
-                                                        ->whereNotIn('unidad_id', $unidadesExcluidas)
-                                                        ->where('nombre', 'NOT LIKE', '%opoa%')
-                                                        ->orderBy('nombre')
-                                                        ->get()
-                                                        ->mapWithKeys(fn($producto) => [
-                                                            $producto->id => $producto->nombre .
-                                                                ($producto->formato_empaque ? " [{$producto->formato_empaque}]" : '') .
-                                                                ' - ' . ($producto->sku ?? 'Sin SKU')
-                                                        ])
-                                                        ->toArray();
-                                                }
-
-                                                $bodegasUsuario = DB::table('bodega_user')
-                                                    ->where('user_id', $currentUser->id)
-                                                    ->where('activo', true)
-                                                    ->pluck('bodega_id')
-                                                    ->toArray();
-
-                                                if (empty($bodegasUsuario)) {
-                                                    return [];
-                                                }
-
-                                                return Producto::where('activo', true)
+                                                $queryProductos = Producto::where('activo', true)
                                                     ->whereNotIn('unidad_id', $unidadesExcluidas)
-                                                    ->where('nombre', 'NOT LIKE', '%opoa%')
-                                                    ->whereHas('bodegas', function ($query) use ($bodegasUsuario) {
+                                                    ->where('nombre', 'NOT LIKE', '%opoa%');
+
+                                                if (!self::esSuperAdminOJefe()) {
+                                                    $bodegasUsuario = self::getBodegasUsuario();
+                                                    if (empty($bodegasUsuario)) {
+                                                        return [];
+                                                    }
+                                                    $queryProductos->whereHas('bodegas', function ($query) use ($bodegasUsuario) {
                                                         $query->whereIn('bodega_producto.bodega_id', $bodegasUsuario)
                                                             ->where('bodega_producto.activo', true);
-                                                    })
-                                                    ->orderBy('nombre')
+                                                    });
+                                                }
+
+                                                return $queryProductos->orderBy('nombre')
                                                     ->get()
                                                     ->mapWithKeys(fn($producto) => [
                                                         $producto->id => $producto->nombre .
@@ -402,7 +243,7 @@ class CompraResource extends Resource
                                                             $set('precio_unitario', number_format($ultimoPrecio, 2, '.', ''));
 
                                                             if ($aplicaIsv) {
-                                                                $desglose = self::calcularDesgloseIsv((float)$ultimoPrecio);
+                                                                $desglose = IsvCalculator::calcularDesglose((float)$ultimoPrecio);
                                                                 $set('precio_con_isv', number_format($desglose['precio_con_isv'], 2, '.', ''));
                                                                 $set('costo_sin_isv', number_format($desglose['costo_sin_isv'], 2, '.', ''));
                                                                 $set('isv_credito', number_format($desglose['isv_credito'], 2, '.', ''));
@@ -559,10 +400,10 @@ class CompraResource extends Resource
                                             ->live(onBlur: true)
                                             ->afterStateUpdated(function ($state, Forms\Set $set, Forms\Get $get) {
                                                 $productoId = $get('producto_id');
-                                                if ($productoId && self::productoAplicaIsv((int)$productoId)) {
+                                                if ($productoId && IsvCalculator::productoAplicaIsv((int)$productoId)) {
                                                     $precio = (float)($state ?? 0);
                                                     if ($precio > 0) {
-                                                        $desglose = self::calcularDesgloseIsv($precio);
+                                                        $desglose = IsvCalculator::calcularDesglose($precio);
                                                         $set('precio_con_isv', number_format($desglose['precio_con_isv'], 2, '.', ''));
                                                         $set('costo_sin_isv', number_format($desglose['costo_sin_isv'], 2, '.', ''));
                                                         $set('isv_credito', number_format($desglose['isv_credito'], 2, '.', ''));
@@ -571,7 +412,7 @@ class CompraResource extends Resource
                                             })
                                             ->helperText(function (Forms\Get $get) {
                                                 $productoId = $get('producto_id');
-                                                if ($productoId && self::productoAplicaIsv((int)$productoId)) {
+                                                if ($productoId && IsvCalculator::productoAplicaIsv((int)$productoId)) {
                                                     return 'Precio con ISV incluido';
                                                 }
                                                 return 'Por unidad facturada';
@@ -652,7 +493,7 @@ class CompraResource extends Resource
                                     ])
                                     ->visible(function (Forms\Get $get) {
                                         $productoId = $get('producto_id');
-                                        return $productoId && self::productoAplicaIsv((int)$productoId);
+                                        return $productoId && IsvCalculator::productoAplicaIsv((int)$productoId);
                                     }),
 
                                 // Indicador visual de ISV
@@ -664,7 +505,7 @@ class CompraResource extends Resource
                                             return '';
                                         }
 
-                                        if (self::productoAplicaIsv((int)$productoId)) {
+                                        if (IsvCalculator::productoAplicaIsv((int)$productoId)) {
                                             return new \Illuminate\Support\HtmlString("
                                                 <div class='rounded-lg bg-blue-50 dark:bg-blue-900/20 p-3 mt-2'>
                                                     <p class='text-sm text-blue-800 dark:text-blue-200'>
@@ -829,23 +670,23 @@ class CompraResource extends Resource
                 Tables\Columns\TextColumn::make('estado')
                     ->badge()
                     ->formatStateUsing(fn($state) => match ($state) {
-                        'borrador' => 'Borrador',
-                        'ordenada' => 'Ordenada',
-                        'recibida_pagada' => 'Recibida y Pagada ✅',
-                        'recibida_pendiente_pago' => 'Recibida - Debo Pagar 📦',
-                        'por_recibir_pagada' => 'Pagada - Falta Recibir 💰',
-                        'por_recibir_pendiente_pago' => 'Pendiente Todo ⏳',
-                        'cancelada' => 'Cancelada ❌',
-                        default => $state,
+                        CompraEstado::Borrador => 'Borrador',
+                        CompraEstado::Ordenada => 'Ordenada',
+                        CompraEstado::RecibidaPagada => 'Recibida y Pagada',
+                        CompraEstado::RecibidaPendientePago => 'Recibida - Debo Pagar',
+                        CompraEstado::PorRecibirPagada => 'Pagada - Falta Recibir',
+                        CompraEstado::PorRecibirPendientePago => 'Pendiente Todo',
+                        CompraEstado::Cancelada => 'Cancelada',
+                        default => $state instanceof CompraEstado ? $state->label() : $state,
                     })
                     ->color(fn($state) => match ($state) {
-                        'borrador' => 'gray',
-                        'ordenada' => 'info',
-                        'recibida_pagada' => 'success',
-                        'recibida_pendiente_pago' => 'warning',
-                        'por_recibir_pagada' => 'info',
-                        'por_recibir_pendiente_pago' => 'danger',
-                        'cancelada' => 'danger',
+                        CompraEstado::Borrador => 'gray',
+                        CompraEstado::Ordenada => 'info',
+                        CompraEstado::RecibidaPagada => 'success',
+                        CompraEstado::RecibidaPendientePago => 'warning',
+                        CompraEstado::PorRecibirPagada => 'info',
+                        CompraEstado::PorRecibirPendientePago => 'danger',
+                        CompraEstado::Cancelada => 'danger',
                         default => 'gray',
                     })
                     ->sortable(),
@@ -862,15 +703,7 @@ class CompraResource extends Resource
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('estado')
-                    ->options([
-                        'borrador' => 'Borrador',
-                        'ordenada' => 'Ordenada',
-                        'recibida_pagada' => 'Recibida y Pagada ✅',
-                        'recibida_pendiente_pago' => 'Recibida - Debo Pagar 📦',
-                        'por_recibir_pagada' => 'Pagada - Falta Recibir 💰',
-                        'por_recibir_pendiente_pago' => 'Pendiente Todo ⏳',
-                        'cancelada' => 'Cancelada ❌',
-                    ]),
+                    ->options(CompraEstado::options()),
 
                 Tables\Filters\SelectFilter::make('tipo_pago')
                     ->label('Tipo de Pago')
@@ -908,73 +741,90 @@ class CompraResource extends Resource
 
                 Tables\Filters\Filter::make('pendiente_pago')
                     ->label('Pendiente de Pago')
-                    ->query(fn($query) => $query->whereIn('estado', [
-                        'recibida_pendiente_pago',
-                        'por_recibir_pendiente_pago'
-                    ])),
+                    ->query(fn($query) => $query->whereIn('estado', CompraEstado::conDeudaPendiente())),
 
                 Tables\Filters\Filter::make('pendiente_recibir')
                     ->label('Pendiente de Recibir')
                     ->query(fn($query) => $query->whereIn('estado', [
-                        'ordenada',
-                        'por_recibir_pagada',
-                        'por_recibir_pendiente_pago'
+                        CompraEstado::Ordenada,
+                        CompraEstado::PorRecibirPagada,
+                        CompraEstado::PorRecibirPendientePago,
                     ])),
             ])
             ->actions([
                 Tables\Actions\ViewAction::make(),
 
                 Tables\Actions\EditAction::make()
-                    ->visible(fn($record) => $record->estado === 'borrador'),
+                    ->visible(fn($record) => $record->estado === CompraEstado::Borrador),
 
                 Tables\Actions\Action::make('cambiar_estado')
                     ->label('Cambiar Estado')
                     ->icon('heroicon-o-arrow-path')
                     ->color('warning')
-                    ->form([
+                    ->form(fn($record) => [
                         Forms\Components\Select::make('estado')
                             ->label('Nuevo Estado')
-                            ->options([
-                                'ordenada' => 'Ordenada',
-                                'recibida_pagada' => 'Recibida y Pagada ✅',
-                                'recibida_pendiente_pago' => 'Recibida - Debo Pagar 📦',
-                                'por_recibir_pagada' => 'Pagada - Falta Recibir 💰',
-                                'por_recibir_pendiente_pago' => 'Pendiente Todo ⏳',
-                                'cancelada' => 'Cancelada ❌',
-                            ])
+                            ->options(CompraStateManager::opcionesTransicion($record->estado))
                             ->required()
                             ->native(false),
                     ])
                     ->action(function ($record, array $data) {
-                        $record->update([
-                            'estado' => $data['estado'],
-                            'updated_by' => Auth::id(),
-                        ]);
+                        try {
+                            $nuevoEstado = CompraEstado::from($data['estado']);
 
-                        \Filament\Notifications\Notification::make()
-                            ->title('Estado actualizado')
-                            ->success()
-                            ->send();
+                            \Illuminate\Support\Facades\DB::transaction(function () use ($record, $nuevoEstado) {
+                                $record->refresh();
+                                $record = Compra::where('id', $record->id)->lockForUpdate()->first();
+
+                                // Si va a Cancelada y tiene inventario, revertir
+                                if ($nuevoEstado === CompraEstado::Cancelada
+                                    && CompraStateManager::tieneInventarioProcesado($record->estado)) {
+                                    CompraStateManager::revertirInventario($record);
+                                }
+
+                                CompraStateManager::transicionar($record, $nuevoEstado);
+                                $record->update(['updated_by' => Auth::id()]);
+                            });
+
+                            \Filament\Notifications\Notification::make()
+                                ->title('Estado actualizado')
+                                ->body("Nuevo estado: {$nuevoEstado->label()}")
+                                ->success()
+                                ->send();
+                        } catch (\RuntimeException $e) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('No se puede completar')
+                                ->body($e->getMessage())
+                                ->danger()
+                                ->duration(10000)
+                                ->send();
+                        } catch (\InvalidArgumentException $e) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('Transición no permitida')
+                                ->body($e->getMessage())
+                                ->danger()
+                                ->send();
+                        }
                     })
                     ->visible(function ($record) {
-                        $user = Auth::user();
-                        if (!$user) {
+                        if (CompraStateManager::esEstadoFinal($record->estado)) {
                             return false;
                         }
-
-                        return !in_array($record->estado, ['borrador', 'recibida_pagada', 'cancelada'])
-                            && ($user->roles->contains('name', 'Super Admin') || $user->roles->contains('name', 'Jefe'));
+                        if ($record->estado === CompraEstado::Borrador) {
+                            return false;
+                        }
+                        return self::esSuperAdminOJefe();
                     }),
 
                 Tables\Actions\DeleteAction::make()
-                    ->visible(fn($record) => $record->estado === 'borrador'),
+                    ->visible(fn($record) => $record->estado === CompraEstado::Borrador),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
                     Tables\Actions\DeleteBulkAction::make()
                         ->action(function ($records) {
                             $records->each(function ($record) {
-                                if ($record->estado === 'borrador') {
+                                if ($record->estado === CompraEstado::Borrador) {
                                     $record->delete();
                                 }
                             });
@@ -1003,7 +853,7 @@ class CompraResource extends Resource
 
     public static function getNavigationBadge(): ?string
     {
-        return static::getModel()::where('estado', 'borrador')->count() ?: null;
+        return static::getModel()::where('estado', CompraEstado::Borrador)->count() ?: null;
     }
 
     public static function getNavigationBadgeColor(): ?string

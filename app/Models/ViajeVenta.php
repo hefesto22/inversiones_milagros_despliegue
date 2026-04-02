@@ -164,7 +164,11 @@ class ViajeVenta extends Model
     }
 
     /**
-     * Confirmar venta
+     * Confirmar venta.
+     *
+     * Además de verificar disponibilidad, actualiza `cantidad_vendida` en viaje_cargas
+     * para que el inventario del viaje refleje correctamente lo que ya está comprometido.
+     * Sin este paso, getCantidadDisponible() en ViajeCarga devuelve valores incorrectos.
      */
     public function confirmar(int $userId): void
     {
@@ -172,7 +176,7 @@ class ViajeVenta extends Model
             throw new \Exception('Solo se pueden confirmar ventas en borrador');
         }
 
-        // Verificar disponibilidad en el viaje
+        // Verificar disponibilidad en el viaje (antes de confirmar)
         $this->verificarDisponibilidad();
 
         // Verificar crédito del cliente si es a crédito
@@ -187,10 +191,27 @@ class ViajeVenta extends Model
             'confirmada_por' => $userId,
             'confirmada_at' => now(),
         ]);
+
+        // FIX: Actualizar cantidad_vendida en viaje_cargas para cada producto vendido.
+        // Esto mantiene el stock del viaje consistente y evita doble venta del mismo producto.
+        $this->load('detalles');
+
+        foreach ($this->detalles as $detalle) {
+            $carga = $this->viaje->cargas()
+                ->where('producto_id', $detalle->producto_id)
+                ->first();
+
+            if ($carga) {
+                $carga->registrarVenta(floatval($detalle->cantidad));
+            }
+        }
     }
 
     /**
-     * Cancelar venta
+     * Cancelar venta.
+     *
+     * Si la venta estaba confirmada, revierte el cantidad_vendida en viaje_cargas
+     * para liberar el stock del viaje que quedaba comprometido.
      */
     public function cancelar(): void
     {
@@ -200,6 +221,26 @@ class ViajeVenta extends Model
 
         if ($this->viaje && $this->viaje->estado === 'cerrado') {
             throw new \Exception('No se puede cancelar una venta de un viaje cerrado');
+        }
+
+        // FIX: Si estaba confirmada, revertir el cantidad_vendida en viaje_cargas
+        if (in_array($this->estado, ['confirmada', 'completada'])) {
+            $this->load('detalles');
+
+            foreach ($this->detalles as $detalle) {
+                $carga = $this->viaje?->cargas()
+                    ->where('producto_id', $detalle->producto_id)
+                    ->first();
+
+                if ($carga) {
+                    // Revertir: reducir cantidad_vendida
+                    $carga->cantidad_vendida = max(
+                        0,
+                        floatval($carga->cantidad_vendida) - floatval($detalle->cantidad)
+                    );
+                    $carga->saveQuietly(); // Evitar re-trigger del saving boot
+                }
+            }
         }
 
         $this->update(['estado' => 'cancelada']);

@@ -30,8 +30,8 @@ class ViajeComisionDetalle extends Model
         'cantidad' => 'decimal:3',
         'precio_vendido' => 'decimal:2',
         'precio_sugerido' => 'decimal:2',
-        'costo' => 'decimal:2',
-        'comision_unitaria' => 'decimal:2',
+        'costo' => 'decimal:4',        // 4 decimales para mantener precisión del costo unitario
+        'comision_unitaria' => 'decimal:4', // FIX: era decimal:2, pero se guarda con round(...,4) en Viaje::calcularComisionDetalleRuta()
         'comision_total' => 'decimal:2',
     ];
 

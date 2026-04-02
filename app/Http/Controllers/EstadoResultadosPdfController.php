@@ -277,10 +277,13 @@ class EstadoResultadosPdfController extends Controller
             ->whereBetween('fecha', [$fechaInicio, $fechaFin])
             ->selectRaw('
                 COALESCE(SUM(monto), 0) as total,
+                COALESCE(SUM(CASE WHEN tipo_gasto IN ("gasolina", "diesel") THEN monto ELSE 0 END), 0) as combustible,
                 COALESCE(SUM(CASE WHEN tipo_gasto = "gasolina" THEN monto ELSE 0 END), 0) as gasolina,
+                COALESCE(SUM(CASE WHEN tipo_gasto = "diesel" THEN monto ELSE 0 END), 0) as diesel,
                 COALESCE(SUM(CASE WHEN tipo_gasto = "mantenimiento" THEN monto ELSE 0 END), 0) as mantenimiento,
                 COALESCE(SUM(CASE WHEN tipo_gasto = "reparacion" THEN monto ELSE 0 END), 0) as reparacion,
-                COALESCE(SUM(CASE WHEN tipo_gasto NOT IN ("gasolina", "mantenimiento", "reparacion") THEN monto ELSE 0 END), 0) as otros
+                COALESCE(SUM(CASE WHEN tipo_gasto = "viaticos" THEN monto ELSE 0 END), 0) as viaticos,
+                COALESCE(SUM(CASE WHEN tipo_gasto NOT IN ("gasolina", "diesel", "mantenimiento", "reparacion", "viaticos") THEN monto ELSE 0 END), 0) as otros
             ')
             ->first();
 
@@ -381,6 +384,12 @@ class EstadoResultadosPdfController extends Controller
 
         $cuentasPorCobrar = $cuentasPorCobrarRuta + $cuentasPorCobrarBodega;
 
+        // Días promedio de cobro: (CxC / Ventas netas) * días del período
+        $diasPeriodo = max(1, Carbon::parse($fechaInicio)->diffInDays(Carbon::parse($fechaFin)) + 1);
+        $diasPromedioCobro = $ventasNetas > 0
+            ? round(($cuentasPorCobrar / $ventasNetas) * $diasPeriodo, 1)
+            : 0;
+
         return [
             'ventas_brutas' => $ventasBrutas,
             'ventas_ruta' => (float) $ventasRuta->total,
@@ -397,9 +406,12 @@ class EstadoResultadosPdfController extends Controller
             'utilidad_bruta' => $utilidadBruta,
             'margen_bruto' => $margenBruto,
             'gastos_camion_total' => (float) $gastosCamion->total,
+            'gastos_camion_combustible' => (float) $gastosCamion->combustible,
             'gastos_camion_gasolina' => (float) $gastosCamion->gasolina,
+            'gastos_camion_diesel' => (float) $gastosCamion->diesel,
             'gastos_camion_mantenimiento' => (float) $gastosCamion->mantenimiento,
             'gastos_camion_reparacion' => (float) $gastosCamion->reparacion,
+            'gastos_camion_viaticos' => (float) $gastosCamion->viaticos,
             'gastos_camion_otros' => (float) $gastosCamion->otros,
             'material_empaque' => $materialEmpaque,
             'otros_gastos_bodega_venta' => $otrosGastosBodegaVenta,
@@ -423,6 +435,7 @@ class EstadoResultadosPdfController extends Controller
             'margen_neto' => $margenNeto,
             'ticket_promedio' => $ticketPromedio,
             'cuentas_por_cobrar' => $cuentasPorCobrar,
+            'dias_promedio_cobro' => $diasPromedioCobro,
             'costo_sobre_ingreso' => $costoSobreIngreso,
             'inversiones_periodo' => $inversiones,
         ];

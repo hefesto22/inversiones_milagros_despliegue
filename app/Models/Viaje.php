@@ -46,6 +46,8 @@ class Viaje extends Model
         'created_by',
         'cerrado_por',
         'cerrado_en',
+        'comision_pagada',
+        'fecha_pago_comision',
     ];
 
     protected $casts = [
@@ -66,6 +68,8 @@ class Viaje extends Model
         'efectivo_entregado' => 'decimal:2',
         'diferencia_efectivo' => 'decimal:2',
         'cerrado_en' => 'datetime',
+        'comision_pagada' => 'boolean',
+        'fecha_pago_comision' => 'date',
     ];
 
     // Estados del viaje
@@ -251,44 +255,43 @@ class Viaje extends Model
 
             foreach ($this->cargas as $carga) {
                 $cantidadTotal = floatval($carga->cantidad);
-                $cantidadDeBodega = $cantidadTotal;
 
-                // FIX: Si tiene reempaque, separar y cancelar
-                if ($carga->reempaque_id) {
+                // Usar campos de origen para determinar exactamente cuánto vino de cada fuente
+                $cantidadDeLote = floatval($carga->cantidad_de_lote ?? 0);
+                $cantidadDeBodega = floatval($carga->cantidad_de_bodega ?? 0);
+
+                // Fallback legacy: si no hay campos de origen, todo es bodega
+                if ($cantidadDeBodega == 0 && $cantidadDeLote == 0) {
+                    $cantidadDeBodega = $cantidadTotal;
+                }
+
+                $reempaqueService = app(\App\Application\Services\ReempaqueService::class);
+
+                // 1. Devolver unidades al lote (revertir reempaque)
+                if ($cantidadDeLote > 0 && $carga->reempaque_id) {
                     $reempaque = Reempaque::find($carga->reempaque_id);
 
-                    if ($reempaque && !$reempaque->estaCancelado()) {
-                        $reempaqueProducto = $reempaque->reempaqueProductos()
-                            ->where('producto_id', $carga->producto_id)
-                            ->first();
-
-                        if ($reempaqueProducto) {
-                            $cantidadReempacada = floatval($reempaqueProducto->cantidad);
-                            $cantidadDeBodega = $cantidadTotal - $cantidadReempacada;
-
-                            $reempaqueProducto->agregado_a_stock = false;
-                            $reempaqueProducto->save();
-                        }
-
-                        // Cancelar reempaque: devuelve huevos al lote
-                        $reempaque->cancelar("Viaje #{$this->id} cancelado");
+                    if ($reempaque && !$reempaque->estaInactivo()) {
+                        $reempaqueService->revertirReempaqueParcial(
+                            $carga->reempaque_id,
+                            $carga->producto_id,
+                            $cantidadDeLote
+                        );
                     }
                 }
 
-                // FIX: Devolver unidades de bodega con promedio ponderado correcto
+                // 2. Devolver unidades de bodega con costo original
                 if ($cantidadDeBodega > 0) {
                     $bodegaProducto = BodegaProducto::where('bodega_id', $this->bodega_origen_id)
                         ->where('producto_id', $carga->producto_id)
                         ->lockForUpdate()
                         ->first();
 
+                    $costoOriginal = floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? 0);
+
                     if ($bodegaProducto) {
-                        // FIX: Usar costo_bodega_original (NO costo_unitario que es promedio contaminado)
-                        $costoOriginal = floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? 0);
-                        $bodegaProducto->actualizarCostoPromedio($cantidadDeBodega, $costoOriginal);
+                        $reempaqueService->devolverStockABodega($bodegaProducto, $cantidadDeBodega, $costoOriginal);
                     } else {
-                        // Caso raro: crear BodegaProducto
-                        $costoOriginal = floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? 0);
                         $bp = BodegaProducto::create([
                             'bodega_id' => $this->bodega_origen_id,
                             'producto_id' => $carga->producto_id,
@@ -317,7 +320,7 @@ class Viaje extends Model
 
     /**
      * Procesar reintegro de descargas al cerrar el viaje
-     * 
+     *
      * 🎯 FIX: Usa costo_bodega_original de la carga correspondiente
      * para que el promedio ponderado en bodega sea correcto
      */
@@ -452,11 +455,18 @@ class Viaje extends Model
                 'estado' => 'disponible',
             ]);
         } else {
+            // FIX: Obtener el primer proveedor de la bodega a través del lote del producto
+            // en lugar de hardcodear proveedor_id = 1 (que puede no existir).
+            $proveedorIdFallback = Lote::where('bodega_id', $bodegaId)
+                ->where('producto_id', $productoId)
+                ->whereNotNull('proveedor_id')
+                ->value('proveedor_id');
+
             Lote::create([
                 'numero_lote' => $numeroLote,
                 'producto_id' => $productoId,
                 'bodega_id' => $bodegaId,
-                'proveedor_id' => 1,
+                'proveedor_id' => $proveedorIdFallback, // null si no hay proveedor conocido (integridad referencial OK)
                 'compra_id' => null,
                 'compra_detalle_id' => null,
                 'reempaque_origen_id' => null,
@@ -685,8 +695,10 @@ class Viaje extends Model
             'precio_sugerido' => $precioSugerido,
             'costo' => $detalle->costo_unitario,
             'tipo_comision' => $tipoComision,
-            'comision_unitaria' => $comisionUnitaria,
-            'comision_total' => $comisionTotal,
+            // FIX: aplicar round() igual que en calcularComisionDetalleRuta() para
+            // consistencia y evitar que el cast decimal:4 pierda precisión silenciosamente.
+            'comision_unitaria' => round($comisionUnitaria, 4),
+            'comision_total' => round($comisionTotal, 2),
         ]);
     }
 

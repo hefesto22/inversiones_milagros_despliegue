@@ -2,16 +2,18 @@
 
 namespace App\Filament\Resources\LoteResource\Pages;
 
+use App\Enums\LoteEstado;
 use App\Filament\Resources\LoteResource;
+use App\Models\Concerns\HasBodegaScope;
 use Filament\Actions;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Resources\Components\Tab;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\DB;
 
 class ListLotes extends ListRecords
 {
+    use HasBodegaScope;
+
     protected static string $resource = LoteResource::class;
 
     protected function getHeaderActions(): array
@@ -27,29 +29,8 @@ class ListLotes extends ListRecords
 
     public function getTabs(): array
     {
-        $currentUser = Auth::user();
-
-        if (!$currentUser) {
-            return [];
-        }
-
-        // Verificar si es Super Admin o Jefe
-        $esSuperAdminOJefe = DB::table('model_has_roles')
-            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-            ->where('model_has_roles.model_id', '=', $currentUser->id)
-            ->whereIn('roles.name', ['Super Admin', 'Jefe'])
-            ->exists();
-
-        // Obtener bodegas del usuario si no es Super Admin o Jefe
-        $bodegasUsuario = [];
-        if (!$esSuperAdminOJefe) {
-            $bodegasUsuario = DB::table('bodega_user')
-                ->where('user_id', $currentUser->id)
-                ->where('activo', true)
-                ->pluck('bodega_id')
-                ->toArray();
-        }
+        $esSuperAdminOJefe = self::esSuperAdminOJefe();
+        $bodegasUsuario = $esSuperAdminOJefe ? [] : self::getBodegasUsuario();
 
         return [
             'todos' => Tab::make('Todos')
@@ -64,9 +45,9 @@ class ListLotes extends ListRecords
                 }),
 
             'disponibles' => Tab::make('Disponibles')
-                ->modifyQueryUsing(fn(Builder $query) => $query->where('estado', 'disponible'))
+                ->modifyQueryUsing(fn(Builder $query) => $query->where('estado', LoteEstado::Disponible))
                 ->badge(function () use ($esSuperAdminOJefe, $bodegasUsuario) {
-                    $query = \App\Models\Lote::where('estado', 'disponible');
+                    $query = \App\Models\Lote::where('estado', LoteEstado::Disponible);
 
                     if (!$esSuperAdminOJefe && !empty($bodegasUsuario)) {
                         $query->whereIn('bodega_id', $bodegasUsuario);
@@ -90,9 +71,9 @@ class ListLotes extends ListRecords
                 ->badgeColor('info'),
 
             'agotados' => Tab::make('Agotados')
-                ->modifyQueryUsing(fn(Builder $query) => $query->where('estado', 'agotado'))
+                ->modifyQueryUsing(fn(Builder $query) => $query->where('estado', LoteEstado::Agotado))
                 ->badge(function () use ($esSuperAdminOJefe, $bodegasUsuario) {
-                    $query = \App\Models\Lote::where('estado', 'agotado');
+                    $query = \App\Models\Lote::where('estado', LoteEstado::Agotado);
 
                     if (!$esSuperAdminOJefe && !empty($bodegasUsuario)) {
                         $query->whereIn('bodega_id', $bodegasUsuario);

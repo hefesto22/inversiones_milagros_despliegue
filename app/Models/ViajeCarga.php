@@ -23,6 +23,9 @@ class ViajeCarga extends Model
         'cantidad',
         'costo_unitario',
         'costo_bodega_original', // Costo original de bodega antes de cargar (para restaurar al eliminar)
+        'cantidad_de_bodega',    // Unidades que vinieron de bodega
+        'cantidad_de_lote',      // Unidades que vinieron del reempaque automático de lotes
+        'costo_unitario_lote',   // Costo unitario de las unidades del lote/reempaque
         'precio_venta_sugerido',
         'precio_venta_minimo',
         'subtotal_costo',
@@ -36,6 +39,9 @@ class ViajeCarga extends Model
         'cantidad' => 'decimal:3',
         'costo_unitario' => 'decimal:4',
         'costo_bodega_original' => 'decimal:4',
+        'cantidad_de_bodega' => 'decimal:3',
+        'cantidad_de_lote' => 'decimal:3',
+        'costo_unitario_lote' => 'decimal:4',
         'precio_venta_sugerido' => 'decimal:2',
         'precio_venta_minimo' => 'decimal:2',
         'subtotal_costo' => 'decimal:2',
@@ -208,19 +214,32 @@ class ViajeCarga extends Model
      */
     public function getCantidadDeBodega(): float
     {
-        $cantidadTotal = floatval($this->cantidad);
-        
-        if (!$this->reempaque_id) {
-            return $cantidadTotal; // Todo vino de bodega
+        // Usar campo directo si está poblado
+        if (floatval($this->cantidad_de_bodega) > 0 || floatval($this->cantidad_de_lote) > 0) {
+            return floatval($this->cantidad_de_bodega);
         }
 
-        // Si hay reempaque, calcular cuánto vino del reempaque
+        // Fallback legacy: calcular desde reempaque
+        $cantidadTotal = floatval($this->cantidad);
+
+        if (!$this->reempaque_id) {
+            return $cantidadTotal;
+        }
+
         $reempaqueProducto = ReempaqueProducto::where('reempaque_id', $this->reempaque_id)
             ->where('producto_id', $this->producto_id)
             ->first();
 
         $cantidadReempacada = floatval($reempaqueProducto->cantidad ?? 0);
         return max(0, $cantidadTotal - $cantidadReempacada);
+    }
+
+    /**
+     * Obtener la cantidad que vino del lote (reempaque automático)
+     */
+    public function getCantidadDeLote(): float
+    {
+        return floatval($this->cantidad_de_lote ?? 0);
     }
 
     /**

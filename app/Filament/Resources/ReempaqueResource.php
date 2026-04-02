@@ -678,12 +678,14 @@ class ReempaqueResource extends Resource
                         'en_proceso' => 'En Proceso',
                         'completado' => 'Completado',
                         'cancelado' => 'Cancelado',
+                        'revertido' => 'Revertido',
                         default => $state,
                     })
                     ->color(fn($state) => match ($state) {
                         'en_proceso' => 'warning',
                         'completado' => 'success',
                         'cancelado' => 'danger',
+                        'revertido' => 'info',
                         default => 'gray',
                     }),
 

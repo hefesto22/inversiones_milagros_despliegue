@@ -41,6 +41,11 @@ class ListReempaques extends ListRecords
                 ->modifyQueryUsing(fn(Builder $query) => $query->where('estado', 'cancelado'))
                 ->badge(fn() => \App\Models\Reempaque::where('estado', 'cancelado')->count())
                 ->badgeColor('danger'),
+
+            'revertidos' => Tab::make('Revertidos')
+                ->modifyQueryUsing(fn(Builder $query) => $query->where('estado', 'revertido'))
+                ->badge(fn() => \App\Models\Reempaque::where('estado', 'revertido')->count())
+                ->badgeColor('info'),
         ];
     }
 }

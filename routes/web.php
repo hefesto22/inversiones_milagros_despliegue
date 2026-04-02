@@ -27,9 +27,10 @@ Route::middleware(['auth'])->group(function () {
     Route::get('settings/appearance', Appearance::class)->name('settings.appearance');
 
     // API para buscar clientes (Punto de Venta en Ruta)
+    // throttle:60,1 → máximo 60 peticiones por minuto por IP para evitar scraping/abuso
     Route::get('/api/clientes/buscar', function (Request $request) {
         $query = $request->get('q', '');
-        
+
         if (strlen($query) < 2) {
             return response()->json([]);
         }
@@ -44,7 +45,7 @@ Route::middleware(['auth'])->group(function () {
             ->get(['id', 'nombre', 'rtn', 'telefono', 'tipo']);
 
         return response()->json($clientes);
-    });
+    })->middleware('throttle:60,1');
 
     // Imprimir venta de viaje
     Route::get('/viaje-venta/{viajeVenta}/imprimir', [ViajeVentaController::class, 'imprimir'])

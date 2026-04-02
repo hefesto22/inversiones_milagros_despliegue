@@ -8,6 +8,7 @@ use App\Models\Venta;
 use App\Models\Producto;
 use App\Models\Cliente;
 use App\Models\BodegaProducto;
+use App\Application\Services\ReempaqueService;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
@@ -293,27 +294,37 @@ class VentaResource extends Resource
                                             $set('unidad_id', $producto->unidad_id);
                                             $set('aplica_isv', $producto->aplica_isv ?? false);
 
-                                            // Obtener precio y costo de bodega_producto
                                             if ($bodegaId) {
+                                                // Usar ReempaqueService para calcular stock completo (bodega + lote)
+                                                $stockInfo = app(ReempaqueService::class)->calcularStockDisponible($state, $bodegaId);
+
                                                 $bp = BodegaProducto::where('bodega_id', $bodegaId)
                                                     ->where('producto_id', $state)
                                                     ->first();
 
-                                                if ($bp) {
-                                                    // El precio_venta_sugerido YA incluye ISV
+                                                if ($bp || $stockInfo['stock_total'] > 0) {
                                                     $precioConIsv = $bp->precio_venta_sugerido ?? 0;
                                                     $set('precio_con_isv', $precioConIsv);
-                                                    
-                                                    // Calcular precio sin ISV para mostrar
+
                                                     if ($producto->aplica_isv && $precioConIsv > 0) {
                                                         $precioSinIsv = round($precioConIsv / 1.15, 2);
                                                     } else {
                                                         $precioSinIsv = $precioConIsv;
                                                     }
                                                     $set('precio_unitario', number_format($precioSinIsv, 2, '.', ''));
-                                                    
-                                                    $set('costo_unitario', $bp->costo_promedio_actual ?? 0);
-                                                    $set('stock_disponible', $bp->stock ?? 0);
+
+                                                    // Costo: usar promedio ponderado bodega+lote si usa lotes
+                                                    $set('costo_unitario', $stockInfo['costo_promedio']);
+
+                                                    // Stock total (bodega + lote)
+                                                    $set('stock_disponible', $stockInfo['stock_total']);
+
+                                                    // Campos de origen para la lógica de deducción
+                                                    $set('usa_lotes', $stockInfo['usa_lotes']);
+                                                    $set('stock_en_bodega', $stockInfo['stock_en_bodega']);
+                                                    $set('stock_desde_lote', $stockInfo['stock_desde_lote']);
+                                                    $set('costo_bodega', $stockInfo['costo_bodega']);
+                                                    $set('costo_lote', $stockInfo['costo_lote']);
                                                 }
                                             }
 
@@ -344,6 +355,11 @@ class VentaResource extends Resource
                                 Forms\Components\Hidden::make('costo_unitario')->default(0),
                                 Forms\Components\Hidden::make('aplica_isv')->default(false),
                                 Forms\Components\Hidden::make('precio_con_isv')->default(0),
+                                Forms\Components\Hidden::make('usa_lotes')->default(false)->dehydrated(false),
+                                Forms\Components\Hidden::make('stock_en_bodega')->default(0)->dehydrated(false),
+                                Forms\Components\Hidden::make('stock_desde_lote')->default(0)->dehydrated(false),
+                                Forms\Components\Hidden::make('costo_bodega')->default(0)->dehydrated(false),
+                                Forms\Components\Hidden::make('costo_lote')->default(0)->dehydrated(false),
 
                                 Forms\Components\TextInput::make('cantidad')
                                     ->label('Cantidad')
@@ -371,9 +387,20 @@ class VentaResource extends Resource
 
                                         self::calcularLineaDetalle($get, $set);
                                     })
-                                    ->suffix(fn (Forms\Get $get) =>
-                                        $get('stock_disponible') ? 'Stock: ' . intval($get('stock_disponible')) : ''
-                                    ),
+                                    ->helperText(function (Forms\Get $get) {
+                                        $stockTotal = floatval($get('stock_disponible') ?? 0);
+                                        if ($stockTotal <= 0) return '';
+
+                                        $usaLotes = $get('usa_lotes') ?? false;
+                                        if (!$usaLotes) {
+                                            return 'Stock disponible: ' . intval($stockTotal);
+                                        }
+
+                                        $enBodega = floatval($get('stock_en_bodega') ?? 0);
+                                        $enLote = floatval($get('stock_desde_lote') ?? 0);
+
+                                        return 'Stock: ' . app(ReempaqueService::class)->getStockDisplay($enBodega, $enLote);
+                                    }),
 
                                 Forms\Components\TextInput::make('precio_unitario')
                                     ->label('Precio')
@@ -388,9 +415,9 @@ class VentaResource extends Resource
                                     )
                                     ->helperText(fn (Forms\Get $get) => $get('info_precio_anterior') ?? ''),
 
-                                Forms\Components\Hidden::make('precio_anterior'),
-                                Forms\Components\Hidden::make('stock_disponible'),
-                                Forms\Components\Hidden::make('info_precio_anterior'),
+                                Forms\Components\Hidden::make('precio_anterior')->dehydrated(false),
+                                Forms\Components\Hidden::make('stock_disponible')->dehydrated(false),
+                                Forms\Components\Hidden::make('info_precio_anterior')->dehydrated(false),
 
                                 Forms\Components\Placeholder::make('isv_display')
                                     ->label('ISV')
@@ -728,36 +755,11 @@ class VentaResource extends Resource
                     Tables\Actions\EditAction::make()
                         ->visible(fn (Venta $record) => $record->estado === 'borrador'),
 
-                    Tables\Actions\Action::make('completar')
-                        ->label('Completar Venta')
-                        ->icon('heroicon-o-check-circle')
-                        ->color('success')
-                        ->requiresConfirmation()
-                        ->modalHeading('Completar Venta')
-                        ->modalDescription('¿Confirmar esta venta? Se descontará el stock y no podrá modificarse.')
-                        ->visible(fn (Venta $record) => $record->estado === 'borrador')
-                        ->action(function (Venta $record) {
-                            try {
-                                $record->completar();
-                                \Filament\Notifications\Notification::make()
-                                    ->title('Venta completada')
-                                    ->body('No. ' . $record->numero_venta)
-                                    ->success()
-                                    ->send();
-                            } catch (\Exception $e) {
-                                \Filament\Notifications\Notification::make()
-                                    ->title('Error al completar')
-                                    ->body($e->getMessage())
-                                    ->danger()
-                                    ->send();
-                            }
-                        }),
-
                     Tables\Actions\Action::make('registrar_pago')
                         ->label('Registrar Pago')
                         ->icon('heroicon-o-banknotes')
                         ->color('success')
-                        ->visible(fn (Venta $record) => $record->saldo_pendiente > 0)
+                        ->visible(fn (Venta $record) => $record->saldo_pendiente > 0 && !in_array($record->estado, ['cancelada', 'pagada']))
                         ->form([
                             Forms\Components\Placeholder::make('info_saldo')
                                 ->label('Saldo Pendiente')
@@ -793,7 +795,27 @@ class VentaResource extends Resource
                                 ->rows(2),
                         ])
                         ->action(function (Venta $record, array $data) {
-                            $record->registrarPago(
+                            $ventaService = app(\App\Application\Services\VentaService::class);
+
+                            // Si está en borrador, completar primero (descuenta stock)
+                            // autoRegistrarPago: false → no marca como pagada, deja el pago al registrarPago()
+                            if ($record->estado === 'borrador') {
+                                try {
+                                    $ventaService->completarVenta($record->id, autoRegistrarPago: false);
+                                    $record->refresh();
+                                } catch (\Exception $e) {
+                                    \Filament\Notifications\Notification::make()
+                                        ->title('Error al procesar venta')
+                                        ->body($e->getMessage())
+                                        ->danger()
+                                        ->send();
+                                    return;
+                                }
+                            }
+
+                            // Registrar pago a través del service (single source of truth)
+                            $ventaService->registrarPago(
+                                $record->id,
                                 $data['monto'],
                                 $data['metodo_pago'],
                                 $data['referencia'] ?? null,
@@ -813,7 +835,10 @@ class VentaResource extends Resource
                         ->color('danger')
                         ->requiresConfirmation()
                         ->modalHeading('Cancelar Venta')
-                        ->visible(fn (Venta $record) => in_array($record->estado, ['borrador', 'completada', 'pendiente_pago']))
+                        ->visible(fn (Venta $record) =>
+                            in_array($record->estado, ['borrador', 'completada', 'pendiente_pago']) &&
+                            $record->monto_pagado <= 0
+                        )
                         ->form([
                             Forms\Components\Textarea::make('motivo')
                                 ->label('Motivo de cancelación')
@@ -828,20 +853,6 @@ class VentaResource extends Resource
                                 ->send();
                         }),
 
-                    Tables\Actions\DeleteAction::make()
-                        ->visible(fn (Venta $record) => $record->estado === 'borrador'),
-                ]),
-            ])
-            ->bulkActions([
-                Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make()
-                        ->before(function ($records) {
-                            foreach ($records as $record) {
-                                if ($record->estado !== 'borrador') {
-                                    throw new \Exception("Solo se pueden eliminar ventas en borrador.");
-                                }
-                            }
-                        }),
                 ]),
             ])
             ->defaultSort('created_at', 'desc')

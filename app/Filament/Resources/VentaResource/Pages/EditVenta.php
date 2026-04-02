@@ -13,7 +13,11 @@ class EditVenta extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
-            Actions\DeleteAction::make(),
+            Actions\DeleteAction::make()
+                ->visible(fn () =>
+                    $this->record->estado === 'borrador' &&
+                    $this->record->monto_pagado <= 0
+                ),
         ];
     }
 }

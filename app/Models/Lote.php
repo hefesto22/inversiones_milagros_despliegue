@@ -2,10 +2,13 @@
 
 namespace App\Models;
 
+use App\Enums\LoteEstado;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class Lote extends Model
 {
@@ -54,6 +57,7 @@ class Lote extends Model
         'costo_total_lote' => 'decimal:4',
         'costo_por_carton_facturado' => 'decimal:4', // FIX: era decimal:2, truncaba precisión
         'costo_por_huevo' => 'decimal:4',
+        'estado' => LoteEstado::class,
     ];
 
     // ============================================
@@ -115,7 +119,8 @@ class Lote extends Model
     // ============================================
 
     /**
-     * Buscar o crear lote único para un producto en una bodega
+     * Buscar o crear lote único para un producto en una bodega.
+     * Usa transacción + lockForUpdate para evitar race conditions.
      */
     public static function obtenerOCrearLoteUnico(
         int $productoId,
@@ -123,20 +128,21 @@ class Lote extends Model
         int $huevosPorCarton = 30,
         ?int $createdBy = null
     ): Lote {
-        $numeroLote = "LU-B{$bodegaId}-P{$productoId}";
-        
-        $lote = self::where('numero_lote', $numeroLote)->first();
+        return DB::transaction(function () use ($productoId, $bodegaId, $huevosPorCarton, $createdBy) {
+            $numeroLote = "LU-B{$bodegaId}-P{$productoId}";
 
-        if ($lote) {
-            if ($lote->estado === 'agotado' || $lote->cantidad_huevos_remanente <= 0) {
-                $lote->resetearParaNuevaCompra();
+            // lockForUpdate evita que dos requests simultáneos creen/modifiquen el mismo lote
+            $lote = self::where('numero_lote', $numeroLote)->lockForUpdate()->first();
+
+            if ($lote) {
+                if ($lote->estado === LoteEstado::Agotado || $lote->cantidad_huevos_remanente <= 0) {
+                    $lote->resetearParaNuevaCompra();
+                }
+                return $lote;
             }
-            return $lote;
-        }
 
-        return self::firstOrCreate(
-            ['numero_lote' => $numeroLote],
-            [
+            return self::create([
+                'numero_lote' => $numeroLote,
                 'producto_id' => $productoId,
                 'bodega_id' => $bodegaId,
                 'huevos_por_carton' => $huevosPorCarton,
@@ -153,10 +159,10 @@ class Lote extends Model
                 'costo_total_lote' => 0,
                 'costo_por_carton_facturado' => 0,
                 'costo_por_huevo' => 0,
-                'estado' => 'disponible',
+                'estado' => LoteEstado::Disponible,
                 'created_by' => $createdBy,
-            ]
-        );
+            ]);
+        });
     }
 
     /**
@@ -177,7 +183,7 @@ class Lote extends Model
         $this->costo_total_lote = 0;
         $this->costo_por_carton_facturado = 0;
         $this->costo_por_huevo = 0;
-        $this->estado = 'disponible';
+        $this->estado = LoteEstado::Disponible;
         $this->save();
     }
 
@@ -186,7 +192,8 @@ class Lote extends Model
     // ============================================
 
     /**
-     * Agregar una compra al lote único con costo promedio ponderado
+     * Agregar una compra al lote único con costo promedio ponderado.
+     * Envuelto en transacción con lock pesimista para garantizar consistencia.
      */
     public function agregarCompra(
         float $cartonesFacturados,
@@ -196,75 +203,90 @@ class Lote extends Model
         int $compraDetalleId,
         int $proveedorId
     ): array {
-        $huevosPorCarton = $this->huevos_por_carton ?? 30;
+        return DB::transaction(function () use ($cartonesFacturados, $cartonesRegalo, $costoCompra, $compraId, $compraDetalleId, $proveedorId) {
+            // Recargar con lock para evitar que otro request modifique el lote simultáneamente
+            $this->refresh();
+            self::where('id', $this->id)->lockForUpdate()->first();
 
-        $huevosFacturadosNuevos = $cartonesFacturados * $huevosPorCarton;
-        $huevosRegaloNuevos = $cartonesRegalo * $huevosPorCarton;
-        $huevosTotalesNuevos = $huevosFacturadosNuevos + $huevosRegaloNuevos;
+            $huevosPorCarton = $this->huevos_por_carton ?? 30;
 
-        $costoPorHuevoCompra = $huevosFacturadosNuevos > 0
-            ? $costoCompra / $huevosFacturadosNuevos
-            : 0;
+            $huevosFacturadosNuevos = $cartonesFacturados * $huevosPorCarton;
+            $huevosRegaloNuevos = $cartonesRegalo * $huevosPorCarton;
+            $huevosTotalesNuevos = $huevosFacturadosNuevos + $huevosRegaloNuevos;
 
-        $huevosFacturadosActuales = $this->huevos_facturados_acumulados ?? 0;
-        $costoActual = $this->costo_total_acumulado ?? 0;
+            $costoPorHuevoCompra = $huevosFacturadosNuevos > 0
+                ? $costoCompra / $huevosFacturadosNuevos
+                : 0;
 
-        $costoTotalNuevo = $costoActual + $costoCompra;
-        $huevosFacturadosTotales = $huevosFacturadosActuales + $huevosFacturadosNuevos;
+            $huevosFacturadosActuales = $this->huevos_facturados_acumulados ?? 0;
+            $costoActual = $this->costo_total_acumulado ?? 0;
 
-        $nuevoCostoPorHuevo = $huevosFacturadosTotales > 0
-            ? $costoTotalNuevo / $huevosFacturadosTotales
-            : 0;
+            $costoTotalNuevo = $costoActual + $costoCompra;
+            $huevosFacturadosTotales = $huevosFacturadosActuales + $huevosFacturadosNuevos;
 
-        // Actualizar lote
-        $this->cantidad_cartones_facturados += $cartonesFacturados;
-        $this->cantidad_cartones_regalo += $cartonesRegalo;
-        $this->cantidad_cartones_recibidos += ($cartonesFacturados + $cartonesRegalo);
-        $this->cantidad_huevos_original += $huevosTotalesNuevos;
-        $this->cantidad_huevos_remanente += $huevosTotalesNuevos;
-        $this->huevos_facturados_acumulados = $huevosFacturadosTotales;
-        $this->huevos_regalo_acumulados += $huevosRegaloNuevos;
-        $this->costo_total_acumulado = $costoTotalNuevo;
-        $this->costo_total_lote = $costoTotalNuevo;
-        
-        // FIX: 4 decimales para mantener precisión en toda la cadena
-        $this->costo_por_carton_facturado = $this->cantidad_cartones_facturados > 0
-            ? round($costoTotalNuevo / $this->cantidad_cartones_facturados, 4)
-            : 0;
-        
-        // costo_por_huevo derivado del costo_por_carton para consistencia
-        $this->costo_por_huevo = $huevosPorCarton > 0
-            ? round($this->costo_por_carton_facturado / $huevosPorCarton, 4)
-            : 0;
-        
-        $this->proveedor_id = $proveedorId;
-        $this->compra_id = $compraId;
-        $this->compra_detalle_id = $compraDetalleId;
-        $this->estado = 'disponible';
+            $nuevoCostoPorHuevo = $huevosFacturadosTotales > 0
+                ? $costoTotalNuevo / $huevosFacturadosTotales
+                : 0;
 
-        $this->save();
+            // Actualizar lote
+            $this->cantidad_cartones_facturados += $cartonesFacturados;
+            $this->cantidad_cartones_regalo += $cartonesRegalo;
+            $this->cantidad_cartones_recibidos += ($cartonesFacturados + $cartonesRegalo);
+            $this->cantidad_huevos_original += $huevosTotalesNuevos;
+            $this->cantidad_huevos_remanente += $huevosTotalesNuevos;
+            $this->huevos_facturados_acumulados = $huevosFacturadosTotales;
+            $this->huevos_regalo_acumulados += $huevosRegaloNuevos;
+            $this->costo_total_acumulado = $costoTotalNuevo;
+            $this->costo_total_lote = $costoTotalNuevo;
 
-        // Registrar en historial
-        HistorialCompraLote::create([
-            'lote_id' => $this->id,
-            'compra_id' => $compraId,
-            'compra_detalle_id' => $compraDetalleId,
-            'proveedor_id' => $proveedorId,
-            'cartones_facturados' => $cartonesFacturados,
-            'cartones_regalo' => $cartonesRegalo,
-            'huevos_agregados' => $huevosTotalesNuevos,
-            'costo_compra' => $costoCompra,
-            'costo_por_huevo_compra' => $costoPorHuevoCompra,
-            'costo_promedio_resultante' => $nuevoCostoPorHuevo,
-            'huevos_totales_resultante' => $this->cantidad_huevos_remanente,
-        ]);
+            // FIX: 4 decimales para mantener precisión en toda la cadena
+            $this->costo_por_carton_facturado = $this->cantidad_cartones_facturados > 0
+                ? round($costoTotalNuevo / $this->cantidad_cartones_facturados, 4)
+                : 0;
 
-        return [
-            'huevos_agregados' => $huevosTotalesNuevos,
-            'costo_compra' => $costoCompra,
-            'nuevo_costo_promedio' => $nuevoCostoPorHuevo,
-            'nuevo_total_huevos' => $this->cantidad_huevos_remanente,
-        ];
+            // costo_por_huevo derivado del costo_por_carton para consistencia
+            $this->costo_por_huevo = $huevosPorCarton > 0
+                ? round($this->costo_por_carton_facturado / $huevosPorCarton, 4)
+                : 0;
+
+            $this->proveedor_id = $proveedorId;
+            $this->compra_id = $compraId;
+            $this->compra_detalle_id = $compraDetalleId;
+            $this->estado = LoteEstado::Disponible;
+
+            $this->save();
+
+            Log::info('Lote: compra agregada', [
+                'lote_id' => $this->id,
+                'compra_id' => $compraId,
+                'huevos_agregados' => $huevosTotalesNuevos,
+                'costo_compra' => $costoCompra,
+                'costo_promedio' => $nuevoCostoPorHuevo,
+                'remanente' => $this->cantidad_huevos_remanente,
+            ]);
+
+            // Registrar en historial (dentro de la misma transacción)
+            HistorialCompraLote::create([
+                'lote_id' => $this->id,
+                'compra_id' => $compraId,
+                'compra_detalle_id' => $compraDetalleId,
+                'proveedor_id' => $proveedorId,
+                'cartones_facturados' => $cartonesFacturados,
+                'cartones_regalo' => $cartonesRegalo,
+                'huevos_agregados' => $huevosTotalesNuevos,
+                'costo_compra' => $costoCompra,
+                'costo_por_huevo_compra' => $costoPorHuevoCompra,
+                'costo_promedio_resultante' => $nuevoCostoPorHuevo,
+                'huevos_totales_resultante' => $this->cantidad_huevos_remanente,
+            ]);
+
+            return [
+                'huevos_agregados' => $huevosTotalesNuevos,
+                'costo_compra' => $costoCompra,
+                'nuevo_costo_promedio' => $nuevoCostoPorHuevo,
+                'nuevo_total_huevos' => $this->cantidad_huevos_remanente,
+            ];
+        });
     }
 
     // ============================================
@@ -348,7 +370,9 @@ class Lote extends Model
     // ============================================
 
     /**
-     * Registrar una merma
+     * Registrar una merma.
+     * Envuelto en transacción con lock pesimista para garantizar consistencia
+     * entre la actualización del lote y la creación de la merma.
      */
     public function registrarMerma(
         float $cantidadHuevos,
@@ -356,54 +380,69 @@ class Lote extends Model
         ?string $descripcion = null,
         ?int $createdBy = null
     ): Merma {
-        if ($cantidadHuevos > $this->cantidad_huevos_remanente) {
-            throw new \Exception(
-                "No hay suficientes huevos en el lote. " .
-                "Disponible: {$this->cantidad_huevos_remanente}, Solicitado: {$cantidadHuevos}"
-            );
-        }
+        return DB::transaction(function () use ($cantidadHuevos, $motivo, $descripcion, $createdBy) {
+            // Recargar con lock para evitar modificaciones concurrentes
+            $this->refresh();
+            self::where('id', $this->id)->lockForUpdate()->first();
 
-        $bufferAntes = $this->getBufferRegaloDisponible();
-
-        $cubiertoBuffer = min($cantidadHuevos, $bufferAntes);
-        $perdidaReal = max(0, $cantidadHuevos - $bufferAntes);
-        $perdidaLempiras = $perdidaReal * floatval($this->costo_por_huevo ?? 0);
-
-        // Actualizar lote
-        $this->cantidad_huevos_remanente -= $cantidadHuevos;
-        $this->merma_total_acumulada += $cantidadHuevos;
-
-        if ($perdidaReal > 0) {
-            $this->huevos_facturados_acumulados = max(0, $this->huevos_facturados_acumulados - $perdidaReal);
-            if ($this->huevos_facturados_acumulados > 0) {
-                $this->costo_por_huevo = round($this->costo_total_acumulado / $this->huevos_facturados_acumulados, 4);
-                // FIX: 4 decimales
-                $this->costo_por_carton_facturado = round($this->costo_por_huevo * ($this->huevos_por_carton ?? 30), 4);
+            if ($cantidadHuevos > $this->cantidad_huevos_remanente) {
+                throw new \Exception(
+                    "No hay suficientes huevos en el lote. " .
+                    "Disponible: {$this->cantidad_huevos_remanente}, Solicitado: {$cantidadHuevos}"
+                );
             }
-        }
 
-        if ($this->cantidad_huevos_remanente <= 0) {
-            $this->cantidad_huevos_remanente = 0;
-            $this->estado = 'agotado';
-        }
+            $bufferAntes = $this->getBufferRegaloDisponible();
 
-        $this->save();
+            $cubiertoBuffer = min($cantidadHuevos, $bufferAntes);
+            $perdidaReal = max(0, $cantidadHuevos - $bufferAntes);
+            $perdidaLempiras = $perdidaReal * floatval($this->costo_por_huevo ?? 0);
 
-        return Merma::create([
-            'lote_id' => $this->id,
-            'bodega_id' => $this->bodega_id,
-            'producto_id' => $this->producto_id,
-            'numero_merma' => Merma::generarNumeroMerma($this->bodega_id),
-            'cantidad_huevos' => $cantidadHuevos,
-            'cubierto_por_regalo' => $cubiertoBuffer,
-            'perdida_real_huevos' => $perdidaReal,
-            'perdida_real_lempiras' => round($perdidaLempiras, 2),
-            'motivo' => $motivo,
-            'descripcion' => $descripcion,
-            'buffer_antes' => $bufferAntes,
-            'buffer_despues' => $this->getBufferRegaloDisponible(),
-            'created_by' => $createdBy,
-        ]);
+            // Actualizar lote
+            $this->cantidad_huevos_remanente -= $cantidadHuevos;
+            $this->merma_total_acumulada += $cantidadHuevos;
+
+            if ($perdidaReal > 0) {
+                $this->huevos_facturados_acumulados = max(0, $this->huevos_facturados_acumulados - $perdidaReal);
+                if ($this->huevos_facturados_acumulados > 0) {
+                    $this->costo_por_huevo = round($this->costo_total_acumulado / $this->huevos_facturados_acumulados, 4);
+                    $this->costo_por_carton_facturado = round($this->costo_por_huevo * ($this->huevos_por_carton ?? 30), 4);
+                }
+            }
+
+            if ($this->cantidad_huevos_remanente <= 0) {
+                $this->cantidad_huevos_remanente = 0;
+                $this->estado = LoteEstado::Agotado;
+            }
+
+            $this->save();
+
+            Log::info('Lote: merma registrada', [
+                'lote_id' => $this->id,
+                'cantidad_huevos' => $cantidadHuevos,
+                'cubierto_buffer' => $cubiertoBuffer,
+                'perdida_real' => $perdidaReal,
+                'perdida_lempiras' => round($perdidaLempiras, 2),
+                'motivo' => $motivo,
+                'remanente' => $this->cantidad_huevos_remanente,
+            ]);
+
+            return Merma::create([
+                'lote_id' => $this->id,
+                'bodega_id' => $this->bodega_id,
+                'producto_id' => $this->producto_id,
+                'numero_merma' => Merma::generarNumeroMerma($this->bodega_id),
+                'cantidad_huevos' => $cantidadHuevos,
+                'cubierto_por_regalo' => $cubiertoBuffer,
+                'perdida_real_huevos' => $perdidaReal,
+                'perdida_real_lempiras' => round($perdidaLempiras, 2),
+                'motivo' => $motivo,
+                'descripcion' => $descripcion,
+                'buffer_antes' => $bufferAntes,
+                'buffer_despues' => $this->getBufferRegaloDisponible(),
+                'created_by' => $createdBy,
+            ]);
+        });
     }
 
     // ============================================
@@ -411,29 +450,71 @@ class Lote extends Model
     // ============================================
 
     /**
-     * Reducir el remanente del lote
+     * Reducir el remanente del lote.
+     * Envuelto en transacción con lock pesimista para evitar que dos ventas
+     * simultáneas reduzcan el stock por debajo de cero.
      */
     public function reducirRemanente(float $cantidadHuevos, float $huevosRegaloUsados = 0): void
     {
-        if ($cantidadHuevos > $this->cantidad_huevos_remanente) {
-            throw new \Exception(
-                "Stock insuficiente en lote {$this->numero_lote}. " .
-                "Disponible: {$this->cantidad_huevos_remanente}, Solicitado: {$cantidadHuevos}"
-            );
-        }
+        DB::transaction(function () use ($cantidadHuevos, $huevosRegaloUsados) {
+            // Recargar con lock para leer el remanente real actual
+            $this->refresh();
+            self::where('id', $this->id)->lockForUpdate()->first();
 
-        $this->cantidad_huevos_remanente -= $cantidadHuevos;
+            if ($cantidadHuevos > $this->cantidad_huevos_remanente) {
+                throw new \Exception(
+                    "Stock insuficiente en lote {$this->numero_lote}. " .
+                    "Disponible: {$this->cantidad_huevos_remanente}, Solicitado: {$cantidadHuevos}"
+                );
+            }
 
-        if ($huevosRegaloUsados > 0) {
-            $this->huevos_regalo_consumidos = ($this->huevos_regalo_consumidos ?? 0) + $huevosRegaloUsados;
-        }
+            $this->cantidad_huevos_remanente -= $cantidadHuevos;
 
-        if ($this->cantidad_huevos_remanente <= 0) {
-            $this->cantidad_huevos_remanente = 0;
-            $this->estado = 'agotado';
-        }
+            if ($huevosRegaloUsados > 0) {
+                $this->huevos_regalo_consumidos = ($this->huevos_regalo_consumidos ?? 0) + $huevosRegaloUsados;
+            }
 
-        $this->save();
+            if ($this->cantidad_huevos_remanente <= 0) {
+                $this->cantidad_huevos_remanente = 0;
+                $this->estado = LoteEstado::Agotado;
+            }
+
+            $this->save();
+        });
+    }
+
+    /**
+     * Devolver huevos al lote (reversión parcial de reempaque).
+     * Inverso de reducirRemanente: incrementa el remanente y ajusta huevos_regalo_consumidos.
+     */
+    public function devolverHuevos(float $cantidadHuevos, float $huevosRegaloDevueltos = 0): void
+    {
+        DB::transaction(function () use ($cantidadHuevos, $huevosRegaloDevueltos) {
+            $this->refresh();
+            self::where('id', $this->id)->lockForUpdate()->first();
+
+            $this->cantidad_huevos_remanente += $cantidadHuevos;
+
+            if ($huevosRegaloDevueltos > 0) {
+                $this->huevos_regalo_consumidos = max(0, ($this->huevos_regalo_consumidos ?? 0) - $huevosRegaloDevueltos);
+            }
+
+            // Si el lote estaba agotado y ahora tiene huevos, reactivarlo
+            if ($this->cantidad_huevos_remanente > 0 && $this->estado === LoteEstado::Agotado) {
+                $this->estado = LoteEstado::Disponible;
+            }
+
+            $this->save();
+
+            Log::info("Huevos devueltos al lote", [
+                'lote_id' => $this->id,
+                'numero_lote' => $this->numero_lote,
+                'huevos_devueltos' => $cantidadHuevos,
+                'huevos_regalo_devueltos' => $huevosRegaloDevueltos,
+                'remanente_nuevo' => $this->cantidad_huevos_remanente,
+                'estado_nuevo' => $this->estado->value ?? $this->estado,
+            ]);
+        });
     }
 
     /**
@@ -473,7 +554,7 @@ class Lote extends Model
      */
     public function estaDisponible(): bool
     {
-        return $this->estado === 'disponible' && $this->cantidad_huevos_remanente > 0;
+        return $this->estado === LoteEstado::Disponible && $this->cantidad_huevos_remanente > 0;
     }
 
     // ============================================
@@ -482,7 +563,7 @@ class Lote extends Model
 
     public function scopeDisponible($query)
     {
-        return $query->where('estado', 'disponible');
+        return $query->where('estado', LoteEstado::Disponible);
     }
 
     public function scopePorBodega($query, int $bodegaId)

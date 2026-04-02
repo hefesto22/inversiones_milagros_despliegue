@@ -23,6 +23,11 @@ class VentaDetalle extends Model
         'precio_unitario',
         'precio_con_isv',
         'costo_unitario',
+        'cantidad_de_bodega',
+        'cantidad_de_lote',
+        'reempaque_id',
+        'costo_bodega_original',
+        'costo_unitario_lote',
         'aplica_isv',
         'isv_unitario',
         'descuento_porcentaje',
@@ -37,7 +42,11 @@ class VentaDetalle extends Model
         'cantidad' => 'decimal:2',
         'precio_unitario' => 'decimal:2',
         'precio_con_isv' => 'decimal:2',
-        'costo_unitario' => 'decimal:2',
+        'costo_unitario' => 'decimal:4',
+        'cantidad_de_bodega' => 'decimal:3',
+        'cantidad_de_lote' => 'decimal:3',
+        'costo_bodega_original' => 'decimal:4',
+        'costo_unitario_lote' => 'decimal:4',
         'aplica_isv' => 'boolean',
         'isv_unitario' => 'decimal:2',
         'descuento_porcentaje' => 'decimal:2',
@@ -65,6 +74,11 @@ class VentaDetalle extends Model
     public function unidad(): BelongsTo
     {
         return $this->belongsTo(Unidad::class, 'unidad_id');
+    }
+
+    public function reempaque(): BelongsTo
+    {
+        return $this->belongsTo(Reempaque::class, 'reempaque_id');
     }
 
     // ============================================

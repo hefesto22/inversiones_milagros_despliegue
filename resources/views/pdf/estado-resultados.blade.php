@@ -34,6 +34,7 @@
     $claseMargenBruto  = $d['margen_bruto'] >= 15 ? 'color-green' : 'color-yellow';
     $claseMargenOp     = $d['margen_operativo'] >= 8 ? 'color-green' : ($d['margen_operativo'] >= 0 ? 'color-yellow' : 'color-red');
     $claseCxC          = $d['cuentas_por_cobrar'] > 0 ? 'color-yellow' : 'color-green';
+    $claseDPC          = ($d['dias_promedio_cobro'] ?? 0) <= 15 ? 'color-green' : (($d['dias_promedio_cobro'] ?? 0) <= 30 ? 'color-yellow' : 'color-red');
     $claseCostoIng     = $d['costo_sobre_ingreso'] <= 85 ? 'color-green' : 'color-red';
 
     $claseUtilidadBruta   = 'total-row ' . ($d['utilidad_bruta'] >= 0 ? 'total-row-positive' : 'total-row-negative');
@@ -49,9 +50,19 @@
     $varVentasNetas   = $varHtml('ventas_netas');
     $varCostoVentas   = $varHtml('costo_ventas', true);
     $varUtilidadBruta = $varHtml('utilidad_bruta');
-    $varCamionTotal   = $varHtml('gastos_camion_total', true);
-    $varComisiones    = $varHtml('comisiones', true);
-    $varMermas        = $varHtml('mermas_total', true);
+    $varCamionTotal       = $varHtml('gastos_camion_total', true);
+    $varCombustible       = $varHtml('gastos_camion_combustible', true);
+    $varGasolina          = $varHtml('gastos_camion_gasolina', true);
+    $varDiesel            = $varHtml('gastos_camion_diesel', true);
+    $varMantenimiento     = $varHtml('gastos_camion_mantenimiento', true);
+    $varReparacion        = $varHtml('gastos_camion_reparacion', true);
+    $varViaticos          = $varHtml('gastos_camion_viaticos', true);
+    $varCamionOtros       = $varHtml('gastos_camion_otros', true);
+    $varComisiones        = $varHtml('comisiones', true);
+    $varMermas            = $varHtml('mermas_total', true);
+    $varMermasViajes      = $varHtml('mermas_viajes', true);
+    $varMermasReempaques  = $varHtml('mermas_reempaques', true);
+    $varMermasLotes       = $varHtml('mermas_lotes', true);
     $varGastosVenta   = $varHtml('total_gastos_venta', true);
     $varUtilidadOp    = $varHtml('utilidad_operativa');
     $varUtilidadNeta  = $varHtml('utilidad_neta');
@@ -69,9 +80,12 @@
 
     $mostrarISV              = ($d['isv_ventas'] > 0 || $a['isv_ventas'] > 0);
     $mostrarDescuentos       = ($d['descuentos'] > 0 || $a['descuentos'] > 0);
+    $mostrarCombustible      = ($d['gastos_camion_combustible'] > 0 || $a['gastos_camion_combustible'] > 0);
     $mostrarGasolina         = ($d['gastos_camion_gasolina'] > 0 || $a['gastos_camion_gasolina'] > 0);
+    $mostrarDiesel           = ($d['gastos_camion_diesel'] > 0 || $a['gastos_camion_diesel'] > 0);
     $mostrarMantenimiento    = ($d['gastos_camion_mantenimiento'] > 0 || $a['gastos_camion_mantenimiento'] > 0);
     $mostrarReparacion       = ($d['gastos_camion_reparacion'] > 0 || $a['gastos_camion_reparacion'] > 0);
+    $mostrarViaticos         = ($d['gastos_camion_viaticos'] > 0 || $a['gastos_camion_viaticos'] > 0);
     $mostrarCamionOtros      = ($d['gastos_camion_otros'] > 0 || $a['gastos_camion_otros'] > 0);
     $mostrarMaterialEmpaque  = ($d['material_empaque'] > 0 || $materialEmpaqueAnterior > 0);
     $mostrarOtrosBodegaVenta = ($d['otros_gastos_bodega_venta'] > 0);
@@ -166,9 +180,9 @@
         .kpi-section { margin-top: 20px; border-top: 2px solid #1a1a1a; padding-top: 10px; }
         .kpi-title { font-size: 9pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
         .kpi-table { width: 100%; border-collapse: collapse; }
-        .kpi-table td { padding: 6px 8px; border: 1px solid #ddd; text-align: center; font-size: 8pt; }
-        .kpi-label { background-color: #f5f5f5; font-weight: bold; font-size: 7pt; text-transform: uppercase; letter-spacing: 0.3px; }
-        .kpi-value { font-family: 'Courier New', monospace; font-size: 11pt; font-weight: bold; }
+        .kpi-table td { padding: 5px 5px; border: 1px solid #ddd; text-align: center; font-size: 7.5pt; }
+        .kpi-label { background-color: #f5f5f5; font-weight: bold; font-size: 6.5pt; text-transform: uppercase; letter-spacing: 0.3px; }
+        .kpi-value { font-family: 'Courier New', monospace; font-size: 10pt; font-weight: bold; }
         .kpi-sub { font-size: 7pt; color: #888; }
 
         .signatures-table { width: 100%; margin-top: 40px; }
@@ -262,17 +276,25 @@
 
             <tr class="section-header"><td colspan="5">III. Gastos de Venta</td></tr>
             <tr class="detail-row"><td><strong>Transporte y distribucion</strong></td><td class="pct-col">{{ $pct($d['gastos_camion_total']) }}</td><td><strong>{{ $lps($d['gastos_camion_total']) }}</strong></td><td>{{ $lps($a['gastos_camion_total']) }}</td><td>{!! $varCamionTotal !!}</td></tr>
-            @if($mostrarGasolina)
-            <tr class="sub-detail-row"><td>Combustible</td><td class="pct-col"></td><td>{{ $lps($d['gastos_camion_gasolina']) }}</td><td>{{ $lps($a['gastos_camion_gasolina']) }}</td><td>-</td></tr>
+            @if($mostrarCombustible)
+            <tr class="sub-detail-row"><td>Combustible</td><td class="pct-col"></td><td>{{ $lps($d['gastos_camion_combustible']) }}</td><td>{{ $lps($a['gastos_camion_combustible']) }}</td><td>{!! $varCombustible !!}</td></tr>
+            @endif
+            @if($mostrarGasolina && $mostrarDiesel)
+            {{-- Solo mostrar desglose si hay ambos tipos --}}
+            <tr class="sub-detail-row"><td>&nbsp;&nbsp;&nbsp;&nbsp;Gasolina</td><td class="pct-col"></td><td>{{ $lps($d['gastos_camion_gasolina']) }}</td><td>{{ $lps($a['gastos_camion_gasolina']) }}</td><td>{!! $varGasolina !!}</td></tr>
+            <tr class="sub-detail-row"><td>&nbsp;&nbsp;&nbsp;&nbsp;Di&eacute;sel</td><td class="pct-col"></td><td>{{ $lps($d['gastos_camion_diesel']) }}</td><td>{{ $lps($a['gastos_camion_diesel']) }}</td><td>{!! $varDiesel !!}</td></tr>
             @endif
             @if($mostrarMantenimiento)
-            <tr class="sub-detail-row"><td>Mantenimiento preventivo</td><td class="pct-col"></td><td>{{ $lps($d['gastos_camion_mantenimiento']) }}</td><td>{{ $lps($a['gastos_camion_mantenimiento']) }}</td><td>-</td></tr>
+            <tr class="sub-detail-row"><td>Mantenimiento preventivo</td><td class="pct-col"></td><td>{{ $lps($d['gastos_camion_mantenimiento']) }}</td><td>{{ $lps($a['gastos_camion_mantenimiento']) }}</td><td>{!! $varMantenimiento !!}</td></tr>
             @endif
             @if($mostrarReparacion)
-            <tr class="sub-detail-row"><td>Reparaciones</td><td class="pct-col"></td><td>{{ $lps($d['gastos_camion_reparacion']) }}</td><td>{{ $lps($a['gastos_camion_reparacion']) }}</td><td>-</td></tr>
+            <tr class="sub-detail-row"><td>Reparaciones</td><td class="pct-col"></td><td>{{ $lps($d['gastos_camion_reparacion']) }}</td><td>{{ $lps($a['gastos_camion_reparacion']) }}</td><td>{!! $varReparacion !!}</td></tr>
+            @endif
+            @if($mostrarViaticos)
+            <tr class="sub-detail-row"><td>Vi&aacute;ticos</td><td class="pct-col"></td><td>{{ $lps($d['gastos_camion_viaticos']) }}</td><td>{{ $lps($a['gastos_camion_viaticos']) }}</td><td>{!! $varViaticos !!}</td></tr>
             @endif
             @if($mostrarCamionOtros)
-            <tr class="sub-detail-row"><td>Peajes, viaticos y otros</td><td class="pct-col"></td><td>{{ $lps($d['gastos_camion_otros']) }}</td><td>{{ $lps($a['gastos_camion_otros']) }}</td><td>-</td></tr>
+            <tr class="sub-detail-row"><td>Peajes, lavado y otros</td><td class="pct-col"></td><td>{{ $lps($d['gastos_camion_otros']) }}</td><td>{{ $lps($a['gastos_camion_otros']) }}</td><td>{!! $varCamionOtros !!}</td></tr>
             @endif
             @if($mostrarMaterialEmpaque)
             <tr class="detail-row"><td><strong>Material de empaque</strong></td><td class="pct-col">{{ $pct($d['material_empaque']) }}</td><td><strong>{{ $lps($d['material_empaque']) }}</strong></td><td>{{ $lps($materialEmpaqueAnterior) }}</td><td>-</td></tr>
@@ -286,13 +308,13 @@
             @endif
             <tr class="detail-row"><td><strong>Mermas y perdidas</strong></td><td class="pct-col">{{ $pct($d['mermas_total']) }}</td><td><strong>{{ $lps($d['mermas_total']) }}</strong></td><td>{{ $lps($a['mermas_total']) }}</td><td>{!! $varMermas !!}</td></tr>
             @if($mostrarMermasViajes)
-            <tr class="sub-detail-row"><td>Mermas en transporte</td><td class="pct-col"></td><td>{{ $lps($d['mermas_viajes']) }}</td><td>{{ $lps($a['mermas_viajes']) }}</td><td>-</td></tr>
+            <tr class="sub-detail-row"><td>Mermas en transporte</td><td class="pct-col"></td><td>{{ $lps($d['mermas_viajes']) }}</td><td>{{ $lps($a['mermas_viajes']) }}</td><td>{!! $varMermasViajes !!}</td></tr>
             @endif
             @if($mostrarMermasReempaques)
-            <tr class="sub-detail-row"><td>Mermas en reempaque</td><td class="pct-col"></td><td>{{ $lps($d['mermas_reempaques']) }}</td><td>{{ $lps($a['mermas_reempaques']) }}</td><td>-</td></tr>
+            <tr class="sub-detail-row"><td>Mermas en reempaque</td><td class="pct-col"></td><td>{{ $lps($d['mermas_reempaques']) }}</td><td>{{ $lps($a['mermas_reempaques']) }}</td><td>{!! $varMermasReempaques !!}</td></tr>
             @endif
             @if($mostrarMermasLotes)
-            <tr class="sub-detail-row"><td>Mermas en lotes (bodega)</td><td class="pct-col"></td><td>{{ $lps($d['mermas_lotes']) }}</td><td>{{ $lps($a['mermas_lotes']) }}</td><td>-</td></tr>
+            <tr class="sub-detail-row"><td>Mermas en lotes (bodega)</td><td class="pct-col"></td><td>{{ $lps($d['mermas_lotes']) }}</td><td>{{ $lps($a['mermas_lotes']) }}</td><td>{!! $varMermasLotes !!}</td></tr>
             @endif
             <tr class="subtotal-row deduction-row"><td>(-) Total Gastos de Venta</td><td class="pct-col color-deduction">{{ $pct($d['total_gastos_venta']) }}</td><td>{{ $lps($d['total_gastos_venta']) }}</td><td>{{ $lps($a['total_gastos_venta']) }}</td><td>{!! $varGastosVenta !!}</td></tr>
 
@@ -314,13 +336,16 @@
             <tr class="{{ $claseUtilidadOp }}"><td>UTILIDAD OPERATIVA (EBIT)</td><td class="{{ $clasePctOp }}">{{ $pct($d['utilidad_operativa']) }}</td><td>{{ $lps($d['utilidad_operativa']) }}</td><td>{{ $lps($a['utilidad_operativa']) }}</td><td>{!! $varUtilidadOp !!}</td></tr>
             <tr class="margin-row"><td colspan="5">{{ $margenOpTexto }}</td></tr>
 
-            <tr class="section-header"><td colspan="5">V. Impuesto Sobre la Renta</td></tr>
+            <tr class="section-header"><td colspan="5">V. Otros Ingresos y Gastos No Operativos</td></tr>
+            <tr class="detail-row"><td class="text-muted">Sin movimientos no operativos en el periodo</td><td class="pct-col">-</td><td class="text-muted">{{ $lps(0) }}</td><td class="text-muted">{{ $lps(0) }}</td><td>-</td></tr>
+
+            <tr class="section-header"><td colspan="5">VI. Impuesto Sobre la Renta</td></tr>
             <tr class="detail-row"><td>Utilidad antes de ISR</td><td class="pct-col">{{ $pct($d['utilidad_antes_isr']) }}</td><td>{{ $lps($d['utilidad_antes_isr']) }}</td><td>{{ $lps($a['utilidad_antes_isr']) }}</td><td>-</td></tr>
             @if($mostrarISR)
             <tr class="deduction-row"><td>{{ $isrLabel }}</td><td class="pct-col">{{ $pct($d['isr_estimado']) }}</td><td>{{ $lps($d['isr_estimado']) }}</td><td>{{ $lps($a['isr_estimado']) }}</td><td>-</td></tr>
             @endif
 
-            <tr class="section-header"><td colspan="5">VI. Resultado del Periodo</td></tr>
+            <tr class="section-header"><td colspan="5">VII. Resultado del Periodo</td></tr>
             <tr class="{{ $claseResultadoFinal }}"><td>UTILIDAD (PERDIDA) NETA</td><td class="{{ $clasePctFinal }}">{{ $pct($d['utilidad_neta']) }}</td><td>{{ $lps($d['utilidad_neta']) }}</td><td>{{ $lps($a['utilidad_neta']) }}</td><td>{!! $varUtilidadNeta !!}</td></tr>
             <tr class="margin-row"><td colspan="5">{{ $margenNetoTexto }}</td></tr>
         </tbody>
@@ -337,6 +362,7 @@
                 <td class="kpi-label">Margen Bruto</td>
                 <td class="kpi-label">Margen Operativo</td>
                 <td class="kpi-label">Cuentas por Cobrar</td>
+                <td class="kpi-label">Dias Prom. Cobro</td>
                 <td class="kpi-label">Costo / Ingreso</td>
             </tr>
             <tr>
@@ -344,6 +370,7 @@
                 <td><div class="kpi-value {{ $claseMargenBruto }}">{{ number_format($d['margen_bruto'], 1) }}%</div><div class="kpi-sub">Meta: mayor a 15%</div></td>
                 <td><div class="kpi-value {{ $claseMargenOp }}">{{ number_format($d['margen_operativo'], 1) }}%</div><div class="kpi-sub">Meta: mayor a 8%</div></td>
                 <td><div class="kpi-value {{ $claseCxC }}">{{ $lps($d['cuentas_por_cobrar']) }}</div><div class="kpi-sub">Del periodo</div></td>
+                <td><div class="kpi-value {{ $claseDPC }}">{{ number_format($d['dias_promedio_cobro'] ?? 0, 0) }}</div><div class="kpi-sub">Meta: menor a 15 dias</div></td>
                 <td><div class="kpi-value {{ $claseCostoIng }}">{{ number_format($d['costo_sobre_ingreso'], 1) }}%</div><div class="kpi-sub">Meta: menor a 85%</div></td>
             </tr>
         </table>

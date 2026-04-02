@@ -98,6 +98,16 @@ class Reempaque extends Model
         return $query->where('estado', 'cancelado');
     }
 
+    public function scopeRevertido($query)
+    {
+        return $query->where('estado', 'revertido');
+    }
+
+    public function scopeInactivo($query)
+    {
+        return $query->whereIn('estado', ['cancelado', 'revertido']);
+    }
+
     public function scopeIndividual($query)
     {
         return $query->where('tipo', 'individual');
@@ -136,9 +146,22 @@ class Reempaque extends Model
         return $this->estado === 'cancelado';
     }
 
+    public function estaRevertido(): bool
+    {
+        return $this->estado === 'revertido';
+    }
+
+    /**
+     * Verificar si el reempaque está inactivo (cancelado o revertido)
+     */
+    public function estaInactivo(): bool
+    {
+        return in_array($this->estado, ['cancelado', 'revertido']);
+    }
+
     public function puedeCancelarse(): bool
     {
-        return $this->estado !== 'cancelado';
+        return !in_array($this->estado, ['cancelado', 'revertido']);
     }
 
     public function getTotalHuevosEmpacados(): int
@@ -161,26 +184,20 @@ class Reempaque extends Model
 
     public function getTotalHuevosRegaloUsados(): float
     {
-        $total = 0;
-        foreach ($this->reempaqueLotes as $reempaqueLote) {
-            $lote = $reempaqueLote->lote;
-            $huevosPorCarton = $lote->huevos_por_carton ?? 30;
-            $total += ($reempaqueLote->cartones_regalo_usados ?? 0) * $huevosPorCarton;
-        }
-        return $total;
+        // FIX N+1: usa JOIN en lugar de iterar con lazy loading de lote por cada reempaqueLote.
+        return (float) $this->reempaqueLotes()
+            ->join('lotes', 'reempaque_lotes.lote_id', '=', 'lotes.id')
+            ->selectRaw('COALESCE(SUM(reempaque_lotes.cartones_regalo_usados * COALESCE(lotes.huevos_por_carton, 30)), 0) AS total')
+            ->value('total');
     }
 
     public function getBeneficioRegalos(): float
     {
-        $beneficio = 0;
-
-        foreach ($this->reempaqueLotes as $reempaqueLote) {
-            $lote = $reempaqueLote->lote;
-            $huevosRegaloUsados = $reempaqueLote->cartones_regalo_usados * $lote->huevos_por_carton;
-            $beneficio += $huevosRegaloUsados * floatval($lote->costo_por_huevo);
-        }
-
-        return $beneficio;
+        // FIX N+1: usa JOIN en lugar de iterar con lazy loading de lote por cada reempaqueLote.
+        return (float) $this->reempaqueLotes()
+            ->join('lotes', 'reempaque_lotes.lote_id', '=', 'lotes.id')
+            ->selectRaw('COALESCE(SUM(reempaque_lotes.cartones_regalo_usados * COALESCE(lotes.huevos_por_carton, 30) * lotes.costo_por_huevo), 0) AS beneficio')
+            ->value('beneficio');
     }
 
     public function getEficiencia(): float
@@ -296,7 +313,10 @@ class Reempaque extends Model
 
         static::creating(function ($reempaque) {
             if (!$reempaque->numero_reempaque) {
+                // lockForUpdate previene race conditions en generación de números.
+                // Requiere que la creación del reempaque esté dentro de una transacción.
                 $ultimoReempaque = static::where('bodega_id', $reempaque->bodega_id)
+                    ->lockForUpdate()
                     ->orderBy('id', 'desc')
                     ->first();
 

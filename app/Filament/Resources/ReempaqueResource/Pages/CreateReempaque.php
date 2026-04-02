@@ -100,7 +100,7 @@ class CreateReempaque extends CreateRecord
             $lote->refresh();
             
             // Verificar que el lote no este agotado
-            if ($lote->estado === 'agotado') {
+            if ($lote->estado === \App\Enums\LoteEstado::Agotado) {
                 Notification::make()
                     ->title('Lote agotado')
                     ->body("El lote {$lote->numero_lote} esta agotado y no puede usarse.")
@@ -250,6 +250,9 @@ class CreateReempaque extends CreateRecord
         $data['cartones_15'] = $cartones15Total;
         $data['huevos_sueltos'] = 0;
         $data['merma'] = 0;
+
+        // Remover campos del formulario que no son columnas de la tabla
+        unset($data['lotes_seleccionados'], $data['distribuciones']);
 
         return $data;
     }
@@ -428,7 +431,6 @@ class CreateReempaque extends CreateRecord
             'producto_id' => $producto->id,
             'bodega_id' => $bodegaId,
             'cantidad' => $cantidad,
-            'huevos_por_unidad' => $huevosPorUnidad,
             'costo_unitario' => round($costoUnitario, 4),
             'costo_total' => round($costoTotal, 4),
             'agregado_a_stock' => true,

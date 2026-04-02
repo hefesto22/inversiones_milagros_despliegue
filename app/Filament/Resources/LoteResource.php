@@ -2,7 +2,10 @@
 
 namespace App\Filament\Resources;
 
+use App\Enums\LoteEstado;
+use App\Enums\MermaMotivo;
 use App\Filament\Resources\LoteResource\Pages;
+use App\Models\Concerns\HasBodegaScope;
 use App\Models\Lote;
 use App\Models\Merma;
 use Filament\Forms;
@@ -17,6 +20,7 @@ use Filament\Notifications\Notification;
 
 class LoteResource extends Resource
 {
+    use HasBodegaScope;
     protected static ?string $model = Lote::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-archive-box';
@@ -31,31 +35,7 @@ class LoteResource extends Resource
 
     public static function getEloquentQuery(): Builder
     {
-        $query = parent::getEloquentQuery();
-        $currentUser = Auth::user();
-
-        if (!$currentUser) {
-            return $query->whereRaw('1 = 0');
-        }
-
-        $esSuperAdminOJefe = DB::table('model_has_roles')
-            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-            ->where('model_has_roles.model_id', '=', $currentUser->id)
-            ->whereIn('roles.name', ['Super Admin', 'Jefe'])
-            ->exists();
-
-        if ($esSuperAdminOJefe) {
-            return $query;
-        }
-
-        $bodegasUsuario = DB::table('bodega_user')
-            ->where('user_id', $currentUser->id)
-            ->where('activo', true)
-            ->pluck('bodega_id')
-            ->toArray();
-
-        return $query->whereIn('bodega_id', $bodegasUsuario);
+        return self::scopeQueryPorBodega(parent::getEloquentQuery());
     }
 
     public static function form(Form $form): Form
@@ -92,10 +72,7 @@ class LoteResource extends Resource
 
                                 Forms\Components\Select::make('estado')
                                     ->label('Estado')
-                                    ->options([
-                                        'disponible' => 'Disponible',
-                                        'agotado' => 'Agotado',
-                                    ])
+                                    ->options(LoteEstado::options())
                                     ->disabled()
                                     ->dehydrated(false),
                             ]),
@@ -256,8 +233,8 @@ class LoteResource extends Resource
 
                 Tables\Columns\TextColumn::make('estado')
                     ->badge()
-                    ->formatStateUsing(fn($state) => $state === 'disponible' ? 'Disponible' : 'Agotado')
-                    ->color(fn($state) => $state === 'disponible' ? 'success' : 'gray')
+                    ->formatStateUsing(fn($state) => $state instanceof LoteEstado ? $state->label() : (LoteEstado::tryFrom($state)?->label() ?? $state))
+                    ->color(fn($state) => $state instanceof LoteEstado ? $state->color() : (LoteEstado::tryFrom($state)?->color() ?? 'gray'))
                     ->sortable(),
 
                 Tables\Columns\TextColumn::make('created_at')
@@ -268,28 +245,15 @@ class LoteResource extends Resource
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('estado')
-                    ->options([
-                        'disponible' => 'Disponible',
-                        'agotado' => 'Agotado',
-                    ])
-                    ->default('disponible'),
+                    ->options(LoteEstado::options())
+                    ->default(LoteEstado::Disponible->value),
 
                 Tables\Filters\SelectFilter::make('bodega_id')
                     ->label('Bodega')
                     ->relationship('bodega', 'nombre')
                     ->searchable()
                     ->preload()
-                    ->visible(function () {
-                        $currentUser = Auth::user();
-                        if (!$currentUser) return false;
-
-                        return DB::table('model_has_roles')
-                            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-                            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-                            ->where('model_has_roles.model_id', '=', $currentUser->id)
-                            ->whereIn('roles.name', ['Super Admin', 'Jefe'])
-                            ->exists();
-                    }),
+                    ->visible(fn () => self::esSuperAdminOJefe()),
 
                 Tables\Filters\SelectFilter::make('producto_id')
                     ->label('Producto')
@@ -383,14 +347,10 @@ class LoteResource extends Resource
                             ->label('Motivo')
                             ->required()
                             ->options([
-                                'rotos' => 'Rotos',
-                                'podridos' => 'Podridos',
-                                'vencidos' => 'Vencidos',
-                                'dañados_transporte' => 'Danados en Transporte',
-                                'otros' => 'Otros',
+                                ...MermaMotivo::options(),
                             ])
                             ->native(false)
-                            ->default('rotos'),
+                            ->default(MermaMotivo::Rotos->value),
 
                         Forms\Components\Textarea::make('descripcion')
                             ->label('Descripcion (opcional)')
@@ -469,7 +429,7 @@ class LoteResource extends Resource
                             ->duration(5000)
                             ->send();
                     })
-                    ->visible(fn($record) => $record->estado === 'disponible' && $record->cantidad_huevos_remanente > 0)
+                    ->visible(fn($record) => $record->estado === LoteEstado::Disponible && $record->cantidad_huevos_remanente > 0)
                     ->modalWidth('lg'),
 
                 // ACCION: ELIMINAR MERMA
@@ -591,7 +551,7 @@ class LoteResource extends Resource
                     ->icon('heroicon-o-arrow-path')
                     ->color('success')
                     ->url(fn() => route('filament.admin.resources.reempaques.create'))
-                    ->visible(fn($record) => $record->estado === 'disponible' && $record->cantidad_huevos_remanente > 0),
+                    ->visible(fn($record) => $record->estado === LoteEstado::Disponible && $record->cantidad_huevos_remanente > 0),
             ])
             ->bulkActions([
                 // Sin acciones bulk
@@ -617,29 +577,11 @@ class LoteResource extends Resource
 
     public static function getNavigationBadge(): ?string
     {
-        $currentUser = Auth::user();
-
-        if (!$currentUser) {
-            return null;
-        }
-
-        $esSuperAdminOJefe = DB::table('model_has_roles')
-            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-            ->where('model_has_roles.model_id', '=', $currentUser->id)
-            ->whereIn('roles.name', ['Super Admin', 'Jefe'])
-            ->exists();
-
-        $query = static::getModel()::where('estado', 'disponible')
+        $query = static::getModel()::where('estado', LoteEstado::Disponible)
             ->where('cantidad_huevos_remanente', '>', 0);
 
-        if (!$esSuperAdminOJefe) {
-            $bodegasUsuario = DB::table('bodega_user')
-                ->where('user_id', $currentUser->id)
-                ->where('activo', true)
-                ->pluck('bodega_id')
-                ->toArray();
-
+        if (!self::esSuperAdminOJefe()) {
+            $bodegasUsuario = self::getBodegasUsuario();
             if (!empty($bodegasUsuario)) {
                 $query->whereIn('bodega_id', $bodegasUsuario);
             }

@@ -95,8 +95,8 @@ class CamionGastoResource extends Resource
                                 Forms\Components\TextInput::make('litros')
                                     ->label('Litros')
                                     ->numeric()
-                                    ->minValue(0.001)
-                                    ->step(0.001)
+                                    ->minValue(0.01)
+                                    ->step(0.01)
                                     ->suffix('L'),
 
                                 Forms\Components\TextInput::make('precio_por_litro')
@@ -113,7 +113,7 @@ class CamionGastoResource extends Resource
                                     ->minValue(0),
                             ]),
                     ])
-                    ->visible(fn(Forms\Get $get) => $get('tipo_gasto') === 'gasolina')
+                    ->visible(fn(Forms\Get $get) => in_array($get('tipo_gasto'), CamionGasto::TIPOS_COMBUSTIBLE))
                     ->collapsible(),
 
                 Forms\Components\Section::make('Comprobante')
@@ -177,7 +177,7 @@ class CamionGastoResource extends Resource
                     ->badge()
                     ->formatStateUsing(fn($state) => CamionGasto::TIPOS_GASTO[$state] ?? $state)
                     ->color(fn($state) => match ($state) {
-                        'gasolina' => 'warning',
+                        'gasolina', 'diesel' => 'warning',
                         'mantenimiento' => 'info',
                         'reparacion' => 'danger',
                         'peaje' => 'gray',

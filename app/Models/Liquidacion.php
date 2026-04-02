@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use App\Models\Viaje;
 
 class Liquidacion extends Model
 {
@@ -124,6 +125,14 @@ class Liquidacion extends Model
                     "Pago liquidación {$this->numero_liquidacion}"
                 );
             }
+
+            // Sincronizar: marcar viajes individuales como comisión pagada
+            $viajeIds = $this->viajes()->pluck('viaje_id');
+            Viaje::whereIn('id', $viajeIds)
+                ->update([
+                    'comision_pagada' => true,
+                    'fecha_pago_comision' => now(),
+                ]);
         });
     }
 

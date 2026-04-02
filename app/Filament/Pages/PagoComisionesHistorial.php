@@ -2,25 +2,23 @@
 
 namespace App\Filament\Pages;
 
+use App\Models\Liquidacion;
 use App\Models\User;
-use App\Models\Viaje;
 use Filament\Pages\Page;
-use Filament\Forms\Components\Select;
-use Filament\Forms\Components\DatePicker;
-use Filament\Forms\Concerns\InteractsWithForms;
-use Filament\Forms\Contracts\HasForms;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Columns\Summarizers\Sum;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Filters\Filter;
 use Filament\Tables\Grouping\Group;
+use Filament\Tables\Actions\Action as TableAction;
+use Filament\Forms\Components\DatePicker;
 use Illuminate\Database\Eloquent\Builder;
 
-class PagoComisionesHistorial extends Page implements HasForms, HasTable
+class PagoComisionesHistorial extends Page implements HasTable
 {
-    use InteractsWithForms;
     use InteractsWithTable;
 
     protected static ?string $navigationIcon = 'heroicon-o-clock';
@@ -35,22 +33,20 @@ class PagoComisionesHistorial extends Page implements HasForms, HasTable
 
     protected static string $view = 'filament.pages.pago-comisiones-historial';
 
-    protected static bool $shouldRegisterNavigation = false; // No mostrar en menú principal
+    protected static bool $shouldRegisterNavigation = false;
 
     public function table(Table $table): Table
     {
         return $table
             ->query(
-                Viaje::query()
-                    ->where('estado', 'cerrado')
-                    ->where('comision_pagada', true)
-                    ->whereNotNull('fecha_pago_comision')
+                Liquidacion::query()
+                    ->where('estado', Liquidacion::ESTADO_PAGADA)
+                    ->with(['chofer'])
             )
             ->columns([
-                TextColumn::make('fecha_pago_comision')
-                    ->label('Fecha Pago')
-                    ->date('d/m/Y')
-                    ->sortable()
+                TextColumn::make('numero_liquidacion')
+                    ->label('No. Liquidación')
+                    ->searchable()
                     ->weight('bold'),
 
                 TextColumn::make('chofer.name')
@@ -58,35 +54,53 @@ class PagoComisionesHistorial extends Page implements HasForms, HasTable
                     ->searchable()
                     ->sortable(),
 
-                TextColumn::make('numero_viaje')
-                    ->label('No. Viaje')
-                    ->searchable(),
-
-                TextColumn::make('fecha_salida')
-                    ->label('Fecha Viaje')
-                    ->date('d/m/Y')
+                TextColumn::make('fecha_inicio')
+                    ->label('Período')
+                    ->formatStateUsing(fn ($record) => $record->fecha_inicio->format('d/m/Y') . ' - ' . $record->fecha_fin->format('d/m/Y'))
                     ->sortable(),
 
-                TextColumn::make('camion.placa')
-                    ->label('Camión')
+                TextColumn::make('total_viajes')
+                    ->label('Viajes')
+                    ->alignCenter()
                     ->badge()
                     ->color('gray'),
 
-                TextColumn::make('comision_ganada')
-                    ->label('Comisión')
+                TextColumn::make('total_comisiones')
+                    ->label('Comisiones')
                     ->money('HNL')
-                    ->color('success'),
+                    ->color('success')
+                    ->summarize(Sum::make()->money('HNL')->label('Total')),
 
-                TextColumn::make('cobros_devoluciones')
+                TextColumn::make('total_cobros')
                     ->label('Cobros')
                     ->money('HNL')
-                    ->color('danger'),
+                    ->color('danger')
+                    ->summarize(Sum::make()->money('HNL')->label('Total')),
 
-                TextColumn::make('neto_chofer')
-                    ->label('Neto')
+                TextColumn::make('total_pagar')
+                    ->label('Neto Pagado')
                     ->money('HNL')
                     ->weight('bold')
-                    ->color(fn ($state) => $state >= 0 ? 'success' : 'danger'),
+                    ->color(fn ($state) => $state >= 0 ? 'success' : 'danger')
+                    ->summarize(Sum::make()->money('HNL')->label('Total')),
+
+                TextColumn::make('fecha_pago')
+                    ->label('Fecha Pago')
+                    ->date('d/m/Y')
+                    ->sortable(),
+
+                TextColumn::make('metodo_pago')
+                    ->label('Método')
+                    ->formatStateUsing(fn ($state) => match ($state) {
+                        'efectivo' => 'Efectivo',
+                        'transferencia' => 'Transferencia',
+                        default => $state ? ucfirst($state) : '-',
+                    }),
+
+                TextColumn::make('referencia_pago')
+                    ->label('Referencia')
+                    ->limit(30)
+                    ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
                 SelectFilter::make('chofer_id')
@@ -107,31 +121,48 @@ class PagoComisionesHistorial extends Page implements HasForms, HasTable
                     ])
                     ->query(function (Builder $query, array $data): Builder {
                         return $query
-                            ->when($data['desde'], fn ($q, $date) => $q->where('fecha_pago_comision', '>=', $date))
-                            ->when($data['hasta'], fn ($q, $date) => $q->where('fecha_pago_comision', '<=', $date));
+                            ->when($data['desde'], fn ($q, $date) => $q->where('fecha_pago', '>=', $date))
+                            ->when($data['hasta'], fn ($q, $date) => $q->where('fecha_pago', '<=', $date));
                     }),
             ])
             ->groups([
-                Group::make('fecha_pago_comision')
-                    ->label('Fecha de Pago')
-                    ->date()
-                    ->collapsible(),
-
                 Group::make('chofer.name')
                     ->label('Chofer')
                     ->collapsible(),
             ])
-            ->defaultSort('fecha_pago_comision', 'desc')
+            ->actions([
+                TableAction::make('ver_viajes')
+                    ->label('Detalle')
+                    ->icon('heroicon-o-eye')
+                    ->color('gray')
+                    ->modalHeading(fn (Liquidacion $record) => "Viajes - {$record->numero_liquidacion}")
+                    ->modalContent(function (Liquidacion $record) {
+                        $viajes = $record->viajes()
+                            ->with('viaje')
+                            ->get()
+                            ->map(fn ($lv) => $lv->viaje);
+
+                        return view('filament.pages.partials.liquidacion-viajes', [
+                            'viajes' => $viajes,
+                            'liquidacion' => $record,
+                        ]);
+                    })
+                    ->modalSubmitAction(false)
+                    ->modalCancelActionLabel('Cerrar'),
+            ])
+            ->defaultSort('fecha_pago', 'desc')
             ->emptyStateHeading('Sin pagos registrados')
             ->emptyStateDescription('Aún no se han registrado pagos de comisiones.')
-            ->emptyStateIcon('heroicon-o-banknotes');
+            ->emptyStateIcon('heroicon-o-banknotes')
+            ->striped()
+            ->paginated([10, 25, 50]);
     }
 
     protected function getHeaderActions(): array
     {
         return [
             \Filament\Actions\Action::make('volver')
-                ->label('Volver a Pagos')
+                ->label('Volver a Liquidaciones')
                 ->icon('heroicon-o-arrow-left')
                 ->color('gray')
                 ->url(PagoComisiones::getUrl()),

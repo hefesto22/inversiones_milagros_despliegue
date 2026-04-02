@@ -54,6 +54,7 @@ class CamionGasto extends Model
 
     public const TIPOS_GASTO = [
         'gasolina' => '⛽ Gasolina',
+        'diesel' => '⛽ Diésel',
         'mantenimiento' => '🔧 Mantenimiento',
         'reparacion' => '🛠️ Reparación',
         'peaje' => '🛣️ Peaje',
@@ -61,6 +62,12 @@ class CamionGasto extends Model
         'lavado' => '🚿 Lavado',
         'otros' => '📦 Otros',
     ];
+
+    /**
+     * Tipos de gasto que son combustible (gasolina, diésel, etc.)
+     * Centralizado para no repetir arrays en toda la app.
+     */
+    public const TIPOS_COMBUSTIBLE = ['gasolina', 'diesel'];
 
     public const ESTADOS = [
         'pendiente' => 'Pendiente',
@@ -123,11 +130,19 @@ class CamionGasto extends Model
     }
 
     /**
-     * Verificar si es gasto de gasolina
+     * Verificar si es gasto de combustible (gasolina o diésel)
+     */
+    public function getEsCombustibleAttribute(): bool
+    {
+        return in_array($this->tipo_gasto, self::TIPOS_COMBUSTIBLE);
+    }
+
+    /**
+     * @deprecated Usar es_combustible en su lugar
      */
     public function getEsGasolinaAttribute(): bool
     {
-        return $this->tipo_gasto === 'gasolina';
+        return $this->es_combustible;
     }
 
     // =====================================================
@@ -149,7 +164,7 @@ class CamionGasto extends Model
         $mensaje .= "{$this->tipo_gasto_label}\n";
         $mensaje .= "💰 *Monto:* L " . number_format($this->monto, 2) . "\n";
 
-        if ($this->es_gasolina && $this->litros) {
+        if ($this->es_combustible && $this->litros) {
             $mensaje .= "⛽ *Litros:* {$this->litros}\n";
             if ($this->precio_por_litro) {
                 $mensaje .= "💲 *Precio/Litro:* L " . number_format($this->precio_por_litro, 2) . "\n";
@@ -298,9 +313,17 @@ class CamionGasto extends Model
             ->whereMonth('fecha', $mes);
     }
 
+    public function scopeTipoCombustible($query)
+    {
+        return $query->whereIn('tipo_gasto', self::TIPOS_COMBUSTIBLE);
+    }
+
+    /**
+     * @deprecated Usar scopeTipoCombustible en su lugar
+     */
     public function scopeTipoGasolina($query)
     {
-        return $query->where('tipo_gasto', 'gasolina');
+        return $this->scopeTipoCombustible($query);
     }
 
     public function scopeEntreFechas($query, $desde, $hasta)
@@ -377,7 +400,7 @@ class CamionGasto extends Model
             $resumen['por_tipo'][$gasto->tipo_gasto]['total'] += $gasto->monto;
             $resumen['por_tipo'][$gasto->tipo_gasto]['cantidad']++;
 
-            if ($gasto->tipo_gasto === 'gasolina' && $gasto->litros) {
+            if (in_array($gasto->tipo_gasto, self::TIPOS_COMBUSTIBLE) && $gasto->litros) {
                 $resumen['total_litros'] += $gasto->litros;
             }
         }

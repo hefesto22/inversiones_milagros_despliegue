@@ -109,6 +109,8 @@ class ViewVenta extends ViewRecord
                         ->minValue(0.01)
                         ->maxValue(fn () => $this->record->saldo_pendiente)
                         ->default(fn () => $this->record->saldo_pendiente)
+                        ->disabled(fn () => $this->record->estado === 'borrador')
+                        ->dehydrated()
                         ->live()
                         ->afterStateUpdated(function ($state, Forms\Set $set) {
                             $saldo = $this->record->saldo_pendiente;
@@ -156,10 +158,11 @@ class ViewVenta extends ViewRecord
                 ->action(function (array $data) {
                     $esPrimerPago = $this->record->estado === 'borrador';
 
-                    // Si es el primer pago, completar la venta primero
+                    // Si es el primer pago, completar la venta usando el servicio (soporta lotes)
                     if ($esPrimerPago) {
                         try {
-                            $this->record->completar();
+                            app(\App\Application\Services\VentaService::class)->completarVenta($this->record->id);
+                            $this->record->refresh();
                         } catch (\Exception $e) {
                             \Filament\Notifications\Notification::make()
                                 ->title('Error al procesar venta')
@@ -256,7 +259,22 @@ class ViewVenta extends ViewRecord
                 ->visible(fn () =>
                     $this->record->estado === 'borrador' &&
                     $this->record->monto_pagado <= 0
-                ),
+                )
+                ->before(function () {
+                    // Defensa extra: si por algún motivo la UI no ocultó el botón
+                    if ($this->record->estado !== 'borrador') {
+                        \Filament\Notifications\Notification::make()
+                            ->title('No se puede eliminar')
+                            ->body('Solo se pueden eliminar ventas en estado borrador. Usa "Cancelar" para revertir ventas procesadas.')
+                            ->danger()
+                            ->persistent()
+                            ->send();
+
+                        throw new \Illuminate\Validation\ValidationException(
+                            validator: validator([], []),
+                        );
+                    }
+                }),
         ];
     }
 }

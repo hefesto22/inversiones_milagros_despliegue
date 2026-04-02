@@ -15,12 +15,15 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
+use App\Models\Concerns\HasBodegaScope;
+use App\Services\Fiscal\IsvCalculator;
 use App\Filament\Resources\ProductoResource\Pages;
 use App\Filament\Resources\ProductoResource\RelationManagers\ProductoImagenRelationManager;
 use App\Filament\Resources\ProductoResource\RelationManagers\PreciosTipoRelationManager;
 
 class ProductoResource extends Resource
 {
+    use HasBodegaScope;
     protected static ?string $model = Producto::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-cube';
@@ -43,43 +46,33 @@ class ProductoResource extends Resource
             return $query->whereRaw('1 = 0');
         }
 
-        // Super Admin ve todo
-        $esSuperAdmin = DB::table('model_has_roles')
-            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-            ->where('model_has_roles.model_id', '=', $currentUser->id)
-            ->where('roles.name', 'super_admin')
-            ->exists();
+        // Super Admin y Jefe: lógica especial por subordinados
+        if (self::esSuperAdminOJefe()) {
+            // Super Admin ve todo; Jefe ve productos propios + subordinados
+            $esJefe = DB::table('model_has_roles')
+                ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
+                ->where('model_has_roles.model_type', '=', get_class($currentUser))
+                ->where('model_has_roles.model_id', '=', $currentUser->id)
+                ->where('roles.name', 'Jefe')
+                ->exists();
 
-        if ($esSuperAdmin) {
-            return $query;
+            if ($esJefe) {
+                $usuariosCreados = DB::table('users')
+                    ->where('created_by', $currentUser->id)
+                    ->pluck('id')
+                    ->toArray();
+
+                return $query->where(function ($q) use ($currentUser, $usuariosCreados) {
+                    $q->where('created_by', $currentUser->id)
+                        ->orWhereIn('created_by', $usuariosCreados);
+                });
+            }
+
+            return $query; // Super Admin
         }
 
-        // Jefe ve productos que él creó + los que crearon sus subordinados
-        $esJefe = DB::table('model_has_roles')
-            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-            ->where('model_has_roles.model_id', '=', $currentUser->id)
-            ->where('roles.name', 'jefe')
-            ->exists();
-
-        if ($esJefe) {
-            $usuariosCreados = DB::table('users')
-                ->where('created_by', $currentUser->id)
-                ->pluck('id')
-                ->toArray();
-
-            return $query->where(function ($q) use ($currentUser, $usuariosCreados) {
-                $q->where('created_by', $currentUser->id)
-                    ->orWhereIn('created_by', $usuariosCreados);
-            });
-        }
-
-        // 🎯 ENCARGADO: Ve productos asignados a SUS bodegas
-        $bodegasDelUsuario = DB::table('bodega_user')
-            ->where('user_id', $currentUser->id)
-            ->pluck('bodega_id')
-            ->toArray();
+        // Encargado: ve productos asignados a SUS bodegas
+        $bodegasDelUsuario = self::getBodegasUsuario();
 
         if (empty($bodegasDelUsuario)) {
             return $query->whereRaw('1 = 0');
@@ -95,18 +88,7 @@ class ProductoResource extends Resource
      |----------------------------------------------------------------- */
     protected static function usuarioPuedeEditarStock(): bool
     {
-        $currentUser = Auth::user();
-
-        if (!$currentUser) {
-            return false;
-        }
-
-        return DB::table('model_has_roles')
-            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-            ->where('model_has_roles.model_id', '=', $currentUser->id)
-            ->whereIn('roles.name', ['super_admin', 'jefe'])
-            ->exists();
+        return self::esSuperAdminOJefe();
     }
 
     /* -----------------------------------------------------------------
@@ -121,33 +103,7 @@ class ProductoResource extends Resource
                 ->schema([
                     Forms\Components\Select::make('bodega_id')
                         ->label('Bodega')
-                        ->options(function () {
-                            $currentUser = Auth::user();
-
-                            if (!$currentUser) {
-                                return [];
-                            }
-
-                            $esSuperAdminOJefe = DB::table('model_has_roles')
-                                ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-                                ->where('model_has_roles.model_type', '=', get_class($currentUser))
-                                ->where('model_has_roles.model_id', '=', $currentUser->id)
-                                ->whereIn('roles.name', ['super_admin', 'jefe'])
-                                ->exists();
-
-                            if ($esSuperAdminOJefe) {
-                                return Bodega::where('activo', true)
-                                    ->pluck('nombre', 'id')
-                                    ->toArray();
-                            }
-
-                            return DB::table('bodega_user')
-                                ->join('bodegas', 'bodega_user.bodega_id', '=', 'bodegas.id')
-                                ->where('bodega_user.user_id', $currentUser->id)
-                                ->where('bodegas.activo', true)
-                                ->pluck('bodegas.nombre', 'bodegas.id')
-                                ->toArray();
-                        })
+                        ->options(fn () => self::getBodegasOptions())
                         ->required()
                         ->searchable()
                         ->preload()
@@ -825,54 +781,23 @@ class ProductoResource extends Resource
 
     protected static function usuarioPuedeSeleccionarBodega(): bool
     {
-        $currentUser = Auth::user();
-
-        if (!$currentUser) {
-            return false;
-        }
-
-        return DB::table('model_has_roles')
-            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-            ->where('model_has_roles.model_id', '=', $currentUser->id)
-            ->whereIn('roles.name', ['super_admin', 'jefe'])
-            ->exists();
+        return self::esSuperAdminOJefe();
     }
 
     protected static function getBodegaDefaultParaUsuario(): ?int
     {
-        $currentUser = Auth::user();
-
-        if (!$currentUser) {
-            return null;
-        }
-
-        if (self::usuarioPuedeSeleccionarBodega()) {
-            return null;
-        }
-
-        return DB::table('bodega_user')
-            ->join('bodegas', 'bodega_user.bodega_id', '=', 'bodegas.id')
-            ->where('bodega_user.user_id', $currentUser->id)
-            ->where('bodegas.activo', true)
-            ->value('bodegas.id');
+        return self::getBodegaDefault();
     }
 
     protected static function getHelperTextBodega(): string
     {
-        $currentUser = Auth::user();
-
-        if (!$currentUser) {
-            return '';
-        }
-
-        if (self::usuarioPuedeSeleccionarBodega()) {
+        if (self::esSuperAdminOJefe()) {
             return 'Selecciona la bodega donde se guardará este producto';
         }
 
         $bodegas = DB::table('bodega_user')
             ->join('bodegas', 'bodega_user.bodega_id', '=', 'bodegas.id')
-            ->where('bodega_user.user_id', $currentUser->id)
+            ->where('bodega_user.user_id', Auth::id())
             ->where('bodegas.activo', true)
             ->select('bodegas.id', 'bodegas.nombre')
             ->get();
@@ -933,30 +858,21 @@ class ProductoResource extends Resource
                 Tables\Columns\TextColumn::make('stock_actual')
                     ->label('Stock')
                     ->getStateUsing(function ($record) {
-                        $currentUser = Auth::user();
-
-                        if (!$currentUser) {
-                            return 0;
-                        }
-
-                        $esSuperAdminOJefe = DB::table('model_has_roles')
-                            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-                            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-                            ->where('model_has_roles.model_id', '=', $currentUser->id)
-                            ->whereIn('roles.name', ['super_admin', 'jefe'])
-                            ->exists();
-
-                        if ($esSuperAdminOJefe) {
+                        if (self::esSuperAdminOJefe()) {
                             return DB::table('bodega_producto')
                                 ->where('producto_id', $record->id)
                                 ->sum('stock');
                         }
 
+                        $bodegasUsuario = self::getBodegasUsuario();
+                        if (empty($bodegasUsuario)) {
+                            return 0;
+                        }
+
                         return DB::table('bodega_producto')
-                            ->join('bodega_user', 'bodega_producto.bodega_id', '=', 'bodega_user.bodega_id')
-                            ->where('bodega_producto.producto_id', $record->id)
-                            ->where('bodega_user.user_id', $currentUser->id)
-                            ->sum('bodega_producto.stock');
+                            ->where('producto_id', $record->id)
+                            ->whereIn('bodega_id', $bodegasUsuario)
+                            ->sum('stock');
                     })
                     ->formatStateUsing(function ($state, $record) {
                         // Si tiene formato de empaque, usar el texto del modelo
@@ -998,30 +914,14 @@ class ProductoResource extends Resource
                 Tables\Columns\TextColumn::make('stock_minimo')
                     ->label('Stock Mínimo')
                     ->getStateUsing(function ($record) {
-                        $currentUser = Auth::user();
+                        $query = DB::table('bodega_producto')
+                            ->where('producto_id', $record->id);
 
-                        if (!$currentUser) {
-                            return 0;
+                        if (!self::esSuperAdminOJefe()) {
+                            $query->whereIn('bodega_id', self::getBodegasUsuario());
                         }
 
-                        $esSuperAdminOJefe = DB::table('model_has_roles')
-                            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-                            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-                            ->where('model_has_roles.model_id', '=', $currentUser->id)
-                            ->whereIn('roles.name', ['super_admin', 'jefe'])
-                            ->exists();
-
-                        if ($esSuperAdminOJefe) {
-                            return DB::table('bodega_producto')
-                                ->where('producto_id', $record->id)
-                                ->max('stock_minimo');
-                        }
-
-                        return DB::table('bodega_producto')
-                            ->join('bodega_user', 'bodega_producto.bodega_id', '=', 'bodega_user.bodega_id')
-                            ->where('bodega_producto.producto_id', $record->id)
-                            ->where('bodega_user.user_id', $currentUser->id)
-                            ->max('bodega_producto.stock_minimo');
+                        return $query->max('stock_minimo');
                     })
                     ->numeric()
                     ->sortable()
@@ -1033,40 +933,20 @@ class ProductoResource extends Resource
                     ->money('HNL', divideBy: 1)
                     ->sortable(false)
                     ->getStateUsing(function ($record) {
-                        $currentUser = Auth::user();
+                        $query = DB::table('bodega_producto')
+                            ->where('producto_id', $record->id);
 
-                        if (!$currentUser) {
-                            return 0;
+                        if (!self::esSuperAdminOJefe()) {
+                            $query->whereIn('bodega_id', self::getBodegasUsuario());
                         }
 
-                        $esSuperAdminOJefe = DB::table('model_has_roles')
-                            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-                            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-                            ->where('model_has_roles.model_id', '=', $currentUser->id)
-                            ->whereIn('roles.name', ['super_admin', 'jefe'])
-                            ->exists();
-
-                            if ($esSuperAdminOJefe) {
-                                $costoSinIsv = DB::table('bodega_producto')
-                                    ->where('producto_id', $record->id)
-                                    ->avg('costo_promedio_actual');
-                            
-                                $costo = floatval($costoSinIsv);
-                            } else {
-                                $costoSinIsv = DB::table('bodega_producto')
-                                    ->join('bodega_user', 'bodega_producto.bodega_id', '=', 'bodega_user.bodega_id')
-                                    ->where('bodega_producto.producto_id', $record->id)
-                                    ->where('bodega_user.user_id', $currentUser->id)
-                                    ->avg('bodega_producto.costo_promedio_actual');
-                            
-                                $costo = floatval($costoSinIsv);
-                            }
+                        $costo = floatval($query->avg('costo_promedio_actual'));
 
                         // Si el producto aplica ISV, mostrar el costo CON ISV (lo que realmente pagó)
                         $aplicaIsv = $record->aplica_isv ?? false;
-                        
+
                         if ($aplicaIsv && $costo > 0) {
-                            return round($costo * 1.15, 2); // Costo + ISV = lo que pagaste
+                            return round($costo * (1 + IsvCalculator::TASA_ISV), 2);
                         }
 
                         return $costo;
@@ -1088,39 +968,22 @@ class ProductoResource extends Resource
                     ->weight('bold')
                     ->color('success')
                     ->getStateUsing(function ($record) {
-                        $currentUser = Auth::user();
+                        $query = DB::table('bodega_producto')
+                            ->where('producto_id', $record->id)
+                            ->where('precio_venta_sugerido', '>', 0);
 
-                        if (!$currentUser) {
-                            return 0;
+                        if (!self::esSuperAdminOJefe()) {
+                            $query->whereIn('bodega_id', self::getBodegasUsuario());
                         }
 
-                        $esSuperAdminOJefe = DB::table('model_has_roles')
-                            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-                            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-                            ->where('model_has_roles.model_id', '=', $currentUser->id)
-                            ->whereIn('roles.name', ['super_admin', 'jefe'])
-                            ->exists();
-
-                        if ($esSuperAdminOJefe) {
-                            $precioConIsv = DB::table('bodega_producto')
-                                ->where('producto_id', $record->id)
-                                ->where('precio_venta_sugerido', '>', 0)
-                                ->avg('precio_venta_sugerido') ?? 0;
-                        } else {
-                            $precioConIsv = DB::table('bodega_producto')
-                                ->join('bodega_user', 'bodega_producto.bodega_id', '=', 'bodega_user.bodega_id')
-                                ->where('bodega_producto.producto_id', $record->id)
-                                ->where('bodega_user.user_id', $currentUser->id)
-                                ->where('bodega_producto.precio_venta_sugerido', '>', 0)
-                                ->avg('bodega_producto.precio_venta_sugerido') ?? 0;
-                        }
+                        $precioConIsv = $query->avg('precio_venta_sugerido') ?? 0;
 
                         // Si aplica ISV, el precio guardado YA lo incluye, entonces desgloso
                         $aplicaIsv = $record->aplica_isv ?? false;
-                        
+
                         if ($aplicaIsv && $precioConIsv > 0) {
-                            // Precio sin ISV = Precio con ISV / 1.15
-                            return round($precioConIsv / 1.15, 2);
+                            $desglose = IsvCalculator::calcularDesglose((float)$precioConIsv);
+                            return $desglose['costo_sin_isv'];
                         }
 
                         return $precioConIsv;
@@ -1141,36 +1004,16 @@ class ProductoResource extends Resource
                     ->weight('bold')
                     ->color(fn($record) => ($record->aplica_isv ?? true) ? 'warning' : 'gray')
                     ->getStateUsing(function ($record) {
-                        $currentUser = Auth::user();
+                        $query = DB::table('bodega_producto')
+                            ->where('producto_id', $record->id)
+                            ->where('precio_venta_sugerido', '>', 0);
 
-                        if (!$currentUser) {
-                            return 0;
-                        }
-
-                        $esSuperAdminOJefe = DB::table('model_has_roles')
-                            ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
-                            ->where('model_has_roles.model_type', '=', get_class($currentUser))
-                            ->where('model_has_roles.model_id', '=', $currentUser->id)
-                            ->whereIn('roles.name', ['super_admin', 'jefe'])
-                            ->exists();
-
-                        if ($esSuperAdminOJefe) {
-                            $precioBase = DB::table('bodega_producto')
-                                ->where('producto_id', $record->id)
-                                ->where('precio_venta_sugerido', '>', 0)
-                                ->avg('precio_venta_sugerido') ?? 0;
-                        } else {
-                            $precioBase = DB::table('bodega_producto')
-                                ->join('bodega_user', 'bodega_producto.bodega_id', '=', 'bodega_user.bodega_id')
-                                ->where('bodega_producto.producto_id', $record->id)
-                                ->where('bodega_user.user_id', $currentUser->id)
-                                ->where('bodega_producto.precio_venta_sugerido', '>', 0)
-                                ->avg('bodega_producto.precio_venta_sugerido') ?? 0;
+                        if (!self::esSuperAdminOJefe()) {
+                            $query->whereIn('bodega_id', self::getBodegasUsuario());
                         }
 
                         // El precio_venta_sugerido YA incluye ISV si aplica
-                        // Solo retornamos el valor tal cual
-                        return $precioBase;
+                        return $query->avg('precio_venta_sugerido') ?? 0;
                     })
                     ->description(fn($record) => ($record->aplica_isv ?? true) ? 'Incluye 15% ISV' : 'Sin ISV'),
             ])

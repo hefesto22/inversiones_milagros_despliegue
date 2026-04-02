@@ -146,15 +146,15 @@ class GastosDelCamion extends Page implements HasForms, HasTable
                                     ->afterStateUpdated(fn(Forms\Set $set, Forms\Get $get) => $this->calcularPrecioPorLitro($set, $get)),
                             ]),
 
-                        // Campos de gasolina
+                        // Campos de combustible (gasolina/diésel)
                         Forms\Components\Grid::make(3)
                             ->schema([
                                 Forms\Components\TextInput::make('litros')
                                     ->label('Litros')
                                     ->numeric()
-                                    ->required(fn(Forms\Get $get) => $get('tipo_gasto') === 'gasolina')
-                                    ->minValue(0.001)
-                                    ->step(0.001)
+                                    ->required(fn(Forms\Get $get) => in_array($get('tipo_gasto'), CamionGasto::TIPOS_COMBUSTIBLE))
+                                    ->minValue(0.01)
+                                    ->step(0.01)
                                     ->suffix('L')
                                     ->live(debounce: 500)
                                     ->afterStateUpdated(fn(Forms\Set $set, Forms\Get $get) => $this->calcularPrecioPorLitro($set, $get)),
@@ -172,7 +172,7 @@ class GastosDelCamion extends Page implements HasForms, HasTable
                                     ->numeric()
                                     ->suffix('km'),
                             ])
-                            ->visible(fn(Forms\Get $get) => $get('tipo_gasto') === 'gasolina'),
+                            ->visible(fn(Forms\Get $get) => in_array($get('tipo_gasto'), CamionGasto::TIPOS_COMBUSTIBLE)),
 
                         Forms\Components\Grid::make(2)
                             ->schema([
@@ -333,7 +333,7 @@ class GastosDelCamion extends Page implements HasForms, HasTable
                     ->badge()
                     ->formatStateUsing(fn($state) => CamionGasto::TIPOS_GASTO[$state] ?? $state)
                     ->color(fn($state) => match ($state) {
-                        'gasolina' => 'warning',
+                        'gasolina', 'diesel' => 'warning',
                         'mantenimiento' => 'info',
                         'reparacion' => 'danger',
                         'peaje' => 'gray',
@@ -349,6 +349,7 @@ class GastosDelCamion extends Page implements HasForms, HasTable
 
                 Tables\Columns\TextColumn::make('litros')
                     ->label('Litros')
+                    ->numeric(decimalPlaces: 2)
                     ->suffix(' L')
                     ->placeholder('-')
                     ->toggleable(),

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\CompraEstado;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -30,9 +31,10 @@ class Compra extends Model
     ];
 
     protected $casts = [
-        'interes_porcentaje' => 'decimal:2', // 🆕
+        'estado' => CompraEstado::class,
+        'interes_porcentaje' => 'decimal:2',
         'total' => 'decimal:2',
-        'fecha_inicio_credito' => 'date', // 🆕
+        'fecha_inicio_credito' => 'date',
     ];
 
     // ============================================
@@ -74,37 +76,37 @@ class Compra extends Model
 
     public function scopeBorrador($query)
     {
-        return $query->where('estado', 'borrador');
+        return $query->where('estado', CompraEstado::Borrador);
     }
 
     public function scopeOrdenada($query)
     {
-        return $query->where('estado', 'ordenada');
+        return $query->where('estado', CompraEstado::Ordenada);
     }
 
     public function scopeRecibidaPagada($query)
     {
-        return $query->where('estado', 'recibida_pagada');
+        return $query->where('estado', CompraEstado::RecibidaPagada);
     }
 
     public function scopeRecibidaPendientePago($query)
     {
-        return $query->where('estado', 'recibida_pendiente_pago');
+        return $query->where('estado', CompraEstado::RecibidaPendientePago);
     }
 
     public function scopePorRecibirPagada($query)
     {
-        return $query->where('estado', 'por_recibir_pagada');
+        return $query->where('estado', CompraEstado::PorRecibirPagada);
     }
 
     public function scopePorRecibirPendientePago($query)
     {
-        return $query->where('estado', 'por_recibir_pendiente_pago');
+        return $query->where('estado', CompraEstado::PorRecibirPendientePago);
     }
 
     public function scopeCancelada($query)
     {
-        return $query->where('estado', 'cancelada');
+        return $query->where('estado', CompraEstado::Cancelada);
     }
 
     // ============================================
@@ -117,9 +119,9 @@ class Compra extends Model
     public function scopePendienteRecibir($query)
     {
         return $query->whereIn('estado', [
-            'ordenada',
-            'por_recibir_pagada',
-            'por_recibir_pendiente_pago'
+            CompraEstado::Ordenada,
+            CompraEstado::PorRecibirPagada,
+            CompraEstado::PorRecibirPendientePago,
         ]);
     }
 
@@ -128,10 +130,7 @@ class Compra extends Model
      */
     public function scopePendientePago($query)
     {
-        return $query->whereIn('estado', [
-            'recibida_pendiente_pago',
-            'por_recibir_pendiente_pago'
-        ]);
+        return $query->whereIn('estado', CompraEstado::conDeudaPendiente());
     }
 
     /**
@@ -139,7 +138,7 @@ class Compra extends Model
      */
     public function scopeCompletadas($query)
     {
-        return $query->where('estado', 'recibida_pagada');
+        return $query->where('estado', CompraEstado::RecibidaPagada);
     }
 
     /**
@@ -147,7 +146,11 @@ class Compra extends Model
      */
     public function scopeActivas($query)
     {
-        return $query->whereNotIn('estado', ['borrador', 'cancelada', 'recibida_pagada']);
+        return $query->whereNotIn('estado', [
+            CompraEstado::Borrador,
+            CompraEstado::Cancelada,
+            CompraEstado::RecibidaPagada,
+        ]);
     }
 
     // ============================================
@@ -242,7 +245,7 @@ class Compra extends Model
     public function getSaldoPendiente(): float
     {
         // Solo hay saldo pendiente si la mercancía fue recibida pero no se ha pagado
-        if ($this->estado === 'recibida_pendiente_pago') {
+        if ($this->estado === CompraEstado::RecibidaPendientePago) {
             // 🆕 Ahora incluye intereses si es a crédito
             return $this->getSaldoConIntereses();
         }
@@ -254,7 +257,7 @@ class Compra extends Model
      */
     public function estaCompletada(): bool
     {
-        return $this->estado === 'recibida_pagada';
+        return $this->estado === CompraEstado::RecibidaPagada;
     }
 
     /**
@@ -262,7 +265,7 @@ class Compra extends Model
      */
     public function estaCancelada(): bool
     {
-        return $this->estado === 'cancelada';
+        return $this->estado === CompraEstado::Cancelada;
     }
 
     /**
@@ -270,7 +273,7 @@ class Compra extends Model
      */
     public function esEditable(): bool
     {
-        return $this->estado === 'borrador';
+        return $this->estado === CompraEstado::Borrador;
     }
 
     /**
@@ -278,10 +281,7 @@ class Compra extends Model
      */
     public function fueRecibida(): bool
     {
-        return in_array($this->estado, [
-            'recibida_pagada',
-            'recibida_pendiente_pago'
-        ]);
+        return in_array($this->estado, CompraEstado::recibidas());
     }
 
     /**
@@ -290,8 +290,8 @@ class Compra extends Model
     public function fuePagada(): bool
     {
         return in_array($this->estado, [
-            'recibida_pagada',
-            'por_recibir_pagada'
+            CompraEstado::RecibidaPagada,
+            CompraEstado::PorRecibirPagada,
         ]);
     }
 }

@@ -38,21 +38,21 @@ class GastosCamionOverview extends BaseWidget
             ->whereBetween('fecha', [$dateRange['inicio'], $dateRange['fin']])
             ->sum('monto');
 
-        // Total en gasolina del período
+        // Total en combustible del período (gasolina + diésel)
         $totalGasolina = CamionGasto::where('estado', 'aprobado')
-            ->where('tipo_gasto', 'gasolina')
+            ->whereIn('tipo_gasto', CamionGasto::TIPOS_COMBUSTIBLE)
             ->whereBetween('fecha', [$dateRange['inicio'], $dateRange['fin']])
             ->sum('monto');
 
-        // Total litros del período
+        // Total litros del período (gasolina + diésel)
         $totalLitros = CamionGasto::where('estado', 'aprobado')
-            ->where('tipo_gasto', 'gasolina')
+            ->whereIn('tipo_gasto', CamionGasto::TIPOS_COMBUSTIBLE)
             ->whereBetween('fecha', [$dateRange['inicio'], $dateRange['fin']])
             ->sum('litros');
 
         // Otros gastos (mantenimiento, reparación, etc.)
         $otrosGastos = CamionGasto::where('estado', 'aprobado')
-            ->where('tipo_gasto', '!=', 'gasolina')
+            ->whereNotIn('tipo_gasto', CamionGasto::TIPOS_COMBUSTIBLE)
             ->whereBetween('fecha', [$dateRange['inicio'], $dateRange['fin']])
             ->sum('monto');
 
@@ -78,7 +78,7 @@ class GastosCamionOverview extends BaseWidget
                 ->descriptionIcon($diferenciaPeriodo >= 0 ? 'heroicon-m-arrow-trending-up' : 'heroicon-m-arrow-trending-down')
                 ->color($diferenciaPeriodo > 10 ? 'danger' : 'success'),
 
-            Stat::make("Camión: Gasolina ({$periodoLabel})", 'L ' . number_format($totalGasolina, 2))
+            Stat::make("Camión: Combustible ({$periodoLabel})", 'L ' . number_format($totalGasolina, 2))
                 ->description(number_format($totalLitros, 1) . ' litros')
                 ->descriptionIcon('heroicon-m-fire')
                 ->color('warning'),

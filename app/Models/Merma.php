@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\MermaMotivo;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -37,6 +38,7 @@ class Merma extends Model
         'perdida_real_lempiras' => 'decimal:2',
         'buffer_antes' => 'decimal:2',
         'buffer_despues' => 'decimal:2',
+        'motivo' => MermaMotivo::class,
     ];
 
     // ============================================
@@ -68,12 +70,18 @@ class Merma extends Model
     // ============================================
 
     /**
-     * Generar numero de merma automatico
+     * Generar numero de merma automatico.
+     * Usa MAX(id) con lockForUpdate para evitar race conditions
+     * donde dos requests simultáneos generen el mismo número.
+     *
+     * NOTA: Este método debe llamarse dentro de una transacción (registrarMerma ya lo hace).
      */
     public static function generarNumeroMerma(int $bodegaId): string
     {
-        $ultimaMerma = self::where('numero_merma', 'LIKE', "M-B{$bodegaId}-%")
-            ->orderBy('numero_merma', 'desc')
+        // Usar MAX(id) en vez de ORDER BY string para obtener el último registro real
+        $ultimaMerma = self::where('bodega_id', $bodegaId)
+            ->lockForUpdate()
+            ->orderByDesc('id')
             ->value('numero_merma');
 
         if ($ultimaMerma) {
@@ -118,14 +126,12 @@ class Merma extends Model
      */
     public function getMotivoLabel(): string
     {
-        return match ($this->motivo) {
-            'rotos' => 'Rotos',
-            'podridos' => 'Podridos',
-            'vencidos' => 'Vencidos',
-            'dañados_transporte' => 'Danados en Transporte',
-            'otros' => 'Otros',
-            default => $this->motivo,
-        };
+        if ($this->motivo instanceof MermaMotivo) {
+            return $this->motivo->label();
+        }
+
+        // Fallback para valores legacy sin cast
+        return (string) $this->motivo;
     }
 
     /**
@@ -168,7 +174,8 @@ class Merma extends Model
         ];
 
         DB::transaction(function () {
-            $lote = $this->lote;
+            // Lock pesimista para evitar modificaciones concurrentes al lote
+            $lote = Lote::where('id', $this->lote_id)->lockForUpdate()->first();
 
             if (!$lote) {
                 throw new \Exception("No se encontro el lote asociado a esta merma.");

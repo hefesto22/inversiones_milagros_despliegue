@@ -10,6 +10,7 @@ use App\Models\Lote;
 use App\Models\Reempaque;
 use App\Models\ReempaqueLote;
 use App\Models\ReempaqueProducto;
+use App\Application\Services\ReempaqueService;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\RelationManagers\RelationManager;
@@ -81,6 +82,9 @@ class CargasRelationManager extends RelationManager
 
                         return $productosConStock + $productosConLote;
                     })
+                    ->getOptionLabelUsing(fn ($value) => Producto::find($value)?->nombre ?? $value)
+                    ->disabled(fn (string $operation) => $operation === 'edit')
+                    ->dehydrated()
                     ->required()
                     ->searchable()
                     ->preload()
@@ -105,6 +109,8 @@ class CargasRelationManager extends RelationManager
                 Forms\Components\Select::make('unidad_id')
                     ->label('Unidad')
                     ->options(fn() => Unidad::where('activo', true)->pluck('nombre', 'id'))
+                    ->disabled(fn (string $operation) => $operation === 'edit')
+                    ->dehydrated()
                     ->required()
                     ->searchable(),
 
@@ -121,15 +127,57 @@ class CargasRelationManager extends RelationManager
                 Forms\Components\Hidden::make('costo_bodega')->default(0)->dehydrated(false),
                 Forms\Components\Hidden::make('costo_lote')->default(0)->dehydrated(false),
 
+                // Campos informativos para estado Recargando (solo visibles en edit + recargando)
+                Forms\Components\Placeholder::make('info_vendidos')
+                    ->label('Vendidos')
+                    ->content(function () {
+                        $record = $this->getMountedTableActionRecord();
+                        if (!$record) return '0';
+                        $record->loadMissing('unidad');
+                        return number_format(floatval($record->cantidad_vendida ?? 0), 2) . ' ' . ($record->unidad?->abreviatura ?? '');
+                    })
+                    ->visible(fn (string $operation) => $operation === 'edit' && $this->getOwnerRecord()->estado === Viaje::ESTADO_RECARGANDO),
+
+                Forms\Components\Placeholder::make('info_disponible')
+                    ->label('Disponible en Camión')
+                    ->content(function () {
+                        $record = $this->getMountedTableActionRecord();
+                        if (!$record) return '0';
+                        $record->loadMissing('unidad');
+                        $cantidad = floatval($record->cantidad ?? 0);
+                        $vendida = floatval($record->cantidad_vendida ?? 0);
+                        $merma = floatval($record->cantidad_merma ?? 0);
+                        $devuelta = floatval($record->cantidad_devuelta ?? 0);
+                        $disponible = $cantidad - $vendida - $merma - $devuelta;
+                        return number_format(max(0, $disponible), 2) . ' ' . ($record->unidad?->abreviatura ?? '');
+                    })
+                    ->visible(fn (string $operation) => $operation === 'edit' && $this->getOwnerRecord()->estado === Viaje::ESTADO_RECARGANDO),
+
                 Forms\Components\TextInput::make('cantidad')
-                    ->label('Cantidad a Cargar')
+                    ->label(fn (string $operation) =>
+                        $operation === 'edit' && $this->getOwnerRecord()->estado === Viaje::ESTADO_RECARGANDO
+                            ? 'Nueva Cantidad Total (solo aumentar)'
+                            : 'Cantidad a Cargar'
+                    )
                     ->numeric()
                     ->required()
-                    ->minValue(0.001)
+                    ->step(0.01)
+                    ->minValue(function (string $operation) {
+                        // En Recargando + edit: no puede bajar de la cantidad actual
+                        if ($operation === 'edit' && $this->getOwnerRecord()->estado === Viaje::ESTADO_RECARGANDO) {
+                            $record = $this->getMountedTableActionRecord();
+                            return $record ? floatval($record->cantidad) : 0.01;
+                        }
+                        return 0.01;
+                    })
+                    ->formatStateUsing(fn ($state) => $state !== null ? number_format((float) $state, 2, '.', '') : null)
                     ->maxValue(fn(Forms\Get $get) => floatval($get('stock_maximo')) ?: 999999)
-                    ->validationMessages(['max' => 'La cantidad no puede exceder el stock disponible.'])
+                    ->validationMessages([
+                        'max' => 'La cantidad no puede exceder el stock disponible.',
+                        'min' => 'En recarga solo se puede aumentar la cantidad, no reducirla.',
+                    ])
                     ->live(debounce: 500)
-                    ->afterStateUpdated(function ($state, Forms\Get $get, Forms\Set $set) {
+                    ->afterStateUpdated(function ($state, Forms\Get $get, Forms\Set $set, string $operation) {
                         $cantidad = floatval($state ?? 0);
                         $productoId = $get('producto_id');
 
@@ -138,6 +186,16 @@ class CargasRelationManager extends RelationManager
                             return;
                         }
 
+                        if ($operation === 'edit') {
+                            // En EDIT: NO recalcular desde precios actuales.
+                            // El costo real se calcula al guardar (en ->using()) basándose
+                            // en los campos de origen (cantidad_de_bodega, cantidad_de_lote, etc.)
+                            // Aquí solo recalculamos los subtotales con el costo guardado.
+                            $this->recalcularSubtotales($get, $set, $state);
+                            return;
+                        }
+
+                        // En CREATE: calcular costo desde precios actuales de bodega y lotes
                         $viaje = $this->getOwnerRecord();
                         $producto = Producto::with('categoria.categoriaOrigen', 'unidad')->find($productoId);
 
@@ -185,7 +243,6 @@ class CargasRelationManager extends RelationManager
                             $valorLote = $tomarDeLote * $costoEnLote;
                             $valorTotal = $valorBodega + $valorLote;
 
-                            // FIX: 4 decimales para mantener precision
                             $costoUnitario = $cantidad > 0 ? round($valorTotal / $cantidad, 4) : 0;
 
                             $aplicaIsv = $producto->aplica_isv ?? false;
@@ -216,6 +273,8 @@ class CargasRelationManager extends RelationManager
                 Forms\Components\TextInput::make('precio_venta_sugerido')
                     ->label(fn(Forms\Get $get) => ($get('aplica_isv') ?? false) ? 'Precio Venta (sin ISV)' : 'Precio Venta')
                     ->numeric()->prefix('L')->required()
+                    ->disabled(fn (string $operation) => $operation === 'edit')
+                    ->dehydrated()
                     ->minValue(fn(Forms\Get $get) => floatval($get('precio_venta_minimo')) ?: 0.01)
                     ->validationMessages(['min' => 'El precio no puede ser menor al precio mínimo (costo).'])
                     ->live(debounce: 500)
@@ -237,7 +296,8 @@ class CargasRelationManager extends RelationManager
 
                 Forms\Components\Toggle::make('aplica_isv')
                     ->label('Aplica ISV (15%)')->disabled()->dehydrated(false)->inline(false)
-                    ->onColor('success')->offColor('gray'),
+                    ->onColor('success')->offColor('gray')
+                    ->hidden(),
 
                 Forms\Components\TextInput::make('precio_con_isv')
                     ->label('Precio con ISV')->numeric()->prefix('L')->disabled()->dehydrated(false)
@@ -265,85 +325,35 @@ class CargasRelationManager extends RelationManager
 
     private function cargarDatosDesdeLote(Producto $producto, $viaje, Forms\Set $set, Forms\Get $get): void
     {
-        $categoria = $producto->categoria;
-        $categoriaLoteId = $categoria->categoria_origen_id;
+        $reempaqueService = app(ReempaqueService::class);
+        $stockInfo = $reempaqueService->calcularStockDisponible($producto->id, $viaje->bodega_origen_id);
 
-        $bodegaProducto = BodegaProducto::where('bodega_id', $viaje->bodega_origen_id)
-            ->where('producto_id', $producto->id)->first();
-
-        $stockEnBodega = floatval($bodegaProducto->stock ?? 0);
-        $costoEnBodega = floatval($bodegaProducto->costo_promedio_actual ?? 0);
-
-        $lotes = Lote::where('bodega_id', $viaje->bodega_origen_id)
-            ->whereHas('producto', fn($q) => $q->where('categoria_id', $categoriaLoteId))
-            ->where('estado', 'disponible')
-            ->where('cantidad_huevos_remanente', '>=', 30)
-            ->orderBy('created_at', 'asc')->get();
-
-        $producto->loadMissing('unidad');
-        $unidad = $producto->unidad;
-
-        $huevosPorUnidad = 30;
-        if ($unidad) {
-            $factor = floatval($unidad->factor ?? 1);
-            if ($factor == 0.5) {
-                $huevosPorUnidad = 15;
-            } elseif (str_contains(strtolower($unidad->nombre), '15')) {
-                $huevosPorUnidad = 15;
-            }
-        }
-
-        $totalHuevosEnLotes = $lotes->sum('cantidad_huevos_remanente');
-        $stockDesdeLote = floor($totalHuevosEnLotes / $huevosPorUnidad);
-        $stockTotal = $stockEnBodega + $stockDesdeLote;
-
-        if ($stockTotal <= 0) {
+        if ($stockInfo['stock_total'] <= 0) {
             Notification::make()->title('Sin stock disponible')
                 ->body("No hay stock en bodega ni en lotes para este producto")->warning()->send();
             $this->limpiarCampos($set);
             return;
         }
 
-        $costoTotalLotes = 0;
-        $unidadesTotalesLote = 0;
-        foreach ($lotes as $lote) {
-            $unidadesEnLote = floor($lote->cantidad_huevos_remanente / $huevosPorUnidad);
-            $costoPorCarton30 = floatval($lote->costo_por_carton_facturado ?? 0);
-            $costoPorUnidad = ($huevosPorUnidad == 30) ? $costoPorCarton30 : $costoPorCarton30 * ($huevosPorUnidad / 30);
-            $costoTotalLotes += $unidadesEnLote * $costoPorUnidad;
-            $unidadesTotalesLote += $unidadesEnLote;
-        }
-        $costoUnitarioLote = $unidadesTotalesLote > 0 ? $costoTotalLotes / $unidadesTotalesLote : 0;
+        $bodegaProducto = BodegaProducto::where('bodega_id', $viaje->bodega_origen_id)
+            ->where('producto_id', $producto->id)->first();
 
-        $valorTotalBodega = $stockEnBodega * $costoEnBodega;
-        $valorTotalLote = $stockDesdeLote * $costoUnitarioLote;
-        $valorTotal = $valorTotalBodega + $valorTotalLote;
-
-        // FIX: 4 decimales
-        $costoUnitario = $stockTotal > 0 ? round($valorTotal / $stockTotal, 4) : 0;
-
+        $costoUnitario = $stockInfo['costo_promedio'];
         $aplicaIsv = $producto->aplica_isv ?? false;
         $costoConIsv = $aplicaIsv ? round($costoUnitario * 1.15, 2) : $costoUnitario;
         $precioConIsv = $bodegaProducto->precio_venta_sugerido ?? ($producto->precio_sugerido ?? $costoConIsv * 1.15);
         $precioSinIsv = $aplicaIsv && $precioConIsv > 0 ? round($precioConIsv / 1.15, 2) : $precioConIsv;
 
-        $stockDisplay = '';
-        if ($stockEnBodega > 0 && $stockDesdeLote > 0) {
-            $stockDisplay = number_format($stockTotal, 0) . " unidades ({$stockEnBodega} en bodega + {$stockDesdeLote} en lote)";
-        } elseif ($stockEnBodega > 0) {
-            $stockDisplay = number_format($stockEnBodega, 0) . " unidades (en bodega)";
-        } else {
-            $stockDisplay = number_format($stockDesdeLote, 0) . " unidades (desde lote)";
-        }
+        $stockDisplay = $reempaqueService->getStockDisplay($stockInfo['stock_en_bodega'], $stockInfo['stock_desde_lote']);
 
-        $set('stock_disponible', $stockDisplay);
-        $set('stock_maximo', $stockTotal);
+        $set('stock_disponible', $stockDisplay . " unidades");
+        $set('stock_maximo', $stockInfo['stock_total']);
         $set('usa_lotes', true);
-        $set('categoria_lote_id', $categoriaLoteId);
-        $set('stock_en_bodega', $stockEnBodega);
-        $set('stock_desde_lote', $stockDesdeLote);
-        $set('costo_bodega', round($costoEnBodega, 4));
-        $set('costo_lote', round($costoUnitarioLote, 4));
+        $set('categoria_lote_id', $producto->categoria->categoria_origen_id);
+        $set('stock_en_bodega', $stockInfo['stock_en_bodega']);
+        $set('stock_desde_lote', $stockInfo['stock_desde_lote']);
+        $set('costo_bodega', $stockInfo['costo_bodega']);
+        $set('costo_lote', $stockInfo['costo_lote']);
         $set('costo_unitario', $costoUnitario);
         $set('costo_con_isv', $costoConIsv);
         $set('precio_venta_sugerido', $precioSinIsv);
@@ -424,168 +434,6 @@ class CargasRelationManager extends RelationManager
         $set('subtotal_costo', round($costoSinIsv * $cantidad, 2));
         $set('subtotal_venta', round($precioConIsv * $cantidad, 2));
     }
-
-    // ============================================
-    // REEMPAQUE AUTOMÁTICO
-    // ============================================
-
-    private function ejecutarReempaqueAutomatico(int $productoId, int $bodegaId, int $cantidad, int $viajeId): array
-    {
-        if ($cantidad <= 0) {
-            throw new \Exception("La cantidad para reempaque debe ser mayor a cero");
-        }
-
-        $producto = Producto::with('categoria.categoriaOrigen', 'unidad')->find($productoId);
-
-        if (!$producto || !$producto->categoria || !$producto->categoria->categoria_origen_id) {
-            throw new \Exception("Producto no válido para reempaque automático");
-        }
-
-        $categoriaLoteId = $producto->categoria->categoria_origen_id;
-
-        $huevosPorUnidad = 30;
-        if ($producto->unidad && str_contains(strtolower($producto->unidad->nombre), '15')) {
-            $huevosPorUnidad = 15;
-        }
-
-        $huevosNecesarios = $cantidad * $huevosPorUnidad;
-
-        $lotes = Lote::where('bodega_id', $bodegaId)
-            ->whereHas('producto', fn($q) => $q->where('categoria_id', $categoriaLoteId))
-            ->where('estado', 'disponible')
-            ->where('cantidad_huevos_remanente', '>', 0)
-            ->orderBy('created_at', 'asc')
-            ->lockForUpdate()
-            ->get();
-
-        $totalDisponible = $lotes->sum('cantidad_huevos_remanente');
-        if ($totalDisponible < $huevosNecesarios) {
-            throw new \Exception(
-                "Stock insuficiente en lotes. Necesario: {$huevosNecesarios} huevos, Disponible: {$totalDisponible}"
-            );
-        }
-
-        $reempaque = Reempaque::create([
-            'bodega_id' => $bodegaId,
-            'tipo' => 'individual',
-            'total_huevos_usados' => $huevosNecesarios,
-            'merma' => 0,
-            'huevos_utiles' => $huevosNecesarios,
-            'costo_total' => 0,
-            'costo_unitario_promedio' => 0,
-            'cartones_30' => $huevosPorUnidad == 30 ? $cantidad : 0,
-            'cartones_15' => $huevosPorUnidad == 15 ? $cantidad : 0,
-            'huevos_sueltos' => 0,
-            'estado' => 'completado',
-            'nota' => "Reempaque automatico - Viaje #{$viajeId}",
-            'created_by' => Auth::id(),
-        ]);
-
-        $huevosRestantes = $huevosNecesarios;
-        $costoTotal = 0;
-
-        foreach ($lotes as $lote) {
-            if ($huevosRestantes <= 0) break;
-
-            $huevosAUsar = min($huevosRestantes, $lote->cantidad_huevos_remanente);
-            $resultado = $lote->calcularConsumoHuevos($huevosAUsar);
-
-            $huevosPorCarton = $lote->huevos_por_carton ?? 30;
-            $cartonesFacturadosUsados = $resultado['huevos_facturados_usados'] / $huevosPorCarton;
-            $cartonesRegaloUsados = $resultado['huevos_regalo_usados'] / $huevosPorCarton;
-            $cartonesTotalesUsados = $cartonesFacturadosUsados + $cartonesRegaloUsados;
-
-            ReempaqueLote::create([
-                'reempaque_id' => $reempaque->id,
-                'lote_id' => $lote->id,
-                'cantidad_cartones_usados' => round($cartonesTotalesUsados, 3),
-                'cantidad_huevos_usados' => $huevosAUsar,
-                'cartones_facturados_usados' => round($cartonesFacturadosUsados, 3),
-                'cartones_regalo_usados' => round($cartonesRegaloUsados, 3),
-                'costo_parcial' => round($resultado['costo'], 4),
-            ]);
-
-            $lote->reducirRemanente($huevosAUsar, $resultado['huevos_regalo_usados']);
-            $costoTotal += $resultado['costo'];
-            $huevosRestantes -= $huevosAUsar;
-        }
-
-        $costoUnitarioPorHuevo = $huevosNecesarios > 0 ? $costoTotal / $huevosNecesarios : 0;
-        $costoUnitarioProducto = $costoUnitarioPorHuevo * $huevosPorUnidad;
-
-        $reempaque->update([
-            'costo_total' => round($costoTotal, 4),
-            'costo_unitario_promedio' => round($costoUnitarioPorHuevo, 4),
-        ]);
-
-        ReempaqueProducto::create([
-            'reempaque_id' => $reempaque->id,
-            'producto_id' => $productoId,
-            'categoria_id' => $producto->categoria_id,
-            'bodega_id' => $bodegaId,
-            'cantidad' => $cantidad,
-            'costo_unitario' => round($costoUnitarioProducto, 4),
-            'costo_total' => round($costoTotal, 4),
-            'agregado_a_stock' => false,
-        ]);
-
-        return [
-            'costo_unitario' => round($costoUnitarioProducto, 4),
-            'reempaque_id' => $reempaque->id,
-            'reempaque_numero' => $reempaque->numero_reempaque,
-        ];
-    }
-
-    // ============================================
-    // FIX: DEVOLVER STOCK CON PROMEDIO PONDERADO
-    // ============================================
-
-    /**
-     * Devolver stock a bodega con promedio ponderado correcto.
-     *
-     * SIEMPRE recalcula el costo promedio ponderado entre lo que hay
-     * en bodega y lo que se devuelve con su costo original.
-     * Esto garantiza que las finanzas cuadren sin importar el orden
-     * de operaciones (cargar, cancelar, recargar).
-     */
-    private function devolverStockABodega(
-        BodegaProducto $bodegaProducto,
-        float $cantidadDevolver,
-        float $costoOriginalBodega
-    ): void {
-        $stockActual = floatval($bodegaProducto->stock);
-        $costoActual = floatval($bodegaProducto->costo_promedio_actual);
-        $nuevoStock = $stockActual + $cantidadDevolver;
-
-        if ($costoActual <= 0 || $stockActual <= 0) {
-            // Bodega vacia o sin costo: restaurar costo original directamente
-            $bodegaProducto->costo_promedio_actual = round($costoOriginalBodega, 4);
-        } else {
-            // Promedio ponderado: stock existente + devuelto con su costo original
-            $valorExistente = $stockActual * $costoActual;
-            $valorDevuelto = $cantidadDevolver * $costoOriginalBodega;
-            $nuevoCosto = ($valorExistente + $valorDevuelto) / $nuevoStock;
-            $bodegaProducto->costo_promedio_actual = round($nuevoCosto, 4);
-        }
-
-        $bodegaProducto->stock = $nuevoStock;
-        $bodegaProducto->actualizarPrecioVentaSegunCosto();
-        $bodegaProducto->save();
-
-        Log::info("Stock devuelto a bodega", [
-            'producto_id' => $bodegaProducto->producto_id,
-            'stock_antes' => $stockActual,
-            'stock_despues' => $nuevoStock,
-            'costo_antes' => $costoActual,
-            'costo_despues' => $bodegaProducto->costo_promedio_actual,
-            'cantidad_devuelta' => $cantidadDevolver,
-            'costo_devuelto' => $costoOriginalBodega,
-        ]);
-    }
-
-    // ============================================
-    // TABLA Y ACCIONES
-    // ============================================
 
     public function table(Table $table): Table
     {
@@ -754,11 +602,12 @@ class CargasRelationManager extends RelationManager
                                     $costoDelReempaque = 0;
 
                                     if ($tomarDeLote > 0) {
-                                        $resultado = $this->ejecutarReempaqueAutomatico(
+                                        $reempaqueService = app(ReempaqueService::class);
+                                        $resultado = $reempaqueService->ejecutarReempaqueAutomatico(
                                             $data['producto_id'],
                                             $viaje->bodega_origen_id,
                                             (int) $tomarDeLote,
-                                            $viaje->id
+                                            "Viaje #{$viaje->id}"
                                         );
                                         $reempaqueId = $resultado['reempaque_id'];
                                         $reempaqueNumero = $resultado['reempaque_numero'];
@@ -775,6 +624,9 @@ class CargasRelationManager extends RelationManager
                                     $data['costo_unitario'] = $costoUnitarioCorrecto;
                                     $data['subtotal_costo'] = round($costoUnitarioCorrecto * $cantidadSolicitada, 2);
                                     $data['costo_bodega_original'] = $costoEnBodegaOriginal;
+                                    $data['cantidad_de_bodega'] = $tomarDeBodega;
+                                    $data['cantidad_de_lote'] = $tomarDeLote;
+                                    $data['costo_unitario_lote'] = $costoDelReempaque;
 
                                     $data['viaje_id'] = $viaje->id;
                                     $data['reempaque_id'] = $reempaqueId;
@@ -808,6 +660,9 @@ class CargasRelationManager extends RelationManager
                                     }
 
                                     $data['costo_bodega_original'] = floatval($bodegaProducto->costo_promedio_actual ?? 0);
+                                    $data['cantidad_de_bodega'] = $cantidadSolicitada;
+                                    $data['cantidad_de_lote'] = 0;
+                                    $data['costo_unitario_lote'] = 0;
                                     $data['viaje_id'] = $viaje->id;
                                     $data['reempaque_id'] = null;
                                     $record = $model::create($data);
@@ -934,6 +789,14 @@ class CargasRelationManager extends RelationManager
                                 $diferencia = $cantidadNueva - $cantidadAnterior;
                                 $stockActual = floatval($bodegaProducto->stock ?? 0);
 
+                                // Protección server-side: en Recargando no se permite reducir
+                                if ($viaje->estado === Viaje::ESTADO_RECARGANDO && $diferencia < 0) {
+                                    Notification::make()->title('No permitido')
+                                        ->body('En estado Recargando solo se puede aumentar la cantidad. Para devolver producto use la acción "Regresar".')
+                                        ->danger()->send();
+                                    throw new \Exception('Reducción no permitida en estado Recargando');
+                                }
+
                                 // Sin cambio de cantidad: solo actualizar precio u otros campos
                                 if ($diferencia == 0) {
                                     $record->update($data);
@@ -942,14 +805,66 @@ class CargasRelationManager extends RelationManager
                                 }
 
                                 if ($diferencia < 0) {
-                                    // ── REDUCIR: devolver diferencia a bodega ──────────────────
+                                    // ── REDUCIR: LIFO — primero devolver al lote, luego a bodega ──
+                                    $cantidadADevolver = abs($diferencia);
+                                    $cantidadDeLoteActual = floatval($record->cantidad_de_lote ?? 0);
+                                    $cantidadDeBodegaActual = floatval($record->cantidad_de_bodega ?? 0);
+                                    $costoLoteActual = floatval($record->costo_unitario_lote ?? 0);
+                                    $costoBodegaOriginal = floatval($record->costo_bodega_original ?? $record->costo_unitario ?? 0);
+
+                                    $devolverAlLote = 0;
+                                    $devolverABodega = 0;
+                                    $mensaje = "Cantidad reducida de {$cantidadAnterior} a {$cantidadNueva}. ";
+
+                                    if ($usaLotes && $cantidadDeLoteActual > 0) {
+                                        // LIFO: primero devolver al lote
+                                        $devolverAlLote = min($cantidadADevolver, $cantidadDeLoteActual);
+                                        $devolverABodega = max(0, $cantidadADevolver - $devolverAlLote);
+
+                                        // Revertir reempaque parcialmente (devolver huevos al lote)
+                                        if ($devolverAlLote > 0 && $record->reempaque_id) {
+                                            app(ReempaqueService::class)->revertirReempaqueParcial(
+                                                $record->reempaque_id,
+                                                $record->producto_id,
+                                                $devolverAlLote
+                                            );
+                                            $mensaje .= "{$devolverAlLote} devueltas al lote. ";
+                                        }
+
+                                        // Devolver a bodega si sobra
+                                        if ($devolverABodega > 0) {
+                                            app(ReempaqueService::class)->devolverStockABodega($bodegaProducto, $devolverABodega, $costoBodegaOriginal);
+                                            $mensaje .= "{$devolverABodega} devueltas a bodega.";
+                                        }
+                                    } else {
+                                        // Sin lotes: todo va a bodega
+                                        $devolverABodega = $cantidadADevolver;
+                                        app(ReempaqueService::class)->devolverStockABodega($bodegaProducto, $devolverABodega, $costoBodegaOriginal);
+                                        $mensaje .= "{$devolverABodega} devueltas a bodega.";
+                                    }
+
+                                    // Actualizar campos de origen en la carga
+                                    $nuevaCantidadDeLote = max(0, $cantidadDeLoteActual - $devolverAlLote);
+                                    $nuevaCantidadDeBodega = max(0, $cantidadDeBodegaActual - $devolverABodega);
+
+                                    $data['cantidad_de_lote'] = $nuevaCantidadDeLote;
+                                    $data['cantidad_de_bodega'] = $nuevaCantidadDeBodega;
+                                    $data['costo_unitario_lote'] = $costoLoteActual; // se mantiene
+
+                                    // Recalcular costo unitario promedio ponderado
+                                    $valorBodega = $nuevaCantidadDeBodega * $costoBodegaOriginal;
+                                    $valorLote = $nuevaCantidadDeLote * $costoLoteActual;
+                                    $costoNuevo = $cantidadNueva > 0
+                                        ? round(($valorBodega + $valorLote) / $cantidadNueva, 4)
+                                        : 0;
+
+                                    $data['costo_unitario'] = $costoNuevo;
+                                    $data['subtotal_costo'] = round($costoNuevo * $cantidadNueva, 2);
+
                                     $record->update($data);
-                                    $costoOriginal = floatval($record->costo_bodega_original ?? $record->costo_unitario ?? 0);
-                                    $this->devolverStockABodega($bodegaProducto, abs($diferencia), $costoOriginal);
 
                                     Notification::make()->title('Carga actualizada')
-                                        ->body("Cantidad reducida de {$cantidadAnterior} a {$cantidadNueva}. " . abs($diferencia) . " unidades devueltas a bodega.")
-                                        ->success()->send();
+                                        ->body($mensaje)->success()->send();
                                     return $record;
                                 }
 
@@ -965,16 +880,25 @@ class CargasRelationManager extends RelationManager
                                         if ($producto->unidad && str_contains(strtolower($producto->unidad->nombre ?? ''), '15')) {
                                             $huevosPorUnidad = 15;
                                         }
-                                        $huevosNecesarios = intval($tomarDeLote) * $huevosPorUnidad;
 
+                                        // Validar stock para el TOTAL consolidado (anterior + nuevo),
+                                        // considerando que la reversión del reempaque anterior devuelve
+                                        // huevos al lote, así que estarán disponibles
+                                        $cantidadDeLoteAnteriorValidacion = floatval($record->cantidad_de_lote ?? 0);
+                                        $totalLoteConsolidadoValidacion = $cantidadDeLoteAnteriorValidacion + $tomarDeLote;
+                                        $huevosNecesarios = intval($totalLoteConsolidadoValidacion) * $huevosPorUnidad;
+
+                                        // Huevos actuales en lotes + huevos que se recuperarán de la reversión
+                                        $huevosQueSeRecuperan = intval($cantidadDeLoteAnteriorValidacion) * $huevosPorUnidad;
                                         $totalHuevosEnLotes = Lote::where('bodega_id', $viaje->bodega_origen_id)
                                             ->whereHas('producto', fn($q) => $q->where('categoria_id', $categoriaLoteId))
                                             ->where('estado', 'disponible')
                                             ->where('cantidad_huevos_remanente', '>', 0)
                                             ->sum('cantidad_huevos_remanente');
+                                        $totalHuevosDisponibles = $totalHuevosEnLotes + $huevosQueSeRecuperan;
 
-                                        if ($totalHuevosEnLotes < $huevosNecesarios) {
-                                            $unidadesDisponibles = floor($totalHuevosEnLotes / $huevosPorUnidad) + $stockActual;
+                                        if ($totalHuevosDisponibles < $huevosNecesarios) {
+                                            $unidadesDisponibles = floor($totalHuevosDisponibles / $huevosPorUnidad) + $stockActual;
                                             Notification::make()->title('Stock insuficiente')
                                                 ->body("Disponible: {$unidadesDisponibles} unidades adicionales. Necesita: {$diferencia}")
                                                 ->danger()->persistent()->send();
@@ -982,19 +906,52 @@ class CargasRelationManager extends RelationManager
                                         }
                                     }
 
-                                    // Reempaque para las unidades del lote
-                                    $costoDelReempaque = 0;
-                                    $nuevoReempaqueId = null;
+                                    // ── REEMPAQUE CONSOLIDADO ──
+                                    // Si la carga ya tiene reempaque y necesita más del lote,
+                                    // revertimos el anterior y creamos uno nuevo consolidado
+                                    // (anterior + nuevo). Así siempre hay UN solo reempaque_id
+                                    // por carga, evitando reempaques huérfanos.
+                                    $cantidadDeLoteAnterior = floatval($record->cantidad_de_lote ?? 0);
+                                    $cantidadDeBodegaAnterior = floatval($record->cantidad_de_bodega ?? 0);
+                                    $costoBodegaOriginal = floatval($record->costo_bodega_original ?? 0);
 
-                                    if ($tomarDeLote > 0) {
-                                        $resultado = $this->ejecutarReempaqueAutomatico(
+                                    $nuevaCantidadDeBodega = $cantidadDeBodegaAnterior + $tomarDeBodega;
+                                    $totalLoteConsolidado = $cantidadDeLoteAnterior + $tomarDeLote;
+
+                                    $reempaqueService = app(ReempaqueService::class);
+                                    $nuevoReempaqueId = null;
+                                    $costoLoteConsolidado = 0;
+
+                                    if ($tomarDeLote > 0 && $totalLoteConsolidado > 0) {
+                                        // Necesita nuevas unidades del lote — consolidar
+
+                                        // 1. Revertir reempaque anterior si existe (devuelve huevos al lote)
+                                        if ($record->reempaque_id && $cantidadDeLoteAnterior > 0) {
+                                            $reempaqueAnterior = Reempaque::find($record->reempaque_id);
+                                            if ($reempaqueAnterior && !$reempaqueAnterior->estaInactivo()) {
+                                                $reempaqueService->revertirReempaqueParcial(
+                                                    $record->reempaque_id,
+                                                    $record->producto_id,
+                                                    $cantidadDeLoteAnterior
+                                                );
+                                            }
+                                        }
+
+                                        // 2. Crear reempaque consolidado (anterior + nuevo)
+                                        $etiquetaOrigen = $cantidadDeLoteAnterior > 0
+                                            ? "Viaje #{$viaje->id} (recarga consolidada)"
+                                            : "Viaje #{$viaje->id}";
+                                        $resultado = $reempaqueService->ejecutarReempaqueAutomatico(
                                             $record->producto_id,
                                             $viaje->bodega_origen_id,
-                                            (int) $tomarDeLote,
-                                            $viaje->id
+                                            (int) $totalLoteConsolidado,
+                                            $etiquetaOrigen
                                         );
                                         $nuevoReempaqueId = $resultado['reempaque_id'];
-                                        $costoDelReempaque = $resultado['costo_unitario'];
+                                        $costoLoteConsolidado = $resultado['costo_unitario'];
+                                    } elseif ($cantidadDeLoteAnterior > 0) {
+                                        // Solo aumenta bodega, lote anterior se mantiene intacto
+                                        $costoLoteConsolidado = floatval($record->costo_unitario_lote ?? 0);
                                     }
 
                                     // Descontar de bodega si aplica
@@ -1003,21 +960,21 @@ class CargasRelationManager extends RelationManager
                                         $bodegaProducto->save();
                                     }
 
-                                    // Recalcular costo promedio ponderado de TODA la carga:
-                                    // (valor anterior) + (valor bodega nueva) + (valor lote nuevo) / cantidad total nueva
-                                    $costoEnBodegaOriginal = floatval($record->costo_bodega_original ?? 0);
-                                    $valorAnterior = $cantidadAnterior * floatval($record->costo_unitario);
-                                    $valorBodegaNueva = $tomarDeBodega * $costoEnBodegaOriginal;
-                                    $valorLoteNuevo = $tomarDeLote * $costoDelReempaque;
+                                    // Costo promedio ponderado total de la carga
+                                    $valorBodegaTotal = $nuevaCantidadDeBodega * $costoBodegaOriginal;
+                                    $valorLoteTotal = $totalLoteConsolidado * $costoLoteConsolidado;
                                     $costoNuevo = $cantidadNueva > 0
-                                        ? round(($valorAnterior + $valorBodegaNueva + $valorLoteNuevo) / $cantidadNueva, 4)
+                                        ? round(($valorBodegaTotal + $valorLoteTotal) / $cantidadNueva, 4)
                                         : floatval($record->costo_unitario);
 
                                     $data['costo_unitario'] = $costoNuevo;
                                     $data['subtotal_costo'] = round($costoNuevo * $cantidadNueva, 2);
+                                    $data['cantidad_de_bodega'] = $nuevaCantidadDeBodega;
+                                    $data['cantidad_de_lote'] = $totalLoteConsolidado;
+                                    $data['costo_unitario_lote'] = $costoLoteConsolidado;
 
-                                    // Asociar nuevo reempaque si la carga no tenía uno antes
-                                    if (!$record->reempaque_id && $nuevoReempaqueId) {
+                                    // Siempre actualizar reempaque_id al consolidado
+                                    if ($nuevoReempaqueId) {
                                         $data['reempaque_id'] = $nuevoReempaqueId;
                                     }
 
@@ -1043,6 +1000,10 @@ class CargasRelationManager extends RelationManager
                                             ->danger()->persistent()->send();
                                         throw new \Exception('Stock insuficiente');
                                     }
+
+                                    $data['cantidad_de_bodega'] = $cantidadNueva;
+                                    $data['cantidad_de_lote'] = 0;
+                                    $data['costo_unitario_lote'] = 0;
 
                                     $record->update($data);
                                     $bodegaProducto->stock = max(0, $stockActual - $diferencia);
@@ -1092,68 +1053,64 @@ class CargasRelationManager extends RelationManager
                         try {
                             return DB::transaction(function () use ($record, $viaje) {
                                 $cantidadTotal = floatval($record->cantidad);
-                                $reempaqueId = $record->reempaque_id;
+
+                                // Usar campos de origen para determinar exactamente cuánto vino de cada fuente
+                                $cantidadDeLote = floatval($record->cantidad_de_lote ?? 0);
+                                $cantidadDeBodega = floatval($record->cantidad_de_bodega ?? 0);
+
+                                // Fallback legacy: si no hay campos de origen, calcular desde reempaque
+                                if ($cantidadDeBodega == 0 && $cantidadDeLote == 0) {
+                                    $cantidadDeBodega = $cantidadTotal;
+                                }
+
                                 $mensajeExtra = '';
-                                $cantidadReempacada = 0;
-                                $cantidadDeBodegaOriginal = $cantidadTotal;
 
-                                if ($reempaqueId) {
-                                    $reempaque = Reempaque::find($reempaqueId);
+                                // 1. Devolver unidades al lote (revertir reempaque)
+                                if ($cantidadDeLote > 0 && $record->reempaque_id) {
+                                    $reempaque = Reempaque::find($record->reempaque_id);
 
-                                    if ($reempaque && !$reempaque->estaCancelado()) {
-                                        $reempaqueProducto = $reempaque->reempaqueProductos()
-                                            ->where('producto_id', $record->producto_id)->first();
-
-                                        if ($reempaqueProducto) {
-                                            $cantidadReempacada = floatval($reempaqueProducto->cantidad);
-                                            $cantidadDeBodegaOriginal = $cantidadTotal - $cantidadReempacada;
-                                            $reempaqueProducto->agregado_a_stock = false;
-                                            $reempaqueProducto->save();
-                                        }
-
-                                        $reempaque->cancelar("Carga eliminada del viaje #{$viaje->id}");
+                                    if ($reempaque && !$reempaque->estaInactivo()) {
+                                        app(ReempaqueService::class)->revertirReempaqueParcial(
+                                            $record->reempaque_id,
+                                            $record->producto_id,
+                                            $cantidadDeLote
+                                        );
+                                        $reempaque->refresh();
                                         $mensajeExtra = " Reempaque {$reempaque->numero_reempaque} revertido.";
                                     }
                                 }
 
-                                // FIX: Devolver unidades de bodega con PROMEDIO PONDERADO correcto
-                                if ($cantidadDeBodegaOriginal > 0) {
+                                // 2. Devolver unidades de bodega con costo original
+                                if ($cantidadDeBodega > 0) {
                                     $bodegaProducto = BodegaProducto::where('bodega_id', $viaje->bodega_origen_id)
                                         ->where('producto_id', $record->producto_id)
                                         ->lockForUpdate()->first();
 
+                                    $costoOriginal = floatval($record->costo_bodega_original ?? $record->costo_unitario ?? 0);
+
                                     if ($bodegaProducto) {
-                                        // Usar costo_bodega_original (el costo que tenia bodega ANTES de cargar)
-                                        $costoOriginal = floatval($record->costo_bodega_original ?? $record->costo_unitario ?? 0);
-                                        $this->devolverStockABodega($bodegaProducto, $cantidadDeBodegaOriginal, $costoOriginal);
+                                        app(ReempaqueService::class)->devolverStockABodega($bodegaProducto, $cantidadDeBodega, $costoOriginal);
                                     } else {
-                                        $costoOriginal = floatval($record->costo_bodega_original ?? $record->costo_unitario ?? 0);
                                         $bp = BodegaProducto::create([
                                             'bodega_id' => $viaje->bodega_origen_id,
                                             'producto_id' => $record->producto_id,
-                                            'stock' => $cantidadDeBodegaOriginal,
+                                            'stock' => $cantidadDeBodega,
                                             'costo_promedio_actual' => round($costoOriginal, 4),
                                             'stock_minimo' => 0,
                                             'activo' => true,
                                         ]);
                                         $bp->actualizarPrecioVentaSegunCosto();
                                         $bp->save();
-
-                                        Log::warning("BodegaProducto no existía al eliminar carga. Creado nuevo registro.", [
-                                            'bodega_id' => $viaje->bodega_origen_id,
-                                            'producto_id' => $record->producto_id,
-                                            'cantidad_devuelta' => $cantidadDeBodegaOriginal,
-                                        ]);
                                     }
                                 }
 
                                 $record->delete();
 
                                 $mensaje = "Se devolvieron {$cantidadTotal} unidades.";
-                                if ($cantidadDeBodegaOriginal > 0 && $cantidadReempacada > 0) {
-                                    $mensaje = "{$cantidadDeBodegaOriginal} a bodega + {$cantidadReempacada} al lote.{$mensajeExtra}";
-                                } elseif ($cantidadReempacada > 0) {
-                                    $mensaje = "{$cantidadReempacada} devueltas al lote.{$mensajeExtra}";
+                                if ($cantidadDeBodega > 0 && $cantidadDeLote > 0) {
+                                    $mensaje = "{$cantidadDeBodega} a bodega + {$cantidadDeLote} al lote.{$mensajeExtra}";
+                                } elseif ($cantidadDeLote > 0) {
+                                    $mensaje = "{$cantidadDeLote} devueltas al lote.{$mensajeExtra}";
                                 } else {
                                     $mensaje = "{$cantidadTotal} devueltas a bodega.";
                                 }
