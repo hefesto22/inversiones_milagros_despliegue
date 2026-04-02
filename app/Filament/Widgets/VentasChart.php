@@ -23,6 +23,12 @@ class VentasChart extends ChartWidget
 
     protected int | string | array $columnSpan = 'full';
 
+    // Carga diferida: el gráfico se carga después del contenido principal
+    protected static bool $isLazy = true;
+
+    // Polling cada 120 segundos (el gráfico no necesita actualizarse tan seguido)
+    protected static ?string $pollingInterval = '120s';
+
     public function getHeading(): ?string
     {
         $periodoLabel = $this->getPeriodLabel();

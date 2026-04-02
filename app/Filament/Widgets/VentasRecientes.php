@@ -19,7 +19,7 @@ class VentasRecientes extends BaseWidget
     protected static ?int $sort = 3;
 
     protected int | string | array $columnSpan = 'full';
-    protected static bool $isLazy = false;
+    protected static bool $isLazy = true;
 
     public function getTableHeading(): ?string
     {
@@ -34,6 +34,7 @@ class VentasRecientes extends BaseWidget
         return $table
             ->query(
                 ViajeVenta::query()
+                    ->with(['cliente:id,nombre', 'userCreador:id,name'])
                     ->where('estado', 'completada')
                     ->whereBetween('fecha_venta', [$dateRange['inicio'], $dateRange['fin']])
                     ->latest('fecha_venta')

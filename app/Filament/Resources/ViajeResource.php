@@ -596,6 +596,9 @@ class ViajeResource extends Resource
                         $productosRegresan = [];
                         $totalCosto = 0;
 
+                        // Eager load para evitar LazyLoadingViolationException
+                        $record->loadMissing('cargas.producto', 'cargas.unidad');
+
                         foreach ($record->cargas as $carga) {
                             $disponible = $carga->getCantidadDisponible();
                             if ($disponible > 0) {
