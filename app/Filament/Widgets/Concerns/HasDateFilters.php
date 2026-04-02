@@ -26,22 +26,6 @@ trait HasDateFilters
 
         // Calcular fechas basado en el período seleccionado
         return match ($periodo) {
-            'hoy' => [
-                'inicio' => now()->startOfDay(),
-                'fin' => now()->endOfDay(),
-            ],
-            'ayer' => [
-                'inicio' => now()->subDay()->startOfDay(),
-                'fin' => now()->subDay()->endOfDay(),
-            ],
-            'ultimos_7_dias' => [
-                'inicio' => now()->subDays(6)->startOfDay(),
-                'fin' => now()->endOfDay(),
-            ],
-            'ultimos_30_dias' => [
-                'inicio' => now()->subDays(29)->startOfDay(),
-                'fin' => now()->endOfDay(),
-            ],
             'este_mes' => [
                 'inicio' => now()->startOfMonth(),
                 'fin' => now()->endOfMonth(),
@@ -49,10 +33,6 @@ trait HasDateFilters
             'mes_anterior' => [
                 'inicio' => now()->subMonth()->startOfMonth(),
                 'fin' => now()->subMonth()->endOfMonth(),
-            ],
-            'este_año' => [
-                'inicio' => now()->startOfYear(),
-                'fin' => now()->endOfYear(),
             ],
             default => [
                 'inicio' => now()->startOfMonth(),
@@ -83,13 +63,8 @@ trait HasDateFilters
         $periodo = $this->filters['periodo'] ?? 'este_mes';
         
         return match ($periodo) {
-            'hoy' => 'Hoy',
-            'ayer' => 'Ayer',
-            'ultimos_7_dias' => 'Últimos 7 días',
-            'ultimos_30_dias' => 'Últimos 30 días',
             'este_mes' => 'Este mes',
             'mes_anterior' => 'Mes anterior',
-            'este_año' => 'Este año',
             'personalizado' => $this->getCustomPeriodLabel(),
             default => 'Este mes',
         };

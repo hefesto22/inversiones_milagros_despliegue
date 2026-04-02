@@ -133,6 +133,14 @@ class Viaje extends Model
         return $this->hasMany(ViajeComisionDetalle::class, 'viaje_id');
     }
 
+    /**
+     * Movimientos contables del chofer asociados a este viaje
+     */
+    public function movimientosContables(): HasMany
+    {
+        return $this->hasMany(ChoferCuentaMovimiento::class, 'viaje_id');
+    }
+
     public function ventas(): HasMany
     {
         return $this->hasMany(Venta::class, 'viaje_id');
@@ -221,9 +229,67 @@ class Viaje extends Model
             // 3. Recalcular totales
             $this->recalcularTotales();
 
-            // 4. Cambiar estado
+            // 4. Registrar movimientos contables en la cuenta del chofer
+            $this->registrarMovimientosContables();
+
+            // 5. Cambiar estado
             $this->cambiarEstado(self::ESTADO_CERRADO);
         });
+    }
+
+    /**
+     * Registrar movimientos contables del viaje en la cuenta del chofer.
+     * Base devengado: el gasto se reconoce al cerrar el viaje.
+     */
+    protected function registrarMovimientosContables(): void
+    {
+        $cuenta = $this->chofer?->cuenta;
+
+        if (!$cuenta) {
+            return;
+        }
+
+        // Evitar duplicados: si ya tiene movimiento de comisión, no crear de nuevo
+        if ($this->movimientosContables()->where('tipo', 'comision')->exists()) {
+            return;
+        }
+
+        // Registrar comisión ganada (suma al saldo — se le debe al chofer)
+        if ($this->comision_ganada > 0) {
+            $cuenta->agregarComision(
+                $this->comision_ganada,
+                $this->id,
+                "Comisión viaje #{$this->id} - {$this->fecha_salida->format('d/m/Y')}"
+            );
+        }
+
+        // Registrar cobros por devoluciones/mermas (resta del saldo — se le descuenta)
+        $cobrosDescargas = $this->descargas()->where('cobrar_chofer', true)->sum('monto_cobrar');
+        if ($cobrosDescargas > 0) {
+            $cuenta->cobrarDevolucion(
+                $cobrosDescargas,
+                $this->id,
+                "Cobro devoluciones viaje #{$this->id}"
+            );
+        }
+
+        $cobrosMermas = $this->mermas()->where('cobrar_chofer', true)->sum('monto_cobrar');
+        if ($cobrosMermas > 0) {
+            $cuenta->cobrarMerma(
+                $cobrosMermas,
+                $this->id,
+                "Cobro mermas viaje #{$this->id}"
+            );
+        }
+
+        // Registrar cobro por faltante de efectivo
+        if ($this->diferencia_efectivo < 0) {
+            $cuenta->cobrarFaltante(
+                abs($this->diferencia_efectivo),
+                $this->id,
+                "Faltante efectivo viaje #{$this->id}"
+            );
+        }
     }
 
     /**

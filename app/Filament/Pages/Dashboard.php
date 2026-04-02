@@ -29,13 +29,8 @@ class Dashboard extends BaseDashboard
                         Select::make('periodo')
                             ->label('Período')
                             ->options([
-                                'hoy' => 'Hoy',
-                                'ayer' => 'Ayer',
-                                'ultimos_7_dias' => 'Últimos 7 días',
-                                'ultimos_30_dias' => 'Últimos 30 días',
                                 'este_mes' => 'Este mes',
                                 'mes_anterior' => 'Mes anterior',
-                                'este_año' => 'Este año',
                                 'personalizado' => 'Personalizado',
                             ])
                             ->default('este_mes')
@@ -67,22 +62,6 @@ class Dashboard extends BaseDashboard
     protected function getDateRangeFromPeriod(string $periodo): array
     {
         return match ($periodo) {
-            'hoy' => [
-                'inicio' => now()->startOfDay()->format('Y-m-d'),
-                'fin' => now()->endOfDay()->format('Y-m-d'),
-            ],
-            'ayer' => [
-                'inicio' => now()->subDay()->startOfDay()->format('Y-m-d'),
-                'fin' => now()->subDay()->endOfDay()->format('Y-m-d'),
-            ],
-            'ultimos_7_dias' => [
-                'inicio' => now()->subDays(6)->startOfDay()->format('Y-m-d'),
-                'fin' => now()->endOfDay()->format('Y-m-d'),
-            ],
-            'ultimos_30_dias' => [
-                'inicio' => now()->subDays(29)->startOfDay()->format('Y-m-d'),
-                'fin' => now()->endOfDay()->format('Y-m-d'),
-            ],
             'este_mes' => [
                 'inicio' => now()->startOfMonth()->format('Y-m-d'),
                 'fin' => now()->endOfMonth()->format('Y-m-d'),
@@ -90,10 +69,6 @@ class Dashboard extends BaseDashboard
             'mes_anterior' => [
                 'inicio' => now()->subMonth()->startOfMonth()->format('Y-m-d'),
                 'fin' => now()->subMonth()->endOfMonth()->format('Y-m-d'),
-            ],
-            'este_año' => [
-                'inicio' => now()->startOfYear()->format('Y-m-d'),
-                'fin' => now()->endOfYear()->format('Y-m-d'),
             ],
             default => [
                 'inicio' => now()->startOfMonth()->format('Y-m-d'),
@@ -105,11 +80,8 @@ class Dashboard extends BaseDashboard
     public function getWidgets(): array
     {
         return [
-            \App\Filament\Widgets\EstadoResultados::class,  // NUEVO - primero
+            \App\Filament\Widgets\EstadoResultados::class,
             \App\Filament\Widgets\StatsOverview::class,
-            \App\Filament\Widgets\RegaloAprovechadoOverview::class,
-            \App\Filament\Widgets\GastosCamionOverview::class,
-            \App\Filament\Widgets\GastosBodegaOverview::class,
             \App\Filament\Widgets\VentasChart::class,
             \App\Filament\Widgets\VentasRecientes::class,
         ];

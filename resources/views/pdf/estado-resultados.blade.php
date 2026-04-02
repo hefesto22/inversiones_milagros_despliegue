@@ -396,5 +396,74 @@
         8. Las variaciones porcentuales comparan contra el periodo inmediato anterior.
     </div>
 
+    <div style="page-break-before: always;"></div>
+
+    <div style="font-family: Arial, sans-serif; font-size: 9pt; line-height: 1.6; color: #333; padding: 15px;">
+        <div style="text-align: center; margin-bottom: 15px;">
+            <div style="font-size: 14pt; font-weight: bold; color: #1a5276;">Guia de Lectura</div>
+            <div style="font-size: 8pt; color: #777;">Para entender facilmente este reporte</div>
+        </div>
+
+        <div style="background: #eaf2f8; border-left: 4px solid #2980b9; padding: 10px 12px; margin-bottom: 12px; border-radius: 3px;">
+            <div style="font-weight: bold; color: #2980b9; margin-bottom: 4px;">¿Que es este reporte?</div>
+            Es un resumen de cuanto dinero entro al negocio, cuanto se gasto y cuanto quedo de ganancia (o perdida) en el mes. Le permite saber si el negocio esta funcionando bien.
+        </div>
+
+        <div style="background: #e8f8f5; border-left: 4px solid #27ae60; padding: 10px 12px; margin-bottom: 12px; border-radius: 3px;">
+            <div style="font-weight: bold; color: #27ae60; margin-bottom: 4px;">I. Ingresos (lo que entro)</div>
+            <strong>Ventas en Ruta:</strong> Lo que vendieron los choferes en la calle (huevos, lacteos, etc.).<br>
+            <strong>Ventas en Bodega:</strong> Lo que se vendio directamente desde la bodega.<br>
+            <strong>ISV:</strong> El impuesto que se cobra solo en productos gravados (no aplica a huevos ni lacteos porque son canasta basica).<br>
+            <strong>Ingresos Netos:</strong> El total real de ventas despues de descontar el ISV.
+        </div>
+
+        <div style="background: #fef9e7; border-left: 4px solid #f39c12; padding: 10px 12px; margin-bottom: 12px; border-radius: 3px;">
+            <div style="font-weight: bold; color: #f39c12; margin-bottom: 4px;">II. Costo de Ventas (lo que costaron los productos que vendimos)</div>
+            Es cuanto le costo a usted comprar los productos que vendio en el mes. Por ejemplo, si vendio una caja de huevos en L 100 pero le costo L 85, aqui aparecen los L 85.<br>
+            <strong>Utilidad Bruta:</strong> Lo que queda despues de restar el costo. En el ejemplo: L 100 - L 85 = L 15 de utilidad bruta.
+        </div>
+
+        <div style="background: #fdedec; border-left: 4px solid #e74c3c; padding: 10px 12px; margin-bottom: 12px; border-radius: 3px;">
+            <div style="font-weight: bold; color: #e74c3c; margin-bottom: 4px;">III. Gastos de Venta (lo que se gasta para poder vender)</div>
+            <strong>Transporte:</strong> Combustible, mantenimiento, reparaciones y viaticos de los camiones.<br>
+            <strong>Material de empaque:</strong> Cartones, cajas y material para empacar los productos.<br>
+            <strong>Comisiones a choferes:</strong> Lo que se le paga a cada chofer por las ventas que realizo.<br>
+            <strong>Mermas y perdidas:</strong> Producto que se perdio (por rotura en el camion, en reempaque o en bodega).
+        </div>
+
+        <div style="background: #f4ecf7; border-left: 4px solid #8e44ad; padding: 10px 12px; margin-bottom: 12px; border-radius: 3px;">
+            <div style="font-weight: bold; color: #8e44ad; margin-bottom: 4px;">IV. Gastos de Administracion</div>
+            Son los gastos fijos del negocio que no estan directamente relacionados con vender: honorarios del contador, internet, papeleria, etc.
+        </div>
+
+        <div style="background: #eaf2f8; border-left: 4px solid #2c3e50; padding: 10px 12px; margin-bottom: 12px; border-radius: 3px;">
+            <div style="font-weight: bold; color: #2c3e50; margin-bottom: 4px;">Utilidad Operativa (EBIT)</div>
+            Es la ganancia que genera el negocio con su operacion normal, despues de pagar todos los gastos. Si este numero es positivo, el negocio esta generando dinero. Si es negativo (en rojo), el negocio esta perdiendo.
+        </div>
+
+        <div style="background: #e8f8f5; border-left: 4px solid #1a5276; padding: 10px 12px; margin-bottom: 12px; border-radius: 3px;">
+            <div style="font-weight: bold; color: #1a5276; margin-bottom: 4px;">Utilidad Neta (lo que queda al final)</div>
+            Es la ganancia real despues de pagar el impuesto sobre la renta (ISR). <strong>Este es el numero mas importante:</strong> es lo que realmente gano (o perdio) el negocio en el mes.
+        </div>
+
+        <div style="background: #f9f9f9; border: 1px solid #ddd; padding: 10px 12px; margin-bottom: 12px; border-radius: 3px;">
+            <div style="font-weight: bold; color: #333; margin-bottom: 4px;">¿Como leer las columnas?</div>
+            <strong>Periodo Actual:</strong> Los numeros de este mes.<br>
+            <strong>Periodo Anterior:</strong> Los numeros del mes pasado (para que pueda comparar).<br>
+            <strong>VAR. (Variacion):</strong> Muestra si subio o bajo comparado con el mes anterior.<br>
+            <span style="color: #27ae60;">&#9650; Verde (+):</span> Significa que subio (en ventas es bueno, en gastos es malo).<br>
+            <span style="color: #e74c3c;">&#9660; Rojo (-):</span> Significa que bajo (en ventas es malo, en gastos es bueno).<br>
+            <strong>%:</strong> Que porcentaje representa cada gasto del total de ventas.
+        </div>
+
+        <div style="background: #fef9e7; border: 1px solid #f0d78c; padding: 10px 12px; border-radius: 3px;">
+            <div style="font-weight: bold; color: #7d6608; margin-bottom: 4px;">Consejo rapido</div>
+            Preste atencion a estos 3 numeros clave cada mes:<br>
+            1. <strong>Ingresos Netos:</strong> ¿Vendio mas o menos que el mes pasado?<br>
+            2. <strong>Utilidad Bruta (%):</strong> Si baja, puede ser que este vendiendo muy barato o comprando muy caro.<br>
+            3. <strong>Utilidad Neta:</strong> Si es positiva y creciendo, el negocio va bien. Si es negativa, hay que revisar gastos.
+        </div>
+    </div>
+
 </body>
 </html>

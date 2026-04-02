@@ -163,18 +163,18 @@ class StatsOverview extends BaseWidget
             ->sum('cantidad_huevos');
 
         // ============================================
-        // 6. VENTAS HOY
+        // 6. COMISIONES A CHOFERES
         // ============================================
 
-        $ventasRutaHoy = (float) ViajeVenta::whereDate('fecha_venta', today())
-            ->whereIn('estado', ['confirmada', 'completada'])
-            ->sum('total');
+        $comisionesPeriodo = (float) ChoferCuentaMovimiento::where('tipo', 'comision')
+            ->whereBetween('created_at', [$dateRange['inicio'], $dateRange['fin']])
+            ->sum('monto');
 
-        $ventasBodegaHoy = (float) Venta::whereDate('created_at', today())
-            ->whereIn('estado', ['completada', 'pendiente_pago', 'pagada'])
-            ->sum('total');
+        $comisionesAnt = (float) ChoferCuentaMovimiento::where('tipo', 'comision')
+            ->whereBetween('created_at', [$previousRange['inicio'], $previousRange['fin']])
+            ->sum('monto');
 
-        $ventasHoy = $ventasRutaHoy + $ventasBodegaHoy;
+        $cambioComisiones = $this->calculatePercentageChange($comisionesPeriodo, $comisionesAnt);
 
         // ============================================
         // STATS
@@ -220,10 +220,11 @@ class StatsOverview extends BaseWidget
                 ->color($mermasPeriodo > 0 ? 'danger' : 'success')
                 ->chart($this->getChartDiario($dateRange, 'mermas')),
 
-            Stat::make('Ventas Hoy', 'L ' . number_format($ventasHoy, 2))
-                ->description('Ruta: L ' . number_format($ventasRutaHoy, 0) . ' | Bodega: L ' . number_format($ventasBodegaHoy, 0))
-                ->descriptionIcon('heroicon-m-shopping-cart')
-                ->color('info'),
+            Stat::make("Comisiones ({$periodoLabel})", 'L ' . number_format($comisionesPeriodo, 2))
+                ->description($this->formatCambio($cambioComisiones))
+                ->descriptionIcon($cambioComisiones >= 0 ? 'heroicon-m-arrow-trending-up' : 'heroicon-m-arrow-trending-down')
+                ->color($comisionesPeriodo > 0 ? 'warning' : 'success')
+                ->chart($this->getChartDiario($dateRange, 'comisiones')),
         ];
     }
 
@@ -271,6 +272,7 @@ class StatsOverview extends BaseWidget
                 'ventas' => $this->getVentasDia($fecha),
                 'compras' => (float) Compra::whereDate('created_at', $fecha)->sum('total'),
                 'mermas' => $this->getMermasDia($fecha),
+                'comisiones' => (float) ChoferCuentaMovimiento::where('tipo', 'comision')->whereDate('created_at', $fecha)->sum('monto'),
                 default => 0,
             };
         }
