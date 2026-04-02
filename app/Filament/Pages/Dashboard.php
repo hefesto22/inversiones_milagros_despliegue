@@ -35,8 +35,9 @@ class Dashboard extends BaseDashboard
                             ])
                             ->default('este_mes')
                             ->live()
+                            ->placeholder('Seleccione un período')
                             ->afterStateUpdated(function ($state, callable $set) {
-                                $dates = $this->getDateRangeFromPeriod($state);
+                                $dates = $this->getDateRangeFromPeriod($state ?? 'este_mes');
                                 $set('fecha_inicio', $dates['inicio']);
                                 $set('fecha_fin', $dates['fin']);
                             }),
