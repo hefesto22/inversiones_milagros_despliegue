@@ -59,9 +59,9 @@ class CamionResource extends Resource
             return null;
         }
 
-        // Primero intentar bodega_id directo del usuario
-        if ($currentUser->bodega_id) {
-            return $currentUser->bodega_id;
+        // Primero intentar bodega_id directo del usuario (si existe la columna)
+        if (isset($currentUser->getAttributes()['bodega_id']) && $currentUser->getAttributes()['bodega_id']) {
+            return $currentUser->getAttributes()['bodega_id'];
         }
 
         // Si no tiene bodega_id directo, buscar en bodega_user
