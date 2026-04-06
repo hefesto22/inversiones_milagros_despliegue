@@ -273,7 +273,10 @@ class CargasRelationManager extends RelationManager
                 Forms\Components\TextInput::make('precio_venta_sugerido')
                     ->label(fn(Forms\Get $get) => ($get('aplica_isv') ?? false) ? 'Precio Venta (sin ISV)' : 'Precio Venta')
                     ->numeric()->prefix('L')->required()
-                    ->disabled(fn (string $operation) => $operation === 'edit')
+                    ->disabled(fn (string $operation) =>
+                        $operation === 'edit' ||
+                        $this->getOwnerRecord()->estado === Viaje::ESTADO_RECARGANDO
+                    )
                     ->dehydrated()
                     ->minValue(fn(Forms\Get $get) => floatval($get('precio_venta_minimo')) ?: 0.01)
                     ->validationMessages(['min' => 'El precio no puede ser menor al precio mínimo (costo).'])
@@ -341,7 +344,18 @@ class CargasRelationManager extends RelationManager
         $costoUnitario = $stockInfo['costo_promedio'];
         $aplicaIsv = $producto->aplica_isv ?? false;
         $costoConIsv = $aplicaIsv ? round($costoUnitario * 1.15, 2) : $costoUnitario;
-        $precioConIsv = $bodegaProducto->precio_venta_sugerido ?? ($producto->precio_sugerido ?? $costoConIsv * 1.15);
+
+        // Buscar precio de venta: BodegaProducto → Producto.precio_venta_maximo → Producto.precio_sugerido → fallback costo × 1.15
+        $precioConIsv = 0;
+        if ($bodegaProducto && floatval($bodegaProducto->precio_venta_sugerido ?? 0) > 0) {
+            $precioConIsv = floatval($bodegaProducto->precio_venta_sugerido);
+        } elseif (floatval($producto->precio_venta_maximo ?? 0) > 0) {
+            $precioConIsv = floatval($producto->precio_venta_maximo);
+        } elseif (floatval($producto->precio_sugerido ?? 0) > 0) {
+            $precioConIsv = floatval($producto->precio_sugerido);
+        } else {
+            $precioConIsv = round($costoConIsv * 1.15, 2);
+        }
         $precioSinIsv = $aplicaIsv && $precioConIsv > 0 ? round($precioConIsv / 1.15, 2) : $precioConIsv;
 
         $stockDisplay = $reempaqueService->getStockDisplay($stockInfo['stock_en_bodega'], $stockInfo['stock_desde_lote']);
@@ -384,7 +398,16 @@ class CargasRelationManager extends RelationManager
         $costoSinIsv = $bodegaProducto->costo_promedio_actual ?? 0;
         $aplicaIsv = $producto->aplica_isv ?? false;
         $costoConIsv = $aplicaIsv ? round($costoSinIsv * 1.15, 2) : $costoSinIsv;
-        $precioConIsv = $bodegaProducto->precio_venta_sugerido ?? 0;
+
+        // Buscar precio de venta: BodegaProducto → Producto → fallback costo × 1.15
+        $precioConIsv = 0;
+        if (floatval($bodegaProducto->precio_venta_sugerido ?? 0) > 0) {
+            $precioConIsv = floatval($bodegaProducto->precio_venta_sugerido);
+        } elseif (floatval($producto->precio_sugerido ?? 0) > 0) {
+            $precioConIsv = floatval($producto->precio_sugerido);
+        } else {
+            $precioConIsv = round($costoConIsv * 1.15, 2);
+        }
         $precioSinIsv = $aplicaIsv && $precioConIsv > 0 ? round($precioConIsv / 1.15, 2) : $precioConIsv;
 
         $stockActual = (float) $bodegaProducto->stock;
@@ -1026,11 +1049,13 @@ class CargasRelationManager extends RelationManager
                     }),
 
                 Tables\Actions\DeleteAction::make()
-                    ->visible(fn() => in_array($this->getOwnerRecord()->estado, [
-                        Viaje::ESTADO_PLANIFICADO,
-                        Viaje::ESTADO_CARGANDO,
-                        Viaje::ESTADO_RECARGANDO,
-                    ]))
+                    ->visible(fn($record) =>
+                        in_array($this->getOwnerRecord()->estado, [
+                            Viaje::ESTADO_PLANIFICADO,
+                            Viaje::ESTADO_CARGANDO,
+                            Viaje::ESTADO_RECARGANDO,
+                        ]) && floatval($record->cantidad_vendida ?? 0) == 0
+                    )
                     ->requiresConfirmation()
                     ->modalHeading('Eliminar carga')
                     ->modalDescription(fn($record) => $record->reempaque_id
@@ -1039,6 +1064,14 @@ class CargasRelationManager extends RelationManager
                     ->modalSubmitActionLabel('Sí, eliminar')
                     ->using(function ($record) {
                         $viaje = $this->getOwnerRecord();
+
+                        // Doble validación: no eliminar si tiene ventas
+                        if (floatval($record->cantidad_vendida ?? 0) > 0) {
+                            Notification::make()->title('No se puede eliminar')
+                                ->body('Esta carga tiene ventas registradas. No se puede eliminar.')
+                                ->danger()->send();
+                            return false;
+                        }
 
                         if (!in_array($viaje->estado, [
                             Viaje::ESTADO_PLANIFICADO,
