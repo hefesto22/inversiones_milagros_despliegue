@@ -101,7 +101,7 @@ class LiquidacionViajePdfController extends Controller
         // Obtener ventas con detalles para calcular costo y descuentos
         $ventas = $viaje->ventasRuta()
             ->whereIn('estado', ['confirmada', 'completada'])
-            ->with(['detalles.viajeCarga'])
+            ->with(['detalles.viajeCarga', 'detalles.producto'])
             ->get();
 
         // Costo de lo vendido y descuentos
