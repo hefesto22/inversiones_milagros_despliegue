@@ -15,6 +15,21 @@ class ViewLote extends ViewRecord
 {
     protected static string $resource = LoteResource::class;
 
+    /**
+     * Eager load relaciones para evitar LazyLoadingViolationException
+     */
+    public function resolveRecord(int | string $key): \Illuminate\Database\Eloquent\Model
+    {
+        return static::getModel()::with([
+            'historialCompras.compra',
+            'historialCompras.proveedor',
+            'mermas.creador',
+            'producto',
+            'bodega',
+            'proveedor',
+        ])->findOrFail($key);
+    }
+
     protected function getHeaderActions(): array
     {
         return [
