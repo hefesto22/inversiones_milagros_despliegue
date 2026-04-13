@@ -240,14 +240,22 @@ class VentaDetalle extends Model
         });
 
         static::saved(function ($detalle) {
-            if ($detalle->venta) {
-                $detalle->venta->recalcularTotales();
+            if ($detalle->venta_id) {
+                $venta = $detalle->relationLoaded('venta')
+                    ? $detalle->venta
+                    : Venta::find($detalle->venta_id);
+
+                $venta?->recalcularTotales();
             }
         });
 
         static::deleted(function ($detalle) {
-            if ($detalle->venta) {
-                $detalle->venta->recalcularTotales();
+            if ($detalle->venta_id) {
+                $venta = $detalle->relationLoaded('venta')
+                    ? $detalle->venta
+                    : Venta::find($detalle->venta_id);
+
+                $venta?->recalcularTotales();
             }
         });
     }
