@@ -11,6 +11,10 @@ return new class extends Migration
      */
     public function up(): void
     {
+        if (Schema::hasColumn('lotes', 'huevos_regalo_consumidos')) {
+            return;
+        }
+
         Schema::table('lotes', function (Blueprint $table) {
             $table->decimal('huevos_regalo_consumidos', 14, 2)
                 ->default(0.00)
@@ -24,6 +28,10 @@ return new class extends Migration
      */
     public function down(): void
     {
+        if (!Schema::hasColumn('lotes', 'huevos_regalo_consumidos')) {
+            return;
+        }
+
         Schema::table('lotes', function (Blueprint $table) {
             $table->dropColumn('huevos_regalo_consumidos');
         });

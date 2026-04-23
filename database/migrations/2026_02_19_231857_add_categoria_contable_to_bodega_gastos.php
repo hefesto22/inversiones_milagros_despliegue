@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (Schema::hasColumn('bodega_gastos', 'categoria_contable')) {
+            return;
+        }
+
         Schema::table('bodega_gastos', function (Blueprint $table) {
             $table->enum('categoria_contable', ['gasto_venta', 'gasto_admin', 'inversion'])
                 ->default('gasto_venta')
@@ -17,6 +21,10 @@ return new class extends Migration
 
     public function down(): void
     {
+        if (!Schema::hasColumn('bodega_gastos', 'categoria_contable')) {
+            return;
+        }
+
         Schema::table('bodega_gastos', function (Blueprint $table) {
             $table->dropColumn('categoria_contable');
         });

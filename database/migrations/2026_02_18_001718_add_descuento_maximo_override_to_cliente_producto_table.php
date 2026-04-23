@@ -11,6 +11,10 @@ return new class extends Migration
      */
     public function up(): void
     {
+        if (Schema::hasColumn('cliente_producto', 'descuento_maximo_override')) {
+            return;
+        }
+
         Schema::table('cliente_producto', function (Blueprint $table) {
             $table->decimal('descuento_maximo_override', 12, 4)
                 ->nullable()
@@ -24,6 +28,10 @@ return new class extends Migration
      */
     public function down(): void
     {
+        if (!Schema::hasColumn('cliente_producto', 'descuento_maximo_override')) {
+            return;
+        }
+
         Schema::table('cliente_producto', function (Blueprint $table) {
             $table->dropColumn('descuento_maximo_override');
         });
