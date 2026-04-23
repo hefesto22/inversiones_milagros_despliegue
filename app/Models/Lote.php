@@ -3,6 +3,10 @@
 namespace App\Models;
 
 use App\Enums\LoteEstado;
+use App\Events\Inventario\CompraAplicadaAlLote;
+use App\Events\Inventario\DevolucionAplicadaAlLote;
+use App\Events\Inventario\MermaAplicadaAlLote;
+use App\Events\Inventario\VentaAplicadaAlLote;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -280,6 +284,20 @@ class Lote extends Model
                 'huevos_totales_resultante' => $this->cantidad_huevos_remanente,
             ]);
 
+            // Fase 2 (shadow WAC): disparar evento para que ActualizarWacListener
+            // escriba en columnas wac_* en paralelo. El listener es síncrono y está
+            // dentro de esta transacción — si falla con shadow_mode activo, su
+            // try/catch interno captura el error sin romper la compra legacy.
+            CompraAplicadaAlLote::dispatch(
+                $this,
+                $compraId,
+                $compraDetalleId,
+                $proveedorId,
+                (float) $huevosFacturadosNuevos,
+                (float) $huevosRegaloNuevos,
+                (float) $costoCompra,
+            );
+
             return [
                 'huevos_agregados' => $huevosTotalesNuevos,
                 'costo_compra' => $costoCompra,
@@ -427,7 +445,7 @@ class Lote extends Model
                 'remanente' => $this->cantidad_huevos_remanente,
             ]);
 
-            return Merma::create([
+            $merma = Merma::create([
                 'lote_id' => $this->id,
                 'bodega_id' => $this->bodega_id,
                 'producto_id' => $this->producto_id,
@@ -442,6 +460,18 @@ class Lote extends Model
                 'buffer_despues' => $this->getBufferRegaloDisponible(),
                 'created_by' => $createdBy,
             ]);
+
+            // Fase 2 (shadow WAC): el listener solo afectará el WAC si
+            // $perdidaReal > 0 (la parte absorbida por buffer de regalo no
+            // tiene costo asociado). Ver ActualizarWacListener::handleMerma.
+            MermaAplicadaAlLote::dispatch(
+                $this,
+                $merma,
+                (float) $cubiertoBuffer,
+                (float) $perdidaReal,
+            );
+
+            return $merma;
         });
     }
 
@@ -480,6 +510,19 @@ class Lote extends Model
             }
 
             $this->save();
+
+            // Fase 2 (shadow WAC): reducirRemanente se invoca únicamente desde
+            // flujos de venta/reempaque (verificado en ReempaqueService y
+            // CreateReempaque). Las mermas NO pasan por aquí — usan registrarMerma.
+            // Por tanto el evento Venta es semánticamente correcto.
+            $huevosFacturadosConsumidos = max(0.0, (float) $cantidadHuevos - (float) $huevosRegaloUsados);
+
+            VentaAplicadaAlLote::dispatch(
+                $this,
+                $huevosFacturadosConsumidos,
+                (float) $huevosRegaloUsados,
+                [],
+            );
         });
     }
 
@@ -514,6 +557,18 @@ class Lote extends Model
                 'remanente_nuevo' => $this->cantidad_huevos_remanente,
                 'estado_nuevo' => $this->estado->value ?? $this->estado,
             ]);
+
+            // Fase 2 (shadow WAC): la parte facturada se reintegra al WAC al
+            // costo unitario actual del lote. Ver DevolucionAplicadaAlLote docblock
+            // para la justificación de esta política pragmática.
+            $huevosFacturadosDevueltos = max(0.0, (float) $cantidadHuevos - (float) $huevosRegaloDevueltos);
+
+            DevolucionAplicadaAlLote::dispatch(
+                $this,
+                $huevosFacturadosDevueltos,
+                (float) $huevosRegaloDevueltos,
+                [],
+            );
         });
     }
 
