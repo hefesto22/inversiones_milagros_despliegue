@@ -43,9 +43,13 @@ return new class extends Migration {
                 ->comment('WAC: valor monetario del stock facturado actual (numerador del costo promedio perpetuo)');
 
             // Denominador WAC: cantidad de huevos facturados actualmente en stock
-            // BIGINT UNSIGNED → headroom futuro si el volumen del negocio crece 10x-100x
-            // Se guarda solo huevos facturados (no incluye regalo, que no tiene costo)
-            $table->unsignedBigInteger('wac_huevos_inventario')
+            // DECIMAL(16,4) → consistente con wac_costo_inventario y con la columna legacy
+            // huevos_facturados_acumulados DECIMAL(14,2). Se necesitan decimales porque cartones
+            // es DECIMAL(14,2) y viaje_cargas.cantidad es DECIMAL(14,3); la conversión
+            // cartones × huevos_por_carton puede producir fracciones (ej: 10.55 × 30 = 316.5).
+            // Usar entero truncaría precisión y generaría divergencia sistemática contra legacy.
+            // Se guarda solo huevos facturados (no incluye regalo, que no tiene costo).
+            $table->decimal('wac_huevos_inventario', 16, 4)
                 ->nullable()
                 ->after('wac_costo_inventario')
                 ->comment('WAC: cantidad de huevos facturados actualmente en stock (denominador del costo promedio perpetuo)');
