@@ -105,7 +105,7 @@ class CargaChoferPdfController extends Controller
                         'producto' => $detalle->producto->nombre ?? 'N/A',
                         'cantidad' => $detalle->cantidad,
                         'precio' => $detalle->precio_base,
-                        'total' => $detalle->total,
+                        'total' => $detalle->total_linea,
                     ];
                 }),
             ];

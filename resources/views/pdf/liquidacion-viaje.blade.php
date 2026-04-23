@@ -440,6 +440,12 @@
                                         <td class="summary-label">Devuelto (no vendido):</td>
                                         <td class="summary-value color-orange">L {{ number_format($datos['total_devuelto_costo'], 2) }}</td>
                                     </tr>
+                                    @if($datos['total_merma_costo'] > 0)
+                                    <tr>
+                                        <td class="summary-label">Mermas:</td>
+                                        <td class="summary-value color-red">L {{ number_format($datos['total_merma_costo'], 2) }}</td>
+                                    </tr>
+                                    @endif
                                     <tr>
                                         <td class="summary-label">% Vendido:</td>
                                         <td class="summary-value">{{ number_format($datos['porcentaje_vendido'], 1) }}%</td>
@@ -619,6 +625,86 @@
             </div>
         </div>
 
+        <!-- Detalle de Mermas (si hay) -->
+        @if($datos['mermas_detalle']->count() > 0)
+        <div class="section">
+            <div class="section-title section-title-orange">DETALLE DE MERMAS ({{ $datos['mermas_detalle']->count() }} registros)</div>
+            <div class="section-content">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Producto</th>
+                            <th>Unidad</th>
+                            <th class="text-center">Cantidad</th>
+                            <th>Motivo</th>
+                            <th class="text-right">Costo Unit.</th>
+                            <th class="text-right">Costo Total</th>
+                            <th class="text-center">Cobrar Chofer</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach($datos['mermas_detalle'] as $merma)
+                        <tr>
+                            <td>{{ $merma->producto->nombre ?? 'N/A' }}</td>
+                            <td class="text-center">{{ $merma->unidad->abreviatura ?? $merma->unidad->nombre ?? 'N/A' }}</td>
+                            <td class="text-center"><strong>{{ number_format($merma->cantidad, 2) }}</strong></td>
+                            <td>
+                                @switch($merma->motivo)
+                                    @case('rotura')
+                                        <span class="badge badge-warning">Rotura</span>
+                                        @break
+                                    @case('vencimiento')
+                                        <span class="badge badge-danger">Vencimiento</span>
+                                        @break
+                                    @case('robo')
+                                        <span class="badge badge-danger">Robo</span>
+                                        @break
+                                    @case('dano_transporte')
+                                        <span class="badge badge-warning">Transporte</span>
+                                        @break
+                                    @case('regalo_cliente')
+                                        <span class="badge badge-info">Regalo</span>
+                                        @break
+                                    @default
+                                        <span class="badge" style="background: #e2e8f0; color: #475569;">{{ ucfirst($merma->motivo) }}</span>
+                                @endswitch
+                            </td>
+                            <td class="text-right">L {{ number_format($merma->costo_unitario, 2) }}</td>
+                            <td class="text-right color-red"><strong>L {{ number_format($merma->subtotal_costo, 2) }}</strong></td>
+                            <td class="text-center">
+                                @if($merma->cobrar_chofer)
+                                    <span class="badge badge-danger">Si - L {{ number_format($merma->monto_cobrar, 2) }}</span>
+                                @else
+                                    <span style="color: #94a3b8;">No</span>
+                                @endif
+                            </td>
+                        </tr>
+                        @endforeach
+                    </tbody>
+                    <tfoot>
+                        <tr class="bg-red">
+                            <td colspan="5"><strong>TOTAL MERMAS</strong></td>
+                            <td class="text-right"><strong>L {{ number_format($datos['total_merma_costo'], 2) }}</strong></td>
+                            <td></td>
+                        </tr>
+                        @if($datos['mermas_cobrar_chofer'] > 0)
+                        <tr style="background: #fef3c7;">
+                            <td colspan="5"><strong>Total a Cobrar al Chofer:</strong></td>
+                            <td class="text-right color-red"><strong>L {{ number_format($datos['mermas_cobrar_chofer'], 2) }}</strong></td>
+                            <td></td>
+                        </tr>
+                        @endif
+                    </tfoot>
+                </table>
+                @if($merma->descripcion ?? false)
+                <div style="font-size: 8px; color: #64748b; margin-top: 6px;">
+                    * Algunas mermas incluyen descripcion adicional en el sistema.
+                </div>
+                @endif
+            </div>
+        </div>
+        @endif
+
         <!-- Detalle de Ventas por Cliente -->
         <div class="section">
             <div class="section-title">DETALLE DE VENTAS ({{ $datos['ventas_por_cliente']->count() }} ventas)</div>
@@ -735,6 +821,12 @@
                     <td class="summary-label">(-) Gastos Operativos:</td>
                     <td class="summary-value color-orange">L {{ number_format($datos['total_gastos'], 2) }}</td>
                 </tr>
+                @if($datos['total_merma_costo'] > 0)
+                <tr>
+                    <td class="summary-label">(-) Mermas / Perdidas:</td>
+                    <td class="summary-value color-red">L {{ number_format($datos['total_merma_costo'], 2) }}</td>
+                </tr>
+                @endif
             </table>
             <div class="total-final">
                 <table style="width: 100%;">
@@ -816,6 +908,9 @@
                     @endif
                     @if($datos['total_gastos'] > 0)
                     <br>• Gastos operativos del viaje: <strong style="color: #ea580c;">-L {{ number_format($datos['total_gastos'], 2) }}</strong>
+                    @endif
+                    @if($datos['total_merma_costo'] > 0)
+                    <br>• Mermas / perdidas en ruta: <strong style="color: #dc2626;">-L {{ number_format($datos['total_merma_costo'], 2) }}</strong>
                     @endif
                 </span>
             </div>
