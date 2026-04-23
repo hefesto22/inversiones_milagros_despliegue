@@ -5,21 +5,44 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
+/**
+ * Separa la cantidad cargada en "de bodega" vs "de reempaque/lote" y guarda el
+ * costo unitario del lote para auditoría.
+ *
+ * Idempotencia: verificamos cada columna con Schema::hasColumn() antes de agregarla
+ * y saltamos el backfill de datos si las columnas ya existían, asumiendo que los
+ * datos fueron poblados en la corrida original.
+ */
 return new class extends Migration
 {
     public function up(): void
     {
+        $yaAplicada = Schema::hasColumn('viaje_cargas', 'cantidad_de_bodega');
+
         Schema::table('viaje_cargas', function (Blueprint $table) {
-            $table->decimal('cantidad_de_bodega', 14, 3)->default(0)
-                ->after('costo_bodega_original')
-                ->comment('Unidades que vinieron de bodega');
-            $table->decimal('cantidad_de_lote', 14, 3)->default(0)
-                ->after('cantidad_de_bodega')
-                ->comment('Unidades que vinieron del reempaque automático de lotes');
-            $table->decimal('costo_unitario_lote', 12, 4)->default(0)
-                ->after('cantidad_de_lote')
-                ->comment('Costo unitario de las unidades que vinieron del lote/reempaque');
+            if (!Schema::hasColumn('viaje_cargas', 'cantidad_de_bodega')) {
+                $table->decimal('cantidad_de_bodega', 14, 3)->default(0)
+                    ->after('costo_bodega_original')
+                    ->comment('Unidades que vinieron de bodega');
+            }
+            if (!Schema::hasColumn('viaje_cargas', 'cantidad_de_lote')) {
+                $table->decimal('cantidad_de_lote', 14, 3)->default(0)
+                    ->after('cantidad_de_bodega')
+                    ->comment('Unidades que vinieron del reempaque automático de lotes');
+            }
+            if (!Schema::hasColumn('viaje_cargas', 'costo_unitario_lote')) {
+                $table->decimal('costo_unitario_lote', 12, 4)->default(0)
+                    ->after('cantidad_de_lote')
+                    ->comment('Costo unitario de las unidades que vinieron del lote/reempaque');
+            }
         });
+
+        // El backfill solo debe correr la primera vez que se aplica la migración.
+        // Si las columnas ya existían, los datos fueron poblados en esa corrida original
+        // y re-ejecutar podría sobrescribir correcciones manuales posteriores.
+        if ($yaAplicada) {
+            return;
+        }
 
         // Poblar datos existentes basándose en reempaque_id y ReempaqueProducto
         DB::statement("
@@ -43,7 +66,14 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('viaje_cargas', function (Blueprint $table) {
-            $table->dropColumn(['cantidad_de_bodega', 'cantidad_de_lote', 'costo_unitario_lote']);
+            $columnas = array_filter(
+                ['cantidad_de_bodega', 'cantidad_de_lote', 'costo_unitario_lote'],
+                fn ($col) => Schema::hasColumn('viaje_cargas', $col)
+            );
+
+            if (!empty($columnas)) {
+                $table->dropColumn($columnas);
+            }
         });
     }
 };

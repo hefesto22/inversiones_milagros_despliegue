@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (Schema::hasColumn('viaje_cargas', 'costo_bodega_original')) {
+            return;
+        }
+
         Schema::table('viaje_cargas', function (Blueprint $table) {
             $table->decimal('costo_bodega_original', 10, 4)
                 ->nullable()
@@ -18,6 +22,10 @@ return new class extends Migration
 
     public function down(): void
     {
+        if (!Schema::hasColumn('viaje_cargas', 'costo_bodega_original')) {
+            return;
+        }
+
         Schema::table('viaje_cargas', function (Blueprint $table) {
             $table->dropColumn('costo_bodega_original');
         });

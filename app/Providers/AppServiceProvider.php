@@ -29,5 +29,11 @@ class AppServiceProvider extends ServiceProvider
         if (app()->isProduction()) {
             URL::forceScheme('https');
         }
+
+        // Nota sobre listeners del dual-write WAC (Fase 2):
+        // No se registran manualmente aquí. Laravel 11 los descubre automáticamente
+        // a partir de los type-hints de los métodos handle* en ActualizarWacListener
+        // (ubicado en app/Listeners/Inventario/). Registrarlos manualmente causaría
+        // doble ejecución de cada handler.
     }
 }
