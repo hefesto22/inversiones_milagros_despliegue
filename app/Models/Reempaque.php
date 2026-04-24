@@ -194,9 +194,17 @@ class Reempaque extends Model
     public function getBeneficioRegalos(): float
     {
         // FIX N+1: usa JOIN en lugar de iterar con lazy loading de lote por cada reempaqueLote.
+        //
+        // Fase 5: la columna de costo se resuelve vía Lote::columnaSqlCostoPorHuevo(),
+        // que retorna `lotes.costo_por_huevo` o `lotes.wac_costo_por_huevo` según el
+        // flag inventario.wac.read_source. El helper garantiza un identificador
+        // calificado con prefijo `lotes.` (blindado por tests en LoteTest), por lo
+        // que la interpolación en selectRaw es segura — no hay input de usuario.
+        $columnaCosto = Lote::columnaSqlCostoPorHuevo();
+
         return (float) $this->reempaqueLotes()
             ->join('lotes', 'reempaque_lotes.lote_id', '=', 'lotes.id')
-            ->selectRaw('COALESCE(SUM(reempaque_lotes.cartones_regalo_usados * COALESCE(lotes.huevos_por_carton, 30) * lotes.costo_por_huevo), 0) AS beneficio')
+            ->selectRaw("COALESCE(SUM(reempaque_lotes.cartones_regalo_usados * COALESCE(lotes.huevos_por_carton, 30) * {$columnaCosto}), 0) AS beneficio")
             ->value('beneficio');
     }
 

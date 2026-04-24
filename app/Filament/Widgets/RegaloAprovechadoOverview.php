@@ -2,6 +2,7 @@
 
 namespace App\Filament\Widgets;
 
+use App\Models\Lote;
 use App\Models\ReempaqueLote;
 use App\Filament\Widgets\Concerns\HasDateFilters;
 use Filament\Widgets\StatsOverviewWidget as BaseWidget;
@@ -61,15 +62,21 @@ class RegaloAprovechadoOverview extends BaseWidget
      */
     protected function getRegaloData($fechaInicio, $fechaFin): array
     {
+        // Fase 5: columna de costo dinámica según inventario.wac.read_source.
+        // Lote::columnaSqlCostoPorHuevo() retorna uno de dos identificadores
+        // hardcoded (`lotes.costo_por_huevo` | `lotes.wac_costo_por_huevo`),
+        // blindado por tests — interpolar en selectRaw es seguro.
+        $columnaCosto = Lote::columnaSqlCostoPorHuevo();
+
         $resultado = ReempaqueLote::whereBetween('reempaque_lotes.created_at', [$fechaInicio, $fechaFin])
             ->where('cartones_regalo_usados', '>', 0)
             ->join('lotes', 'reempaque_lotes.lote_id', '=', 'lotes.id')
-            ->selectRaw('
+            ->selectRaw("
                 SUM(reempaque_lotes.cartones_regalo_usados) as total_cartones,
                 SUM(reempaque_lotes.cartones_regalo_usados * lotes.huevos_por_carton) as total_huevos,
-                SUM(reempaque_lotes.cartones_regalo_usados * lotes.huevos_por_carton * lotes.costo_por_huevo) as ganancia_estimada,
+                SUM(reempaque_lotes.cartones_regalo_usados * lotes.huevos_por_carton * {$columnaCosto}) as ganancia_estimada,
                 COUNT(DISTINCT reempaque_lotes.reempaque_id) as total_reempaques
-            ')
+            ")
             ->first();
 
         return [
