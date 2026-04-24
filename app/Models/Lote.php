@@ -613,6 +613,97 @@ class Lote extends Model
     }
 
     // ============================================
+    // ACCESSORS WAC — FASE 5 SWITCH DE LECTURA
+    // ============================================
+    //
+    // Estos accessors son el punto único de lectura del costo del lote para
+    // consumidores Eloquent. Respetan la configuración `inventario.wac.read_source`:
+    //
+    //   - 'legacy' (default) → devuelven las columnas legacy (costo_por_huevo,
+    //                           costo_por_carton_facturado)
+    //   - 'wac'              → devuelven las columnas WAC perpetuo
+    //                           (wac_costo_por_huevo, wac_costo_por_carton_facturado)
+    //
+    // Durante Fases 2-4 el flag permanece en 'legacy' — el sistema sigue
+    // funcionando exactamente como antes. En Fase 5 el switch se cambia a
+    // 'wac' y todas las UIs/widgets/reportes empiezan a leer WAC sin tocar
+    // código. Rollback es instantáneo: revertir la variable de entorno.
+    //
+    // Para queries SQL raw (que bypasean Eloquent) usar los métodos estáticos
+    // columnaSqlCostoPorHuevo() y columnaSqlCostoPorCartonFacturado().
+    //
+    // Contrato de devolución: siempre float. Si la columna WAC está en NULL
+    // (lote pre-backfill — no debería ocurrir post Fase 3 pero se blinda),
+    // se devuelve 0.0 por defensa en profundidad — el llamante verá un costo
+    // cero antes que una excepción TypeError en producción.
+
+    /**
+     * Costo por huevo "efectivo": valor que deben usar reportes, widgets,
+     * Filament Resources y servicios cuando necesiten mostrar o calcular
+     * sobre el costo unitario del lote.
+     *
+     * @return float Costo por huevo en Lempiras según read_source activo.
+     */
+    public function getCostoPorHuevoEfectivoAttribute(): float
+    {
+        if (config('inventario.wac.read_source', 'legacy') === 'wac') {
+            return (float) ($this->wac_costo_por_huevo ?? 0);
+        }
+
+        return (float) ($this->costo_por_huevo ?? 0);
+    }
+
+    /**
+     * Costo por cartón facturado "efectivo": análogo a costo_por_huevo_efectivo
+     * pero a nivel de cartón. Útil para reportes de cartones y cálculos de
+     * reempaque que operan sobre cartones completos.
+     *
+     * @return float Costo por cartón facturado en Lempiras según read_source activo.
+     */
+    public function getCostoPorCartonFacturadoEfectivoAttribute(): float
+    {
+        if (config('inventario.wac.read_source', 'legacy') === 'wac') {
+            return (float) ($this->wac_costo_por_carton_facturado ?? 0);
+        }
+
+        return (float) ($this->costo_por_carton_facturado ?? 0);
+    }
+
+    /**
+     * Helper para queries SQL raw: devuelve el nombre de columna calificado
+     * (con tabla) que debe usarse para leer el costo por huevo, según la
+     * configuración activa.
+     *
+     * Uso típico en selectRaw dentro de un JOIN con `lotes`:
+     *
+     *   $col = Lote::columnaSqlCostoPorHuevo();
+     *   DB::table('reempaque_lotes')
+     *       ->join('lotes', ...)
+     *       ->selectRaw("SUM(huevos * {$col}) AS total");
+     *
+     * El valor retornado es uno de dos strings fijos, inyectables en SQL
+     * sin riesgo de injection (no viene de input de usuario, viene de una
+     * config controlada por .env).
+     */
+    public static function columnaSqlCostoPorHuevo(): string
+    {
+        return config('inventario.wac.read_source', 'legacy') === 'wac'
+            ? 'lotes.wac_costo_por_huevo'
+            : 'lotes.costo_por_huevo';
+    }
+
+    /**
+     * Helper para queries SQL raw análogo a columnaSqlCostoPorHuevo() pero
+     * para costo_por_carton_facturado.
+     */
+    public static function columnaSqlCostoPorCartonFacturado(): string
+    {
+        return config('inventario.wac.read_source', 'legacy') === 'wac'
+            ? 'lotes.wac_costo_por_carton_facturado'
+            : 'lotes.costo_por_carton_facturado';
+    }
+
+    // ============================================
     // SCOPES
     // ============================================
 
