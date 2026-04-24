@@ -28,9 +28,20 @@ use InvalidArgumentException;
  *
  * Retornos nullable:
  *   - aplicarVenta/aplicarMerma/aplicarDevolucion pueden retornar null cuando el WAC del
- *     lote no está inicializado (wac_costo_inventario = 0 AND wac_huevos_inventario = 0).
- *     Este estado es esperado durante la ventana entre deploy y ejecución del backfill
+ *     lote no está inicializado (todas las columnas wac_* en NULL). Este estado es
+ *     esperado durante la ventana entre deploy de Fase 2 y ejecución del backfill
  *     de Fase 3. El listener loguea warning y continúa sin romper la operación del usuario.
+ *
+ * Distinción NULL vs agotado-con-memoria:
+ *   - wac_* = NULL           → lote nunca tocado por WAC (pre-backfill). Salidas y
+ *                              devoluciones se omiten porque no hay costo de referencia.
+ *   - inv=0, huevos=0, unit>0 → lote agotado después de ventas/mermas. El costo_unit
+ *                              se preservó en la última salida (invariante WAC). Una
+ *                              devolución posterior reintegra a ese costo_unit memoria.
+ *                              Una nueva compra reinicia el WAC desde cero.
+ *
+ *   El chequeo `wacNoInicializado()` discrimina los dos casos usando `=== null`,
+ *   no comparación contra 0.0 (que conflatearía ambos estados).
  */
 final class WacService
 {
@@ -83,10 +94,23 @@ final class WacService
         return DB::transaction(function () use ($lote, $huevosFacturados, $costoCompra, $contextoAuditoria) {
             $lote = $this->lockAndRefresh($lote);
 
-            $antes = $this->snapshot($lote);
+            $antesRaw = $this->snapshot($lote);
 
-            $inventarioDespues = round($antes['inventario'] + $costoCompra, self::DECIMALES_COSTO_TOTAL);
-            $huevosDespues     = round($antes['huevos'] + $huevosFacturados, self::DECIMALES_HUEVOS);
+            // aplicarCompra procede aun sobre lote NULL (primera compra del ciclo).
+            // Coalescemos a 0 solo para la aritmética; el delta reporta los valores
+            // coalescidos como "antes" (equivalente matemático: NULL ≡ 0 al sumar
+            // la primera compra).
+            //
+            // Caso agotado-con-memoria (inv=0, huevos=0, costo_unit>0): la memoria
+            // del costo_unit se DESCARTA naturalmente porque la nueva compra
+            // establece un nuevo WAC desde cero (inv=0+costo, huevos=0+huevos).
+            // Es el comportamiento correcto: una nueva compra reinicia el promedio.
+            $inventarioAntes = $antesRaw['inventario'] ?? 0.0;
+            $huevosAntes     = $antesRaw['huevos']     ?? 0.0;
+            $costoUnitAntes  = $antesRaw['costo_unit'] ?? 0.0;
+
+            $inventarioDespues = round($inventarioAntes + $costoCompra, self::DECIMALES_COSTO_TOTAL);
+            $huevosDespues     = round($huevosAntes + $huevosFacturados, self::DECIMALES_HUEVOS);
             $costoUnitDespues  = $huevosDespues > 0
                 ? round($inventarioDespues / $huevosDespues, self::DECIMALES_COSTO_UNITARIO)
                 : 0.0;
@@ -98,7 +122,11 @@ final class WacService
                 motivo:            'compra',
                 deltaHuevos:       $huevosFacturados,
                 deltaCosto:        $costoCompra,
-                antes:             $antes,
+                antes:             [
+                    'inventario' => $inventarioAntes,
+                    'huevos'     => $huevosAntes,
+                    'costo_unit' => $costoUnitAntes,
+                ],
                 inventarioDespues: $inventarioDespues,
                 huevosDespues:     $huevosDespues,
                 costoUnitDespues:  $costoUnitDespues,
@@ -163,20 +191,31 @@ final class WacService
         return DB::transaction(function () use ($lote, $huevosFacturadosDevueltos, $contextoAuditoria) {
             $lote = $this->lockAndRefresh($lote);
 
-            $antes = $this->snapshot($lote);
+            $antesRaw = $this->snapshot($lote);
 
-            // No podemos calcular el costo de entrada sin un costo unitario de referencia.
-            if ($this->wacNoInicializado($antes)) {
+            // Solo omitimos cuando el lote JAMÁS fue inicializado (wac_* = NULL).
+            // Un lote agotado-con-memoria (inv=0, huevos=0, costo_unit>0) SÍ puede
+            // recibir devoluciones — el costo_unit preservado es exactamente el
+            // valor a usar para reintegrar los huevos devueltos al WAC.
+            // Habilita Escenario B: reempaque revertido sobre lote agotado,
+            // devolución de cliente posterior al agotamiento total.
+            if ($this->wacNoInicializado($antesRaw)) {
                 $this->logOmitido($lote, 'devolucion', $huevosFacturadosDevueltos, $contextoAuditoria);
                 return null;
             }
 
-            $costoEntrante     = round($huevosFacturadosDevueltos * $antes['costo_unit'], self::DECIMALES_COSTO_TOTAL);
-            $inventarioDespues = round($antes['inventario'] + $costoEntrante, self::DECIMALES_COSTO_TOTAL);
-            $huevosDespues     = round($antes['huevos'] + $huevosFacturadosDevueltos, self::DECIMALES_HUEVOS);
+            // Post-check: wacNoInicializado=false ⇒ las 3 columnas son non-null
+            // (invariante persistido en bloque). Cast directo sin coalescer.
+            $inventarioAntes = (float) $antesRaw['inventario'];
+            $huevosAntes     = (float) $antesRaw['huevos'];
+            $costoUnitAntes  = (float) $antesRaw['costo_unit'];
+
+            $costoEntrante     = round($huevosFacturadosDevueltos * $costoUnitAntes, self::DECIMALES_COSTO_TOTAL);
+            $inventarioDespues = round($inventarioAntes + $costoEntrante, self::DECIMALES_COSTO_TOTAL);
+            $huevosDespues     = round($huevosAntes + $huevosFacturadosDevueltos, self::DECIMALES_HUEVOS);
             $costoUnitDespues  = $huevosDespues > 0
                 ? round($inventarioDespues / $huevosDespues, self::DECIMALES_COSTO_UNITARIO)
-                : $antes['costo_unit'];
+                : $costoUnitAntes;
 
             $this->persistir($lote, $inventarioDespues, $huevosDespues, $costoUnitDespues, 'devolucion');
 
@@ -185,7 +224,11 @@ final class WacService
                 motivo:            'devolucion',
                 deltaHuevos:       $huevosFacturadosDevueltos,
                 deltaCosto:        $costoEntrante,
-                antes:             $antes,
+                antes:             [
+                    'inventario' => $inventarioAntes,
+                    'huevos'     => $huevosAntes,
+                    'costo_unit' => $costoUnitAntes,
+                ],
                 inventarioDespues: $inventarioDespues,
                 huevosDespues:     $huevosDespues,
                 costoUnitDespues:  $costoUnitDespues,
@@ -217,25 +260,37 @@ final class WacService
         return DB::transaction(function () use ($lote, $huevosSalida, $motivo, $contextoAuditoria) {
             $lote = $this->lockAndRefresh($lote);
 
-            $antes = $this->snapshot($lote);
+            $antesRaw = $this->snapshot($lote);
 
-            if ($this->wacNoInicializado($antes)) {
+            // Solo omitimos cuando wac_* = NULL (lote pre-backfill).
+            // Un lote agotado-con-memoria no debería recibir una salida (porque
+            // cantidad_huevos_remanente ya es 0 a nivel de modelo), pero si
+            // llegara por alguna ruta degenerada, la aritmética con max(0,..)
+            // clampa correctamente sin producir valores negativos.
+            if ($this->wacNoInicializado($antesRaw)) {
                 $this->logOmitido($lote, $motivo, $huevosSalida, $contextoAuditoria);
                 return null;
             }
 
-            $costoSaliente     = round($huevosSalida * $antes['costo_unit'], self::DECIMALES_COSTO_TOTAL);
-            $inventarioDespues = round(max(0.0, $antes['inventario'] - $costoSaliente), self::DECIMALES_COSTO_TOTAL);
-            $huevosDespues     = round(max(0.0, $antes['huevos'] - $huevosSalida), self::DECIMALES_HUEVOS);
+            // Post-check: wacNoInicializado=false ⇒ las 3 columnas son non-null
+            // (invariante persistido en bloque). Cast directo sin coalescer.
+            $inventarioAntes = (float) $antesRaw['inventario'];
+            $huevosAntes     = (float) $antesRaw['huevos'];
+            $costoUnitAntes  = (float) $antesRaw['costo_unit'];
+
+            $costoSaliente     = round($huevosSalida * $costoUnitAntes, self::DECIMALES_COSTO_TOTAL);
+            $inventarioDespues = round(max(0.0, $inventarioAntes - $costoSaliente), self::DECIMALES_COSTO_TOTAL);
+            $huevosDespues     = round(max(0.0, $huevosAntes - $huevosSalida), self::DECIMALES_HUEVOS);
 
             // Invariante del WAC: el costo unitario se preserva en salidas.
             // Si quedan huevos, recalculamos para mantener consistencia numérica
             // (defensiva ante pérdidas de precisión por redondeo).
             // Si el lote se vacía, preservamos el costo_unit previo para que una
-            // eventual devolución posterior reingrese al costo correcto.
+            // eventual devolución posterior reingrese al costo correcto
+            // (esto es lo que habilita el "agotado-con-memoria").
             $costoUnitDespues = $huevosDespues > 0
                 ? round($inventarioDespues / $huevosDespues, self::DECIMALES_COSTO_UNITARIO)
-                : $antes['costo_unit'];
+                : $costoUnitAntes;
 
             $this->persistir($lote, $inventarioDespues, $huevosDespues, $costoUnitDespues, $motivo);
 
@@ -244,7 +299,11 @@ final class WacService
                 motivo:            $motivo,
                 deltaHuevos:       -$huevosSalida,
                 deltaCosto:        -$costoSaliente,
-                antes:             $antes,
+                antes:             [
+                    'inventario' => $inventarioAntes,
+                    'huevos'     => $huevosAntes,
+                    'costo_unit' => $costoUnitAntes,
+                ],
                 inventarioDespues: $inventarioDespues,
                 huevosDespues:     $huevosDespues,
                 costoUnitDespues:  $costoUnitDespues,
@@ -275,25 +334,44 @@ final class WacService
     /**
      * Snapshot numérico del estado WAC antes de aplicar una operación.
      *
-     * @return array{inventario: float, huevos: float, costo_unit: float}
+     * Retorna valores RAW (nullable) para preservar la distinción semántica
+     * crítica entre:
+     *   - wac_* = NULL       → lote jamás inicializado (pre-backfill)
+     *   - wac_* = 0.0 (num/den) + costo_unit > 0 → agotado con memoria de costo
+     *
+     * Los callers que requieran aritmética deben coalescer a 0 cuando apliquen
+     * (típicamente solo aplicarCompra, que procede aun sobre lote NULL).
+     *
+     * Invariante persistido: las 3 columnas viajan en bloque. Si una es NULL,
+     * las tres lo son (garantizado por persistir() y resetearWac()).
+     *
+     * @return array{inventario: ?float, huevos: ?float, costo_unit: ?float}
      */
     private function snapshot(Lote $lote): array
     {
         return [
-            'inventario' => (float) ($lote->wac_costo_inventario ?? 0),
-            'huevos'     => (float) ($lote->wac_huevos_inventario ?? 0),
-            'costo_unit' => (float) ($lote->wac_costo_por_huevo ?? 0),
+            'inventario' => $lote->wac_costo_inventario !== null ? (float) $lote->wac_costo_inventario : null,
+            'huevos'     => $lote->wac_huevos_inventario !== null ? (float) $lote->wac_huevos_inventario : null,
+            'costo_unit' => $lote->wac_costo_por_huevo  !== null ? (float) $lote->wac_costo_por_huevo  : null,
         ];
     }
 
     /**
-     * WAC no inicializado: ambos numerador y denominador en 0.
-     * Escenario esperado durante la ventana entre deploy de Fase 2 y ejecución
-     * del backfill de Fase 3.
+     * WAC no inicializado: columnas wac_* en NULL (lote jamás tocado por WAC).
+     *
+     * El chequeo usa `=== null`, NO comparación contra 0.0. Un lote agotado
+     * con memoria de costo_unit (inv=0, huevos=0, costo_unit>0) NO está "no
+     * inicializado" — su costo_unit preservado es necesario para valorar
+     * devoluciones posteriores (Escenario B: reversión de reempaque, devolución
+     * de cliente tras agotamiento total).
+     *
+     * @param array{inventario: ?float, huevos: ?float, costo_unit: ?float} $snapshot
      */
     private function wacNoInicializado(array $snapshot): bool
     {
-        return $snapshot['inventario'] == 0.0 && $snapshot['huevos'] == 0.0;
+        return $snapshot['inventario'] === null
+            && $snapshot['huevos']     === null
+            && $snapshot['costo_unit'] === null;
     }
 
     private function logOmitido(Lote $lote, string $motivo, float $huevos, array $contexto): void
