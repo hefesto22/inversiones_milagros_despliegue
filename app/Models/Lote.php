@@ -346,9 +346,10 @@ class Lote extends Model
         $huevosFacturadosDisponibles = $this->getHuevosFacturadosDisponibles();
         $huevosRegaloDisponibles = $this->getBufferRegaloDisponible();
         
-        // Derivar costo por huevo desde costo_por_carton para evitar redondeos acumulados
+        // Derivar costo por huevo desde costo_por_carton para evitar redondeos acumulados.
+        // Fase 5: usar accessor efectivo para respetar inventario.wac.read_source.
         $huevosPorCarton = $this->huevos_por_carton ?? 30;
-        $costoPorCarton = floatval($this->costo_por_carton_facturado ?? 0);
+        $costoPorCarton = $this->costo_por_carton_facturado_efectivo;
         $costoPorHuevo = $huevosPorCarton > 0 ? $costoPorCarton / $huevosPorCarton : 0;
 
         if ($huevosAUsar <= $huevosFacturadosDisponibles) {
@@ -414,7 +415,11 @@ class Lote extends Model
 
             $cubiertoBuffer = min($cantidadHuevos, $bufferAntes);
             $perdidaReal = max(0, $cantidadHuevos - $bufferAntes);
-            $perdidaLempiras = $perdidaReal * floatval($this->costo_por_huevo ?? 0);
+            // Fase 5: usar accessor efectivo para respetar inventario.wac.read_source.
+            // La pérdida reportada al usuario debe valuarse con el costo vigente
+            // (legacy o WAC según flag). La ACTUALIZACIÓN legacy de líneas abajo
+            // queda intacta — Fase 2 captura el WAC vía evento MermaAplicadaAlLote.
+            $perdidaLempiras = $perdidaReal * $this->costo_por_huevo_efectivo;
 
             // Actualizar lote
             $this->cantidad_huevos_remanente -= $cantidadHuevos;
@@ -597,11 +602,15 @@ class Lote extends Model
     }
 
     /**
-     * Calcular costo de una cantidad de huevos
+     * Calcular costo de una cantidad de huevos usando el costo efectivo vigente.
+     *
+     * Fase 5: respeta inventario.wac.read_source via accessor costo_por_huevo_efectivo.
+     * Este método es consumido por Filament (valor_inventario en ViewLote) y por
+     * reportes — todos ellos verán el costo WAC cuando el flag esté en 'wac'.
      */
     public function calcularCostoDeHuevos(float $cantidadHuevos): float
     {
-        return round($cantidadHuevos * floatval($this->costo_por_huevo ?? 0), 4);
+        return round($cantidadHuevos * $this->costo_por_huevo_efectivo, 4);
     }
 
     /**

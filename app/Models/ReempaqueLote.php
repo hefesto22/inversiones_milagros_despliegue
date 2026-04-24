@@ -124,7 +124,9 @@ class ReempaqueLote extends Model
         }
 
         $huevosRegalo = $this->getHuevosRegaloUsados();
-        return round($huevosRegalo * ($lote->costo_por_huevo ?? 0), 2);
+
+        // Fase 5: usar accessor efectivo para respetar inventario.wac.read_source.
+        return round($huevosRegalo * $lote->costo_por_huevo_efectivo, 2);
     }
 
     // ============================================
@@ -156,8 +158,10 @@ class ReempaqueLote extends Model
             // Los huevos de regalo tienen costo = 0
             if (is_null($reempaqueLote->costo_parcial) && $lote) {
                 $huevosFacturados = $facturados * ($lote->huevos_por_carton ?? 30);
+
+                // Fase 5: usar accessor efectivo para respetar inventario.wac.read_source.
                 $reempaqueLote->costo_parcial = round(
-                    $huevosFacturados * ($lote->costo_por_huevo ?? 0),
+                    $huevosFacturados * $lote->costo_por_huevo_efectivo,
                     4
                 );
             }
