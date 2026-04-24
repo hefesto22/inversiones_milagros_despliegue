@@ -229,7 +229,9 @@ class CargasRelationManager extends RelationManager
                             $unidadesTotalesLote = 0;
                             foreach ($lotes as $lote) {
                                 $unidadesEnLote = floor($lote->cantidad_huevos_remanente / $huevosPorUnidad);
-                                $costoPorCarton30 = floatval($lote->costo_por_carton_facturado ?? 0);
+
+                                // Fase 5: usar accessor efectivo para respetar inventario.wac.read_source.
+                                $costoPorCarton30 = $lote->costo_por_carton_facturado_efectivo;
                                 $costoPorUnidad = ($huevosPorUnidad == 30) ? $costoPorCarton30 : $costoPorCarton30 * ($huevosPorUnidad / 30);
                                 $costoTotalLotes += $unidadesEnLote * $costoPorUnidad;
                                 $unidadesTotalesLote += $unidadesEnLote;

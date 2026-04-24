@@ -73,7 +73,9 @@ final class ReempaqueService
         $unidadesTotalesLote = 0;
         foreach ($lotes as $lote) {
             $unidadesEnLote = floor($lote->cantidad_huevos_remanente / $huevosPorUnidad);
-            $costoPorCarton30 = floatval($lote->costo_por_carton_facturado ?? 0);
+
+            // Fase 5: usar accessor efectivo para respetar inventario.wac.read_source.
+            $costoPorCarton30 = $lote->costo_por_carton_facturado_efectivo;
             $costoPorUnidad = ($huevosPorUnidad == 30)
                 ? $costoPorCarton30
                 : $costoPorCarton30 * ($huevosPorUnidad / 30);
@@ -262,7 +264,11 @@ final class ReempaqueService
             $huevosRegaloDevueltos = min($huevosRegaloDevueltos, $totalRegaloRL);
             $huevosFacturadosDevueltos = $huevosADevolverDeEsteRL - $huevosRegaloDevueltos;
 
-            $costoPorHuevo = floatval($lote->costo_por_carton_facturado ?? 0) / $huevosPorCarton;
+            // Fase 5: usar accessor efectivo para respetar inventario.wac.read_source.
+            // Usamos costo_por_carton_facturado_efectivo / huevos_por_carton en lugar de
+            // costo_por_huevo_efectivo directo para preservar el shape histórico del cálculo
+            // (costo por cartón es la fuente canónica en reempaques).
+            $costoPorHuevo = $lote->costo_por_carton_facturado_efectivo / $huevosPorCarton;
             $costoRevertido = $huevosFacturadosDevueltos * $costoPorHuevo;
             $costoDevuelto += $costoRevertido;
 

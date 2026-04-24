@@ -212,16 +212,23 @@ class LoteResource extends Resource
                     ->color('danger')
                     ->toggleable(isToggledHiddenByDefault: true),
 
+                // Fase 5: display vía accessor `_efectivo` + sortable con columna SQL dinámica.
+                // Mantenemos `make('costo_por_huevo')` como identificador estable y delegamos
+                // tanto la lectura visible (getStateUsing) como el ORDER BY (sortable query)
+                // al helper central `Lote::columnaSqlCostoPorHuevo()`. Esto permite alternar
+                // legacy ↔ wac vía feature flag sin tocar esta vista.
                 Tables\Columns\TextColumn::make('costo_por_huevo')
                     ->label('Costo/Huevo')
-                    ->formatStateUsing(fn($state) => 'L ' . number_format($state, 2))
-                    ->sortable()
+                    ->getStateUsing(fn($record) => $record->costo_por_huevo_efectivo)
+                    ->formatStateUsing(fn($state) => 'L ' . number_format((float) $state, 2))
+                    ->sortable(query: fn($query, string $direction) => $query->orderBy(Lote::columnaSqlCostoPorHuevo(), $direction))
                     ->description('Promedio ponderado'),
 
                 Tables\Columns\TextColumn::make('costo_por_carton_facturado')
                     ->label('Costo/Carton')
-                    ->formatStateUsing(fn($state) => 'L ' . number_format($state, 2))
-                    ->sortable()
+                    ->getStateUsing(fn($record) => $record->costo_por_carton_facturado_efectivo)
+                    ->formatStateUsing(fn($state) => 'L ' . number_format((float) $state, 2))
+                    ->sortable(query: fn($query, string $direction) => $query->orderBy(Lote::columnaSqlCostoPorCartonFacturado(), $direction))
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('historial_compras_count')
@@ -327,7 +334,7 @@ class LoteResource extends Resource
                                         </div>
                                         <div class='border-t pt-2 mt-2'>
                                             <p class='text-sm text-gray-500'>Costo por Huevo</p>
-                                            <p class='text-lg font-bold'>L " . number_format($record->costo_por_huevo, 2) . "</p>
+                                            <p class='text-lg font-bold'>L " . number_format($record->costo_por_huevo_efectivo, 2) . "</p>
                                         </div>
                                     </div>
                                 ");
@@ -372,7 +379,9 @@ class LoteResource extends Resource
                                 }
 
                                 $buffer = $record->getBufferRegaloDisponible();
-                                $costoPorHuevo = $record->costo_por_huevo ?? 0;
+
+                                // Fase 5: usar accessor efectivo para respetar inventario.wac.read_source.
+                                $costoPorHuevo = $record->costo_por_huevo_efectivo;
 
                                 $cubierto = min($cantidad, $buffer);
                                 $perdidaHuevos = max(0, $cantidad - $buffer);

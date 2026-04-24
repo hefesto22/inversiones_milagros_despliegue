@@ -154,7 +154,8 @@ class ReempaqueResource extends Resource
                                         $bufferRegalo = $lote->getBufferRegaloDisponible();
                                         $cartonesRegalo = floor($bufferRegalo / 30);
 
-                                        $costoPorCarton = $lote->costo_por_carton_facturado ?? 0;
+                                        // Fase 5: usar accessor efectivo para respetar inventario.wac.read_source.
+                                        $costoPorCarton = $lote->costo_por_carton_facturado_efectivo;
 
                                         // Mostrar info de regalo si hay
                                         $regaloInfo = $cartonesRegalo > 0 ? " | {$cartonesRegalo} regalo" : "";
@@ -185,9 +186,10 @@ class ReempaqueResource extends Resource
 
                                     $set('disponible_c30', $c30);
 
-                                    // Guardar datos del lote para cálculos FIFO
-                                    $set('costo_por_huevo', $lote->costo_por_huevo ?? 0);
-                                    $set('costo_por_carton', $lote->costo_por_carton_facturado ?? 0);
+                                    // Guardar datos del lote para cálculos FIFO.
+                                    // Fase 5: usar accessors efectivos para respetar inventario.wac.read_source.
+                                    $set('costo_por_huevo', $lote->costo_por_huevo_efectivo);
+                                    $set('costo_por_carton', $lote->costo_por_carton_facturado_efectivo);
                                     $set('huevos_facturados_disponibles', $lote->getHuevosFacturadosDisponibles());
                                     $set('huevos_regalo_disponibles', $lote->getBufferRegaloDisponible());
 

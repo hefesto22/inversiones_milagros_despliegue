@@ -346,9 +346,10 @@ class Lote extends Model
         $huevosFacturadosDisponibles = $this->getHuevosFacturadosDisponibles();
         $huevosRegaloDisponibles = $this->getBufferRegaloDisponible();
         
-        // Derivar costo por huevo desde costo_por_carton para evitar redondeos acumulados
+        // Derivar costo por huevo desde costo_por_carton para evitar redondeos acumulados.
+        // Fase 5: usar accessor efectivo para respetar inventario.wac.read_source.
         $huevosPorCarton = $this->huevos_por_carton ?? 30;
-        $costoPorCarton = floatval($this->costo_por_carton_facturado ?? 0);
+        $costoPorCarton = $this->costo_por_carton_facturado_efectivo;
         $costoPorHuevo = $huevosPorCarton > 0 ? $costoPorCarton / $huevosPorCarton : 0;
 
         if ($huevosAUsar <= $huevosFacturadosDisponibles) {
@@ -414,7 +415,11 @@ class Lote extends Model
 
             $cubiertoBuffer = min($cantidadHuevos, $bufferAntes);
             $perdidaReal = max(0, $cantidadHuevos - $bufferAntes);
-            $perdidaLempiras = $perdidaReal * floatval($this->costo_por_huevo ?? 0);
+            // Fase 5: usar accessor efectivo para respetar inventario.wac.read_source.
+            // La pérdida reportada al usuario debe valuarse con el costo vigente
+            // (legacy o WAC según flag). La ACTUALIZACIÓN legacy de líneas abajo
+            // queda intacta — Fase 2 captura el WAC vía evento MermaAplicadaAlLote.
+            $perdidaLempiras = $perdidaReal * $this->costo_por_huevo_efectivo;
 
             // Actualizar lote
             $this->cantidad_huevos_remanente -= $cantidadHuevos;
@@ -597,11 +602,15 @@ class Lote extends Model
     }
 
     /**
-     * Calcular costo de una cantidad de huevos
+     * Calcular costo de una cantidad de huevos usando el costo efectivo vigente.
+     *
+     * Fase 5: respeta inventario.wac.read_source via accessor costo_por_huevo_efectivo.
+     * Este método es consumido por Filament (valor_inventario en ViewLote) y por
+     * reportes — todos ellos verán el costo WAC cuando el flag esté en 'wac'.
      */
     public function calcularCostoDeHuevos(float $cantidadHuevos): float
     {
-        return round($cantidadHuevos * floatval($this->costo_por_huevo ?? 0), 4);
+        return round($cantidadHuevos * $this->costo_por_huevo_efectivo, 4);
     }
 
     /**
@@ -610,6 +619,97 @@ class Lote extends Model
     public function estaDisponible(): bool
     {
         return $this->estado === LoteEstado::Disponible && $this->cantidad_huevos_remanente > 0;
+    }
+
+    // ============================================
+    // ACCESSORS WAC — FASE 5 SWITCH DE LECTURA
+    // ============================================
+    //
+    // Estos accessors son el punto único de lectura del costo del lote para
+    // consumidores Eloquent. Respetan la configuración `inventario.wac.read_source`:
+    //
+    //   - 'legacy' (default) → devuelven las columnas legacy (costo_por_huevo,
+    //                           costo_por_carton_facturado)
+    //   - 'wac'              → devuelven las columnas WAC perpetuo
+    //                           (wac_costo_por_huevo, wac_costo_por_carton_facturado)
+    //
+    // Durante Fases 2-4 el flag permanece en 'legacy' — el sistema sigue
+    // funcionando exactamente como antes. En Fase 5 el switch se cambia a
+    // 'wac' y todas las UIs/widgets/reportes empiezan a leer WAC sin tocar
+    // código. Rollback es instantáneo: revertir la variable de entorno.
+    //
+    // Para queries SQL raw (que bypasean Eloquent) usar los métodos estáticos
+    // columnaSqlCostoPorHuevo() y columnaSqlCostoPorCartonFacturado().
+    //
+    // Contrato de devolución: siempre float. Si la columna WAC está en NULL
+    // (lote pre-backfill — no debería ocurrir post Fase 3 pero se blinda),
+    // se devuelve 0.0 por defensa en profundidad — el llamante verá un costo
+    // cero antes que una excepción TypeError en producción.
+
+    /**
+     * Costo por huevo "efectivo": valor que deben usar reportes, widgets,
+     * Filament Resources y servicios cuando necesiten mostrar o calcular
+     * sobre el costo unitario del lote.
+     *
+     * @return float Costo por huevo en Lempiras según read_source activo.
+     */
+    public function getCostoPorHuevoEfectivoAttribute(): float
+    {
+        if (config('inventario.wac.read_source', 'legacy') === 'wac') {
+            return (float) ($this->wac_costo_por_huevo ?? 0);
+        }
+
+        return (float) ($this->costo_por_huevo ?? 0);
+    }
+
+    /**
+     * Costo por cartón facturado "efectivo": análogo a costo_por_huevo_efectivo
+     * pero a nivel de cartón. Útil para reportes de cartones y cálculos de
+     * reempaque que operan sobre cartones completos.
+     *
+     * @return float Costo por cartón facturado en Lempiras según read_source activo.
+     */
+    public function getCostoPorCartonFacturadoEfectivoAttribute(): float
+    {
+        if (config('inventario.wac.read_source', 'legacy') === 'wac') {
+            return (float) ($this->wac_costo_por_carton_facturado ?? 0);
+        }
+
+        return (float) ($this->costo_por_carton_facturado ?? 0);
+    }
+
+    /**
+     * Helper para queries SQL raw: devuelve el nombre de columna calificado
+     * (con tabla) que debe usarse para leer el costo por huevo, según la
+     * configuración activa.
+     *
+     * Uso típico en selectRaw dentro de un JOIN con `lotes`:
+     *
+     *   $col = Lote::columnaSqlCostoPorHuevo();
+     *   DB::table('reempaque_lotes')
+     *       ->join('lotes', ...)
+     *       ->selectRaw("SUM(huevos * {$col}) AS total");
+     *
+     * El valor retornado es uno de dos strings fijos, inyectables en SQL
+     * sin riesgo de injection (no viene de input de usuario, viene de una
+     * config controlada por .env).
+     */
+    public static function columnaSqlCostoPorHuevo(): string
+    {
+        return config('inventario.wac.read_source', 'legacy') === 'wac'
+            ? 'lotes.wac_costo_por_huevo'
+            : 'lotes.costo_por_huevo';
+    }
+
+    /**
+     * Helper para queries SQL raw análogo a columnaSqlCostoPorHuevo() pero
+     * para costo_por_carton_facturado.
+     */
+    public static function columnaSqlCostoPorCartonFacturado(): string
+    {
+        return config('inventario.wac.read_source', 'legacy') === 'wac'
+            ? 'lotes.wac_costo_por_carton_facturado'
+            : 'lotes.costo_por_carton_facturado';
     }
 
     // ============================================

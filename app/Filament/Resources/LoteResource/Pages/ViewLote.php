@@ -60,7 +60,7 @@ class ViewLote extends ViewRecord
                                     </div>
                                     <div class='border-t pt-2 mt-2'>
                                         <p class='text-sm text-gray-500'>Costo por Huevo</p>
-                                        <p class='text-lg font-bold'>L " . number_format($record->costo_por_huevo, 2) . "</p>
+                                        <p class='text-lg font-bold'>L " . number_format($record->costo_por_huevo_efectivo, 2) . "</p>
                                     </div>
                                 </div>
                             ");
@@ -103,7 +103,9 @@ class ViewLote extends ViewRecord
                             }
 
                             $buffer = $record->getBufferRegaloDisponible();
-                            $costoPorHuevo = $record->costo_por_huevo ?? 0;
+
+                            // Fase 5: usar accessor efectivo para respetar inventario.wac.read_source.
+                            $costoPorHuevo = $record->costo_por_huevo_efectivo;
 
                             $cubierto = min($cantidad, $buffer);
                             $perdidaHuevos = max(0, $cantidad - $buffer);
@@ -281,14 +283,20 @@ class ViewLote extends ViewRecord
                                     ->size('lg')
                                     ->weight('bold'),
 
+                                // Fase 5: getStateUsing delega al accessor `_efectivo` para respetar
+                                // `inventario.wac.read_source` sin renombrar el TextEntry (evita romper
+                                // referencias por nombre). El `make()` conserva el nombre legacy porque
+                                // no se usa como ORDER BY en infolist — es sólo identificador.
                                 Infolists\Components\TextEntry::make('costo_por_huevo')
                                     ->label('Costo por Huevo')
-                                    ->formatStateUsing(fn($state) => 'L ' . number_format($state, 4))
+                                    ->getStateUsing(fn($record) => $record->costo_por_huevo_efectivo)
+                                    ->formatStateUsing(fn($state) => 'L ' . number_format((float) $state, 4))
                                     ->size('lg')
                                     ->color('info'),
 
                                 Infolists\Components\TextEntry::make('costo_por_carton_facturado')
                                     ->label('Costo por Carton')
+                                    ->getStateUsing(fn($record) => $record->costo_por_carton_facturado_efectivo)
                                     ->money('HNL'),
 
                                 Infolists\Components\TextEntry::make('valor_inventario')
