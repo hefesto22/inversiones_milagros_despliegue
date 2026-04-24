@@ -15,11 +15,21 @@ use Illuminate\Database\Eloquent\Factories\Factory;
  * Factory para App\Models\Lote con estados específicos para tests del refactor WAC.
  *
  * Estados disponibles:
- *   - default: lote vacío (sin compra aplicada). Útil para probar agregarCompra().
- *   - wacInicializado(): lote con columnas wac_* pobladas, simulando post-Fase 3 backfill.
- *   - wacNoInicializado(): columnas wac_* en NULL (estado Fase 2 antes del backfill).
+ *   - default: lote vacío (sin compra aplicada), wac_* en NULL.
+ *              Representa tanto "lote jamás tocado" como "lote pre-Fase 3 backfill".
+ *              Útil para probar que salidas/devoluciones sobre wac=NULL se omiten.
+ *   - wacInicializado(): lote con columnas wac_* pobladas, simulando post-backfill.
+ *   - wacAgotadoConMemoria(): lote con inv=0, huevos=0, pero costo_unit > 0.
+ *              Representa agotamiento total por ventas/mermas donde se preservó
+ *              el costo_unit (invariante WAC). Habilita probar devoluciones
+ *              posteriores al agotamiento.
  *   - conCompra(huevos, costo): lote con compra legacy aplicada, SIN WAC (pre-shadow).
- *   - conRemanente(huevos): lote con stock disponible para tests de venta/merma.
+ *
+ * NOTA (2026-04-23 — Fase 3 refactor NULL vs agotado-con-memoria):
+ *   Se eliminó el state `wacNoInicializado()` que poblaba wac_* = 0. Era
+ *   engañoso porque conflateaba "jamás inicializado" (NULL) con "agotado"
+ *   (0). El default factory ya deja wac_* = NULL, que es la representación
+ *   correcta de "no inicializado" bajo la nueva semántica.
  *
  * @extends Factory<Lote>
  */
@@ -99,16 +109,33 @@ class LoteFactory extends Factory
     }
 
     /**
-     * Lote con WAC explícitamente NO inicializado (columnas en 0 en vez de NULL).
-     * Representa el estado Fase 2 antes del backfill.
+     * Lote agotado-con-memoria: sin stock físico pero preservando el costo_unit
+     * del último ciclo activo. Emerge naturalmente después de ventas/mermas
+     * que consumieron todo el remanente — WacService::aplicarSalida preserva
+     * costo_unit cuando huevos_despues = 0 (invariante WAC).
+     *
+     * Diferencia semántica con wac_*=NULL:
+     *   - NULL                        → nunca se aplicó WAC al lote
+     *   - inv=0, huevos=0, unit>0     → lote agotado, puede reactivarse por
+     *                                    devolución (reempaque o cliente) usando
+     *                                    el costo_unit preservado.
+     *
+     * @param float $costoUnitMemoria Costo unitario WAC preservado tras agotamiento
      */
-    public function wacNoInicializado(): static
+    public function wacAgotadoConMemoria(float $costoUnitMemoria = 2.605, int $huevosPorCarton = 30): static
     {
         return $this->state(fn () => [
-            'wac_costo_inventario'           => 0,
-            'wac_huevos_inventario'          => 0,
-            'wac_costo_por_huevo'            => 0,
-            'wac_costo_por_carton_facturado' => 0,
+            'huevos_por_carton'              => $huevosPorCarton,
+            'estado'                         => LoteEstado::Agotado,
+            'cantidad_huevos_remanente'      => 0,
+            // WAC en estado post-agotamiento: numerador y denominador en 0,
+            // costo_unit preservado (típico resultado de aplicarSalida que vacía el lote)
+            'wac_costo_inventario'           => 0.0,
+            'wac_huevos_inventario'          => 0.0,
+            'wac_costo_por_huevo'            => round($costoUnitMemoria, 6),
+            'wac_costo_por_carton_facturado' => round($costoUnitMemoria * $huevosPorCarton, 4),
+            'wac_ultima_actualizacion'       => now(),
+            'wac_motivo_ultima_actualizacion'=> 'venta',
         ]);
     }
 
