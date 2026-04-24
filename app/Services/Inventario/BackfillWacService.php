@@ -8,6 +8,7 @@ use App\Models\HistorialCompraLote;
 use App\Models\Lote;
 use App\Services\Inventario\Dto\BackfillLoteResult;
 use App\Services\Inventario\Dto\BackfillRunSummary;
+use App\Services\Inventario\Dto\ClasificacionDivergencia;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -133,14 +134,15 @@ final class BackfillWacService
     /** Tolerancia de matching FIFO-inverso contra el remanente (en huevos) */
     private const TOLERANCIA_HUEVOS_FIFO = 0.01;
 
-    /** Umbral de divergencia esperada: hasta 15% del costo legacy */
-    private const UMBRAL_ESPERADA_PCT = 0.15;
-
     /** Decimales de persistencia (consistentes con WacService) */
     private const DEC_COSTO_UNIT     = 6;
     private const DEC_COSTO_TOTAL    = 4;
     private const DEC_COSTO_CARTON   = 4;
     private const DEC_HUEVOS         = 4;
+
+    public function __construct(
+        private readonly ClasificadorDivergenciaWac $clasificador,
+    ) {}
 
     // =================================================================
     // API PÚBLICA
@@ -228,7 +230,7 @@ final class BackfillWacService
                 self::DEC_COSTO_CARTON
             );
 
-            [$clasificacion, $detalle] = $this->clasificarDivergencia(
+            $clasif = $this->clasificador->clasificar(
                 $wacCostoPorCartonFacturado,
                 $costoPorCartonLegacy,
                 $diferenciaCarton,
@@ -239,8 +241,8 @@ final class BackfillWacService
                 loteId:                     $lote->id,
                 estado:                     BackfillLoteResult::ESTADO_PROCESADO,
                 motivoSalto:                null,
-                clasificacionDivergencia:   $clasificacion,
-                detalleDivergencia:         $detalle,
+                clasificacionDivergencia:   $clasif->clasificacion,
+                detalleDivergencia:         $clasif->detalle,
                 wacCostoInventario:         $wacCostoInventario,
                 wacHuevosInventario:        $wacHuevosInventario,
                 wacCostoPorHuevo:           $wacCostoPorHuevo,
@@ -417,76 +419,6 @@ final class BackfillWacService
             'total_huevos' => $acumuladoHuevos,
             'total_costo'  => $acumuladoCosto,
             'count'        => $count,
-        ];
-    }
-
-    /**
-     * Clasifica la divergencia WAC vs legacy y construye un detalle legible.
-     *
-     * @return array{0: string, 1: ?string}  [clasificación, detalle]
-     */
-    private function clasificarDivergencia(
-        float $wacCarton,
-        float $legacyCarton,
-        float $diferencia,
-        float $tolerancia,
-    ): array {
-        if ($legacyCarton <= 0) {
-            // Legacy en 0 o negativo — no hay base contra la cual comparar.
-            if (abs($wacCarton) <= $tolerancia) {
-                return [BackfillLoteResult::CLASIF_NINGUNA, null];
-            }
-
-            return [
-                BackfillLoteResult::CLASIF_ANOMALA,
-                "Legacy costo_por_carton_facturado <= 0 (valor: {$legacyCarton}) pero WAC calculado = {$wacCarton}",
-            ];
-        }
-
-        if (abs($diferencia) <= $tolerancia) {
-            return [
-                BackfillLoteResult::CLASIF_RUIDO,
-                sprintf(
-                    'Diferencia %.4f L/cartón dentro de tolerancia %.4f L (ruido de redondeo)',
-                    $diferencia,
-                    $tolerancia
-                ),
-            ];
-        }
-
-        $porcentajeDesvio = abs($diferencia) / $legacyCarton;
-
-        // Patrón esperado: WAC < legacy (bug legacy sobrevalora) con desvío ≤ 15%
-        if ($diferencia < 0 && $porcentajeDesvio <= self::UMBRAL_ESPERADA_PCT) {
-            return [
-                BackfillLoteResult::CLASIF_ESPERADA,
-                sprintf(
-                    'WAC %.4f < legacy %.4f (diferencia %.4f L/cartón, %.2f%%). '
-                    . 'Consistente con bug de sobrevaluación documentado en AUDITORIA_VALUACION_2026-04-22.md',
-                    $wacCarton,
-                    $legacyCarton,
-                    $diferencia,
-                    $porcentajeDesvio * 100
-                ),
-            ];
-        }
-
-        // Todo lo demás es anomalía: WAC > legacy (refactor no debería subir el costo),
-        // o diferencia > 15% (fuera de patrón conocido)
-        $razon = $diferencia > 0
-            ? 'WAC > legacy — el refactor no debería inflar el costo'
-            : sprintf('Desvío %.2f%% excede umbral esperado %.2f%%', $porcentajeDesvio * 100, self::UMBRAL_ESPERADA_PCT * 100);
-
-        return [
-            BackfillLoteResult::CLASIF_ANOMALA,
-            sprintf(
-                'WAC %.4f vs legacy %.4f (diferencia %.4f L/cartón, %.2f%%). %s',
-                $wacCarton,
-                $legacyCarton,
-                $diferencia,
-                $porcentajeDesvio * 100,
-                $razon
-            ),
         ];
     }
 
