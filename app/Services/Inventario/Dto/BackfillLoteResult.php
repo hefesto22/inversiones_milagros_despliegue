@@ -47,6 +47,10 @@ final readonly class BackfillLoteResult
      * @param ?float $diferenciaPorCarton           wacCostoPorCartonFacturado - costoPorCartonLegacy
      * @param int    $comprasConsideradas           # filas de historial_compras_lote usadas
      * @param ?string $errorMensaje                 Si estado=fallido
+     * @param string $motivoPersistencia            Valor a escribir en wac_motivo_ultima_actualizacion:
+     *                                              'backfill' para walk FIFO-inverso estándar,
+     *                                              'backfill_agotado' cuando se sembró con costo_por_huevo legacy
+     *                                              sobre un lote con remanente=0 (habilita devoluciones futuras).
      */
     public function __construct(
         public int     $loteId,
@@ -63,6 +67,7 @@ final readonly class BackfillLoteResult
         public ?float  $diferenciaPorCarton,
         public int     $comprasConsideradas,
         public ?string $errorMensaje = null,
+        public string  $motivoPersistencia = 'backfill',
     ) {}
 
     public function fueProcesado(): bool

@@ -20,8 +20,9 @@ use Tests\TestCase;
  *
  * Scope crítico cubierto:
  *   1. Cálculo matemático correcto del WAC desde historial_compras_lote.
- *   2. Invariante del WAC: el valor calculado es independiente de las ventas/mermas
- *      intermedias (verificado comparando lote con/sin salidas simuladas).
+ *   2. FIFO-inverso sobre remanente: el WAC refleja las compras MÁS RECIENTES
+ *      que físicamente siguen en stock (no el promedio global de todas las
+ *      compras del ciclo). Incluye prorateo en boundary e inconsistencias.
  *   3. Dry-run no toca columnas wac_* bajo ningún escenario.
  *   4. Apply escribe wac_* cuando no hay anomalías.
  *   5. Apply aborta cuando hay anomalías sin --force.
@@ -30,6 +31,7 @@ use Tests\TestCase;
  *   8. Filtros --bodega / --producto aislan correctamente.
  *   9. Idempotencia: correr apply dos veces produce los mismos valores finales.
  *  10. Reset vuelve columnas wac_* a null.
+ *  11. Lote sin compras/sin saldo → saltado con motivo claro.
  */
 class BackfillWacCommandTest extends TestCase
 {
@@ -164,27 +166,179 @@ class BackfillWacCommandTest extends TestCase
     }
 
     // =================================================================
-    // 3. INVARIANTE WAC — ventas no cambian el costo unitario calculado
+    // 3. FIFO-INVERSO — remanente refleja compras recientes, no promedio global
     // =================================================================
 
-    public function test_invariante_wac_ventas_no_cambian_costo_unitario_calculado(): void
+    public function test_fifo_inverso_remanente_refleja_compra_mas_reciente_no_promedio_global(): void
     {
-        // Mismo setup que el test anterior, pero con 3000 huevos ya vendidos.
-        // La invariante del WAC dice: el costo unitario debe ser el mismo.
-        $loteConVentas = $this->crearLoteConCompras([
-            ['cartones' => 100.0, 'costo' => 7000.0],
-            ['cartones' => 100.0, 'costo' => 8000.0],
+        // Escenario del dominio real (descrito por el owner): compras a distintos
+        // precios en el tiempo. Las más VIEJAS (caras) ya se vendieron físicamente
+        // en FIFO; el remanente corresponde a las más RECIENTES (baratas). El WAC
+        // debe reflejarlo — NO inflarse con costos de compras ya agotadas.
+        //
+        // Compra 1 (vieja):    100 cartones × 85 = 8,500 L (3,000 huevos)
+        // Compra 2 (reciente): 100 cartones × 70 = 7,000 L (3,000 huevos)
+        // Ventas: 3,000 huevos (físicamente los de la compra 1)
+        // Remanente: 3,000 huevos = lo que queda de la compra 2
+        //
+        // Promedio global (algoritmo incorrecto):
+        //   WAC = (8,500 + 7,000) / 6,000 = 2.5833/huevo = 77.50 L/cartón
+        //   → INFLARÍA el valor del remanente con costos ya vendidos.
+        //
+        // FIFO-inverso sobre remanente:
+        //   walk DESC toma solo la compra 2 (cubre los 3,000 huevos exactos)
+        //   WAC = 7,000 / 3,000 = 2.3333/huevo = 70.00 L/cartón ✓
+        $lote = $this->crearLoteConCompras([
+            ['cartones' => 100.0, 'costo' => 8500.0], // vieja (85/cartón)
+            ['cartones' => 100.0, 'costo' => 7000.0], // reciente (70/cartón)
         ]);
-        $this->simularVentas($loteConVentas, 3000.0); // se vende la mitad
-        $loteConVentas = $loteConVentas->fresh();
+        $this->simularVentas($lote, 3000.0); // se agota la compra vieja
+        $lote = $lote->fresh();
 
-        $result = $this->service->calcularLote($loteConVentas, toleranciaDivergenciaLempiras: 0.10);
+        $result = $this->service->calcularLote($lote, toleranciaDivergenciaLempiras: 0.10);
 
-        // Costo unitario igual al test sin ventas
-        $this->assertEqualsWithDelta(2.50, $result->wacCostoPorHuevo, 0.000001);
-        // Pero el inventario actual refleja solo el remanente
+        $this->assertTrue($result->fueProcesado(), 'Debe procesar correctamente');
+        // El WAC viene de la compra 2 (reciente, barata) — NO del promedio global.
+        $this->assertEqualsWithDelta(2.333333, $result->wacCostoPorHuevo, 0.000001);
+        $this->assertEqualsWithDelta(70.0, $result->wacCostoPorCartonFacturado, 0.0001);
         $this->assertEqualsWithDelta(3000.0, $result->wacHuevosInventario, 0.0001);
-        $this->assertEqualsWithDelta(7500.0, $result->wacCostoInventario, 0.0001);
+        $this->assertEqualsWithDelta(7000.0, $result->wacCostoInventario, 0.0001);
+        $this->assertSame(1, $result->comprasConsideradas, 'Solo la compra reciente está activa en stock');
+    }
+
+    // =================================================================
+    // 3b. FIFO-INVERSO — prorateo cuando el remanente cruza un boundary
+    // =================================================================
+
+    public function test_fifo_inverso_prorratea_compra_cuando_remanente_cruza_boundary(): void
+    {
+        // Compra 1 (vieja):    100 cartones × 85 = 8,500 L (3,000 huevos)
+        // Compra 2 (reciente): 100 cartones × 70 = 7,000 L (3,000 huevos)
+        // Ventas: 1,500 huevos (solo la mitad de la compra vieja)
+        // Remanente: 4,500 huevos = compra 2 completa + mitad de compra 1
+        //
+        // FIFO-inverso:
+        //   - Compra 2 completa:    3,000 huevos, 7,000 L
+        //   - Compra 1 prorrateada: 1,500 huevos, 8,500 × 0.5 = 4,250 L
+        //   Total: 4,500 huevos, 11,250 L
+        //   WAC = 11,250 / 4,500 = 2.50/huevo = 75.00 L/cartón
+        $lote = $this->crearLoteConCompras([
+            ['cartones' => 100.0, 'costo' => 8500.0],
+            ['cartones' => 100.0, 'costo' => 7000.0],
+        ]);
+        $this->simularVentas($lote, 1500.0);
+        $lote = $lote->fresh();
+
+        $result = $this->service->calcularLote($lote, toleranciaDivergenciaLempiras: 0.10);
+
+        $this->assertTrue($result->fueProcesado());
+        $this->assertEqualsWithDelta(2.50, $result->wacCostoPorHuevo, 0.000001);
+        $this->assertEqualsWithDelta(75.0, $result->wacCostoPorCartonFacturado, 0.0001);
+        $this->assertEqualsWithDelta(4500.0, $result->wacHuevosInventario, 0.0001);
+        $this->assertEqualsWithDelta(11250.0, $result->wacCostoInventario, 0.0001);
+        $this->assertSame(2, $result->comprasConsideradas, 'Ambas compras contribuyen (una prorrateada)');
+    }
+
+    // =================================================================
+    // 3c. FIFO-INVERSO — remanente > historial disponible = inconsistencia
+    // =================================================================
+
+    public function test_fifo_inverso_remanente_mayor_que_historial_marca_inconsistencia(): void
+    {
+        // Lote con 3,000 huevos en historial (1 compra) pero remanente
+        // artificialmente inflado a 4,000. Simula data anomalies: filas
+        // borradas del historial, ajustes manuales, etc. El walk agota
+        // todas las compras sin cubrir el target → inconsistencia.
+        $lote = $this->crearLoteConCompras([
+            ['cartones' => 100.0, 'costo' => 7000.0],
+        ]);
+        $lote->update(['cantidad_huevos_remanente' => 4000.0]);
+        $lote = $lote->fresh();
+
+        $result = $this->service->calcularLote($lote, toleranciaDivergenciaLempiras: 0.10);
+
+        $this->assertSame(
+            BackfillLoteResult::CLASIF_ANOMALA,
+            $result->clasificacionDivergencia,
+            'Debe clasificarse como anómala'
+        );
+        $this->assertNull($result->wacCostoPorHuevo, 'No se escribe WAC sin historial suficiente');
+        $this->assertNull($result->wacCostoInventario);
+        $this->assertStringContainsString(
+            'FIFO-inverso',
+            $result->detalleDivergencia ?? '',
+            'El detalle debe identificar el tipo de inconsistencia'
+        );
+    }
+
+    // =================================================================
+    // 3d. LOTE agotado (remanente=0) es PROCESADO con semilla legacy
+    // =================================================================
+
+    public function test_lote_agotado_es_procesado_con_semilla_legacy_para_devoluciones_futuras(): void
+    {
+        // Un lote sin saldo físico (todo vendido) NO se salta:
+        // se siembra wac_costo_por_huevo con legacy.costo_por_huevo para que
+        // una devolución posterior (reversión de reempaque o devolución de
+        // cliente) pueda reactivar el lote con el costo correcto.
+        $lote = $this->crearLoteConCompras([
+            ['cartones' => 100.0, 'costo' => 7000.0],
+        ]);
+        $lote->update(['cantidad_huevos_remanente' => 0.0]);
+        $lote = $lote->fresh();
+
+        // Legacy: costo_por_huevo = 7000/3000 = 2.3333, costo_por_carton = 70.00
+        $legacyCostoPorHuevo  = (float) $lote->costo_por_huevo;
+        $legacyCostoPorCarton = (float) $lote->costo_por_carton_facturado;
+        $this->assertGreaterThan(0, $legacyCostoPorHuevo, 'Precondición: legacy poblado');
+
+        $result = $this->service->calcularLote($lote, toleranciaDivergenciaLempiras: 0.10);
+
+        $this->assertSame(
+            BackfillLoteResult::ESTADO_PROCESADO,
+            $result->estado,
+            'Lote agotado con legacy válido debe procesarse (no saltarse)'
+        );
+        $this->assertSame(0.0, $result->wacCostoInventario, 'Sin stock físico → inv=0');
+        $this->assertSame(0.0, $result->wacHuevosInventario, 'Sin stock físico → huevos=0');
+        $this->assertEqualsWithDelta(
+            round($legacyCostoPorHuevo, 6),
+            $result->wacCostoPorHuevo,
+            0.000001,
+            'Semilla: wac_costo_por_huevo = legacy.costo_por_huevo'
+        );
+        $this->assertEqualsWithDelta(
+            round($legacyCostoPorHuevo * 30, 4),
+            $result->wacCostoPorCartonFacturado,
+            0.0001,
+            'Costo/cartón derivado de la semilla'
+        );
+        $this->assertSame(
+            'backfill_agotado',
+            $result->motivoPersistencia,
+            'Motivo distingue semilla agotado del FIFO-inverso estándar'
+        );
+        $this->assertSame(BackfillLoteResult::CLASIF_NINGUNA, $result->clasificacionDivergencia);
+    }
+
+    public function test_lote_agotado_sin_costo_legacy_es_saltado(): void
+    {
+        // Caso borde: lote sin saldo físico Y sin costo legacy (<=0).
+        // Típicamente un lote huérfano sin datos útiles — se salta explícitamente.
+        $lote = $this->crearLoteConCompras([
+            ['cartones' => 100.0, 'costo' => 7000.0],
+        ]);
+        $lote->update([
+            'cantidad_huevos_remanente'    => 0.0,
+            'costo_por_huevo'              => 0.0, // legacy vacío
+            'costo_por_carton_facturado'   => 0.0,
+        ]);
+        $lote = $lote->fresh();
+
+        $result = $this->service->calcularLote($lote, toleranciaDivergenciaLempiras: 0.10);
+
+        $this->assertSame(BackfillLoteResult::ESTADO_SALTADO, $result->estado);
+        $this->assertStringContainsString('sin costo_por_huevo legacy', $result->motivoSalto ?? '');
     }
 
     // =================================================================
@@ -435,5 +589,95 @@ class BackfillWacCommandTest extends TestCase
 
         $this->assertSame(BackfillLoteResult::ESTADO_SALTADO, $result->estado);
         $this->assertStringContainsString('sin compras', $result->motivoSalto ?? '');
+    }
+
+    // =================================================================
+    // 13. REPROCESS — caché de runs previos
+    // =================================================================
+
+    public function test_dry_run_default_salta_lotes_procesados_en_runs_previos(): void
+    {
+        // Caso: dos dry-run consecutivos. El segundo debe saltar el lote porque
+        // ya fue procesado exitosamente en el primero (comportamiento de reanudación).
+        $lote = $this->crearLoteConCompras([
+            ['cartones' => 100.0, 'costo' => 7000.0],
+        ]);
+
+        $this->artisan('wac:backfill', ['--dry-run' => true])->assertSuccessful();
+        $this->artisan('wac:backfill', ['--dry-run' => true])->assertSuccessful();
+
+        // El segundo run debe haber marcado el lote como saltado con el motivo de caché.
+        $runs = DB::table('wac_backfill_runs')
+            ->where('modo', 'dry-run')
+            ->orderBy('id')
+            ->pluck('id')
+            ->all();
+        $this->assertCount(2, $runs, 'Se deben registrar ambos runs');
+
+        $itemSegundoRun = DB::table('wac_backfill_items')
+            ->where('wac_backfill_run_id', $runs[1])
+            ->where('lote_id', $lote->id)
+            ->first();
+
+        $this->assertNotNull($itemSegundoRun);
+        $this->assertSame('saltado', $itemSegundoRun->estado);
+        $this->assertStringContainsString(
+            'ya procesado en run previo exitoso',
+            (string) $itemSegundoRun->motivo_salto
+        );
+    }
+
+    public function test_dry_run_con_reprocess_ignora_cache_y_recalcula(): void
+    {
+        // Caso crítico: cambia el algoritmo (o se tunean parámetros) → los runs
+        // previos son inválidos. --reprocess debe forzar el recálculo sin borrar
+        // historial.
+        $lote = $this->crearLoteConCompras([
+            ['cartones' => 100.0, 'costo' => 7000.0],
+        ]);
+
+        $this->artisan('wac:backfill', ['--dry-run' => true])->assertSuccessful();
+        $this->artisan('wac:backfill', ['--dry-run' => true, '--reprocess' => true])
+            ->assertSuccessful();
+
+        $runs = DB::table('wac_backfill_runs')
+            ->where('modo', 'dry-run')
+            ->orderBy('id')
+            ->pluck('id')
+            ->all();
+        $this->assertCount(2, $runs);
+
+        $itemSegundoRun = DB::table('wac_backfill_items')
+            ->where('wac_backfill_run_id', $runs[1])
+            ->where('lote_id', $lote->id)
+            ->first();
+
+        $this->assertNotNull($itemSegundoRun);
+        $this->assertSame(
+            'procesado',
+            $itemSegundoRun->estado,
+            '--reprocess debe forzar el recálculo, NO saltar por caché'
+        );
+
+        // El historial del run anterior debe seguir intacto (auditoría).
+        $this->assertDatabaseHas('wac_backfill_items', [
+            'wac_backfill_run_id' => $runs[0],
+            'lote_id'             => $lote->id,
+            'estado'              => 'procesado',
+        ]);
+    }
+
+    public function test_reprocess_combinado_con_reset_es_rechazado(): void
+    {
+        $exitCode = $this->artisan('wac:backfill', [
+            '--reset'     => true,
+            '--reprocess' => true,
+        ])->run();
+
+        $this->assertSame(
+            2, // self::INVALID
+            $exitCode,
+            '--reset + --reprocess debe devolver INVALID'
+        );
     }
 }

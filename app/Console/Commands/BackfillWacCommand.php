@@ -37,6 +37,11 @@ use Throwable;
  *   --bodega=X       → filtrar por bodega
  *   --producto=X     → filtrar por producto
  *   --reset          → pone wac_* a null en los lotes tocados (rollback)
+ *   --reprocess      → ignora la caché de runs previos exitosos. Útil cuando cambia
+ *                      el algoritmo de cálculo o se tunean parámetros y los
+ *                      resultados anteriores ya no son representativos. NO borra el
+ *                      historial: los runs previos quedan intactos en las tablas
+ *                      wac_backfill_runs/items como auditoría.
  */
 final class BackfillWacCommand extends Command
 {
@@ -44,6 +49,7 @@ final class BackfillWacCommand extends Command
                             {--dry-run : Simular sin escribir columnas wac_* (default si no se pasa --apply)}
                             {--apply : Escribir columnas wac_* en lotes sin anomalías}
                             {--force : Permitir aplicar aun cuando haya divergencias anómalas}
+                            {--reprocess : Ignorar caché de runs previos exitosos (usar cuando cambie el algoritmo)}
                             {--bodega= : Filtrar por bodega_id}
                             {--producto= : Filtrar por producto_id}
                             {--reset : Poner wac_* a null en los lotes del filtro (rollback)}
@@ -55,16 +61,22 @@ final class BackfillWacCommand extends Command
     public function handle(BackfillWacService $service): int
     {
         // ---------- Validación de flags ----------
-        $reset    = (bool) $this->option('reset');
-        $apply    = (bool) $this->option('apply');
-        $dryRun   = (bool) $this->option('dry-run');
-        $force    = (bool) $this->option('force');
-        $bodegaId = $this->optionAsInt('bodega');
-        $producto = $this->optionAsInt('producto');
-        $notas    = $this->option('notas');
+        $reset     = (bool) $this->option('reset');
+        $apply     = (bool) $this->option('apply');
+        $dryRun    = (bool) $this->option('dry-run');
+        $force     = (bool) $this->option('force');
+        $reprocess = (bool) $this->option('reprocess');
+        $bodegaId  = $this->optionAsInt('bodega');
+        $producto  = $this->optionAsInt('producto');
+        $notas     = $this->option('notas');
 
         if ($reset && ($apply || $dryRun)) {
             $this->error('--reset no puede combinarse con --apply ni --dry-run. Correr --reset solo.');
+            return self::INVALID;
+        }
+
+        if ($reset && $reprocess) {
+            $this->error('--reprocess no aplica en modo --reset.');
             return self::INVALID;
         }
 
@@ -114,10 +126,13 @@ final class BackfillWacCommand extends Command
             force:     $force,
         );
 
-        $this->renderCabecera($modo, $bodegaId, $producto, $force, $tolerancia, $runUuid);
+        $this->renderCabecera($modo, $bodegaId, $producto, $force, $reprocess, $tolerancia, $runUuid);
 
         // ---------- Iteración ----------
-        $lotesIdsYaProcesados = $this->lotesIdsEnRunsExitosos();
+        // Si --reprocess está activo, la caché queda vacía y ningún lote será saltado
+        // por el criterio "ya procesado en run previo". El historial de runs anteriores
+        // permanece intacto en wac_backfill_runs/items para auditoría.
+        $lotesIdsYaProcesados = $reprocess ? [] : $this->lotesIdsEnRunsExitosos();
         $query = $service->queryLotes($bodegaId, $producto);
         $summary->totalLotes = (clone $query)->count();
 
@@ -356,6 +371,7 @@ final class BackfillWacCommand extends Command
         ?int $bodegaId,
         ?int $producto,
         bool $force,
+        bool $reprocess,
         float $tolerancia,
         string $runUuid,
     ): void {
@@ -366,6 +382,7 @@ final class BackfillWacCommand extends Command
         $this->line(sprintf('  Bodega filtro   : %s', $bodegaId ?? 'todas'));
         $this->line(sprintf('  Producto filtro : %s', $producto ?? 'todos'));
         $this->line(sprintf('  Force anomalías : %s', $force ? 'SÍ' : 'no'));
+        $this->line(sprintf('  Reprocesar      : %s', $reprocess ? 'SÍ (ignora runs previos)' : 'no'));
         $this->line(sprintf('  Tolerancia      : %.4f L/cartón', $tolerancia));
         $this->line(sprintf('  Run UUID        : %s', $runUuid));
         $this->info('═══════════════════════════════════════════════════════════════════');
