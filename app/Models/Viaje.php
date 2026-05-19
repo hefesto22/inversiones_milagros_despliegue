@@ -437,7 +437,7 @@ class Viaje extends Model
                 );
             }
 
-            // Reingresar fracción (sueltos) al lote SUELTOS
+            // Reingresar fracción (sueltos) al lote único del producto/bodega
             if ($fraccion > 0.0001) {
                 $huevosSueltos = round($fraccion * $unidadesPorBulto);
 
@@ -445,7 +445,6 @@ class Viaje extends Model
                     $this->reintegrarALoteSueltos(
                         $descarga->producto_id,
                         $huevosSueltos,
-                        $costoParaReintegro,
                         $unidadesPorBulto
                     );
                 }
@@ -478,77 +477,45 @@ class Viaje extends Model
     }
 
     /**
-     * Reingresar huevos sueltos al lote SUELTOS
+     * Reingresar huevos sueltos al LOTE ÚNICO del producto en esta bodega.
+     *
+     * Refactor 2026-05-18: migrado del patrón obsoleto "SUELTOS-Pxx-Bxx" al
+     * patrón oficial "Lote Único" (LU-B*-P*) que introdujo la migración
+     * 2026_02_02_011619_modificar_lotes_para_lote_unico_y_crear_mermas.
+     *
+     * El método anterior creaba lotes "SUELTOS-*" y violaba la constraint
+     * unique(producto_id, bodega_id, estado) en `lote_unico_producto_bodega`
+     * cuando ya existía un lote único disponible para esa combinación.
+     *
+     * Ahora delega en helpers oficiales que el resto del sistema ya usa
+     * (compras, reempaques, ventas):
+     *   - Lote::obtenerOCrearLoteUnico() → lock pesimista + reset si agotado
+     *   - Lote::devolverHuevos()         → suma remanente y dispara
+     *                                       DevolucionAplicadaAlLote para
+     *                                       que el WAC Perpetuo lo registre.
+     *
+     * Nota sobre el costo unitario:
+     *   La política vigente del sistema (ver docblock de DevolucionAplicadaAlLote)
+     *   es reintegrar al costo unitario actual del lote, no preservar el
+     *   costo original del huevo. El parámetro $costoUnitarioBulto se removió
+     *   porque ya no participa en el cálculo.
      */
     protected function reintegrarALoteSueltos(
         int $productoId,
         int $cantidadHuevos,
-        float $costoUnitarioBulto,
         int $unidadesPorBulto
     ): void {
-        $bodegaId = $this->bodega_origen_id;
-        $numeroLote = "SUELTOS-P{$productoId}-B{$bodegaId}";
+        $lote = Lote::obtenerOCrearLoteUnico(
+            productoId: $productoId,
+            bodegaId: $this->bodega_origen_id,
+            huevosPorCarton: $unidadesPorBulto,
+            createdBy: Auth::id(),
+        );
 
-        // Calcular costo por huevo individual
-        $costoPorHuevo = $costoUnitarioBulto / $unidadesPorBulto;
-
-        // Buscar lote SUELTOS existente
-        $loteSueltos = Lote::where('numero_lote', $numeroLote)
-            ->where('producto_id', $productoId)
-            ->where('bodega_id', $bodegaId)
-            ->first();
-
-        if ($loteSueltos) {
-            $huevosExistentes = $loteSueltos->cantidad_huevos_remanente;
-            $costoExistente = $loteSueltos->costo_por_huevo;
-
-            $totalHuevos = $huevosExistentes + $cantidadHuevos;
-
-            if ($huevosExistentes > 0) {
-                $nuevoCostoPorHuevo = (
-                    ($huevosExistentes * $costoExistente) +
-                    ($cantidadHuevos * $costoPorHuevo)
-                ) / $totalHuevos;
-            } else {
-                $nuevoCostoPorHuevo = $costoPorHuevo;
-            }
-
-            $loteSueltos->update([
-                'cantidad_huevos_remanente' => $totalHuevos,
-                'cantidad_huevos_original' => $loteSueltos->cantidad_huevos_original + $cantidadHuevos,
-                'costo_por_huevo' => round($nuevoCostoPorHuevo, 4),
-                'costo_total_lote' => round($totalHuevos * $nuevoCostoPorHuevo, 2),
-                'estado' => 'disponible',
-            ]);
-        } else {
-            // FIX: Obtener el primer proveedor de la bodega a través del lote del producto
-            // en lugar de hardcodear proveedor_id = 1 (que puede no existir).
-            $proveedorIdFallback = Lote::where('bodega_id', $bodegaId)
-                ->where('producto_id', $productoId)
-                ->whereNotNull('proveedor_id')
-                ->value('proveedor_id');
-
-            Lote::create([
-                'numero_lote' => $numeroLote,
-                'producto_id' => $productoId,
-                'bodega_id' => $bodegaId,
-                'proveedor_id' => $proveedorIdFallback, // null si no hay proveedor conocido (integridad referencial OK)
-                'compra_id' => null,
-                'compra_detalle_id' => null,
-                'reempaque_origen_id' => null,
-                'cantidad_cartones_facturados' => 0,
-                'cantidad_cartones_regalo' => 0,
-                'cantidad_cartones_recibidos' => 0,
-                'huevos_por_carton' => $unidadesPorBulto,
-                'cantidad_huevos_original' => $cantidadHuevos,
-                'cantidad_huevos_remanente' => $cantidadHuevos,
-                'costo_total_lote' => round($cantidadHuevos * $costoPorHuevo, 2),
-                'costo_por_carton_facturado' => 0,
-                'costo_por_huevo' => round($costoPorHuevo, 4),
-                'estado' => 'disponible',
-                'created_by' => Auth::id(),
-            ]);
-        }
+        $lote->devolverHuevos(
+            cantidadHuevos: (float) $cantidadHuevos,
+            huevosRegaloDevueltos: 0.0,
+        );
     }
 
     // ============================================

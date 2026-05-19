@@ -355,7 +355,7 @@ class DescargasRelationManager extends RelationManager
 
                             if ($fraccion > 0.0001) {
                                 $huevosSueltos = round($fraccion * $unidadesPorBulto);
-                                return "Se reingresarán {$parteEntera} cartones completos al stock y {$huevosSueltos} unidades sueltas al lote de sueltos. ¿Confirma?";
+                                return "Se reingresarán {$parteEntera} cartones completos al stock y {$huevosSueltos} unidades sueltas al lote único del producto. ¿Confirma?";
                             }
                         }
 
@@ -439,7 +439,7 @@ class DescargasRelationManager extends RelationManager
                 $mensajes[] = "{$cartonesCompletos} cartones al stock";
             }
 
-            // 2. Si hay fracción y el producto tiene unidades por bulto, enviar a lote de sueltos
+            // 2. Si hay fracción y el producto tiene unidades por bulto, enviar al lote único
             if ($fraccion > 0.0001 && $unidadesPorBulto && $unidadesPorBulto > 1) {
                 $huevosSueltos = round($fraccion * $unidadesPorBulto);
 
@@ -448,11 +448,10 @@ class DescargasRelationManager extends RelationManager
                         bodegaId: $bodegaId,
                         productoId: $record->producto_id,
                         cantidadHuevos: $huevosSueltos,
-                        costoUnitario: $record->costo_unitario,
                         unidadesPorBulto: $unidadesPorBulto
                     );
 
-                    $mensajes[] = "{$huevosSueltos} unidades al lote de sueltos";
+                    $mensajes[] = "{$huevosSueltos} unidades al lote único";
                 }
             } elseif ($fraccion > 0.0001) {
                 // Producto sin subunidades, agregar fracción al stock normal
@@ -494,67 +493,32 @@ class DescargasRelationManager extends RelationManager
     }
 
     /**
-     * Agregar huevos sueltos al lote SUELTOS de la bodega
+     * Agregar huevos sueltos al LOTE ÚNICO del producto en la bodega.
+     *
+     * Refactor 2026-05-18: migrado del patrón obsoleto "SUELTOS-{codigoBodega}"
+     * al patrón oficial "Lote Único" (LU-B*-P*). El método anterior chocaba
+     * contra la constraint unique(producto_id, bodega_id, estado) cada vez
+     * que ya existía un lote único disponible para esa combinación.
+     *
+     * Delega en los helpers oficiales de Lote (los mismos que usan compras,
+     * reempaques y ventas) para mantener consistencia con el motor WAC Perpetuo.
      */
     protected function agregarALoteSueltos(
         int $bodegaId,
         int $productoId,
         int $cantidadHuevos,
-        float $costoUnitario,
         int $unidadesPorBulto
     ): void {
-        // Obtener código de bodega para el número de lote
-        $bodega = \App\Models\Bodega::find($bodegaId);
-        $codigoBodega = $bodega->codigo ?? "B{$bodegaId}";
-        $numeroLote = "SUELTOS-{$codigoBodega}";
+        $lote = Lote::obtenerOCrearLoteUnico(
+            productoId: $productoId,
+            bodegaId: $bodegaId,
+            huevosPorCarton: $unidadesPorBulto,
+            createdBy: Auth::id(),
+        );
 
-        // Calcular costo por huevo
-        $costoPorHuevo = $costoUnitario / $unidadesPorBulto;
-
-        // Buscar lote de sueltos existente para esta bodega y producto
-        $loteSueltos = Lote::where('numero_lote', $numeroLote)
-            ->where('bodega_id', $bodegaId)
-            ->where('producto_id', $productoId)
-            ->where('estado', 'disponible')
-            ->first();
-
-        if ($loteSueltos) {
-            // Actualizar lote existente
-            $loteSueltos->cantidad_huevos_remanente += $cantidadHuevos;
-            $loteSueltos->cantidad_huevos_original += $cantidadHuevos;
-
-            // Recalcular costo promedio ponderado
-            $costoAnterior = $loteSueltos->costo_total_lote ?? 0;
-            $costoNuevo = $cantidadHuevos * $costoPorHuevo;
-            $loteSueltos->costo_total_lote = $costoAnterior + $costoNuevo;
-
-            // Actualizar costo por huevo (promedio)
-            if ($loteSueltos->cantidad_huevos_original > 0) {
-                $loteSueltos->costo_por_huevo = $loteSueltos->costo_total_lote / $loteSueltos->cantidad_huevos_original;
-            }
-
-            $loteSueltos->save();
-        } else {
-            // Crear nuevo lote de sueltos
-            Lote::create([
-                'numero_lote' => $numeroLote,
-                'producto_id' => $productoId,
-                'bodega_id' => $bodegaId,
-                'proveedor_id' => null, // Devolución, no tiene proveedor
-                'compra_id' => null,
-                'compra_detalle_id' => null,
-                'cantidad_cartones_facturados' => 0,
-                'cantidad_cartones_regalo' => 0,
-                'cantidad_cartones_recibidos' => 0,
-                'huevos_por_carton' => $unidadesPorBulto,
-                'cantidad_huevos_original' => $cantidadHuevos,
-                'cantidad_huevos_remanente' => $cantidadHuevos,
-                'costo_total_lote' => $cantidadHuevos * $costoPorHuevo,
-                'costo_por_carton_facturado' => 0,
-                'costo_por_huevo' => $costoPorHuevo,
-                'estado' => 'disponible',
-                'created_by' => Auth::id(),
-            ]);
-        }
+        $lote->devolverHuevos(
+            cantidadHuevos: (float) $cantidadHuevos,
+            huevosRegaloDevueltos: 0.0,
+        );
     }
 }
