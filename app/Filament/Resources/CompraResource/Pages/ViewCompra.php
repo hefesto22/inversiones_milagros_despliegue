@@ -13,6 +13,8 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use App\Models\Lote;
 use App\Models\BodegaProducto;
+use App\Models\Producto;
+use App\Services\Inventario\SincronizadorCostoBodega;
 use Illuminate\Support\Facades\Log;
 use Filament\Notifications\Notification;
 
@@ -694,6 +696,16 @@ class ViewCompra extends ViewRecord
             'compra' => $this->record->numero_compra,
             'resultado' => $resultado,
         ]);
+
+        // Proyectar el costo del lote sobre bodega_producto para que la página de
+        // Productos y el formulario de Ventas reflejen el costo/precio vigente.
+        // Sincroniza toda la categoría: el lote 1x30 también alimenta al 1x15.
+        $producto = Producto::find($detalle->producto_id);
+
+        if ($producto) {
+            app(SincronizadorCostoBodega::class)
+                ->sincronizarCategoria((int) $producto->categoria_id, $bodegaId);
+        }
     }
 
     /**
