@@ -29,6 +29,15 @@ class ClienteResource extends Resource
 
     protected static ?string $pluralModelLabel = 'Clientes';
 
+    /**
+     * Eager load de ubicación para evitar N+1 en el listado/infolist
+     * (preventLazyLoading está activo).
+     */
+    public static function getEloquentQuery(): Builder
+    {
+        return parent::getEloquentQuery()->with(['departamento', 'municipio']);
+    }
+
     public static function form(Form $form): Form
     {
         return $form
@@ -72,6 +81,44 @@ class ClienteResource extends Resource
                                     ->email()
                                     ->maxLength(100)
                                     ->placeholder('cliente@ejemplo.com'),
+                            ]),
+
+                        // Ubicación: departamento y municipio en cascada.
+                        Forms\Components\Grid::make(2)
+                            ->schema([
+                                Forms\Components\Select::make('departamento_id')
+                                    ->label('Departamento')
+                                    ->required()
+                                    ->options(fn () => \App\Models\Departamento::orderBy('nombre')->pluck('nombre', 'id'))
+                                    ->searchable()
+                                    ->preload()
+                                    ->native(false)
+                                    ->live()
+                                    ->placeholder('Seleccione un departamento')
+                                    // Al cambiar de departamento, limpiar el municipio elegido.
+                                    ->afterStateUpdated(fn (Forms\Set $set) => $set('municipio_id', null)),
+
+                                Forms\Components\Select::make('municipio_id')
+                                    ->label('Municipio')
+                                    ->required()
+                                    ->options(fn (Forms\Get $get) => filled($get('departamento_id'))
+                                        ? \App\Models\Municipio::where('departamento_id', $get('departamento_id'))
+                                            ->orderBy('nombre')
+                                            ->pluck('nombre', 'id')
+                                        : [])
+                                    ->searchable()
+                                    ->preload()
+                                    ->native(false)
+                                    ->disabled(fn (Forms\Get $get) => blank($get('departamento_id')))
+                                    ->placeholder('Seleccione primero un departamento')
+                                    // Defensa: el municipio debe pertenecer al departamento elegido.
+                                    ->rule(fn (Forms\Get $get) => function (string $attribute, $value, \Closure $fail) use ($get) {
+                                        if (filled($value) && ! \App\Models\Municipio::where('id', $value)
+                                            ->where('departamento_id', $get('departamento_id'))
+                                            ->exists()) {
+                                            $fail('El municipio no pertenece al departamento seleccionado.');
+                                        }
+                                    }),
                             ]),
 
                         Forms\Components\Textarea::make('direccion')
@@ -258,6 +305,20 @@ class ClienteResource extends Resource
                     ->icon('heroicon-o-phone')
                     ->toggleable(),
 
+                Tables\Columns\TextColumn::make('departamento.nombre')
+                    ->label('Departamento')
+                    ->searchable()
+                    ->sortable()
+                    ->placeholder('Sin asignar')
+                    ->toggleable(),
+
+                Tables\Columns\TextColumn::make('municipio.nombre')
+                    ->label('Municipio')
+                    ->searchable()
+                    ->sortable()
+                    ->placeholder('Sin asignar')
+                    ->toggleable(),
+
                 Tables\Columns\TextColumn::make('limite_credito')
                     ->label('Límite')
                     ->money('HNL')
@@ -326,6 +387,17 @@ class ClienteResource extends Resource
                     ])
                     ->multiple(),
 
+                Tables\Filters\SelectFilter::make('departamento_id')
+                    ->label('Departamento')
+                    ->relationship('departamento', 'nombre')
+                    ->searchable()
+                    ->preload(),
+
+                Tables\Filters\SelectFilter::make('municipio_id')
+                    ->label('Municipio')
+                    ->relationship('municipio', 'nombre')
+                    ->searchable(),
+
                 Tables\Filters\TernaryFilter::make('estado')
                     ->label('Estado')
                     ->placeholder('Todos')
@@ -345,6 +417,15 @@ class ClienteResource extends Resource
                 Tables\Filters\Filter::make('acepta_devolucion')
                     ->label('Acepta devoluciones')
                     ->query(fn (Builder $query) => $query->where('acepta_devolucion', true))
+                    ->toggle(),
+
+                // Clientes con al menos un descuento especial activo en sus productos.
+                Tables\Filters\Filter::make('con_descuento_especial')
+                    ->label('Con descuento especial')
+                    ->query(fn (Builder $query) => $query->whereHas(
+                        'preciosCliente',
+                        fn (Builder $sub) => $sub->whereNotNull('descuento_maximo_override')
+                    ))
                     ->toggle(),
             ])
             ->actions([
@@ -425,6 +506,16 @@ class ClienteResource extends Resource
                                 Infolists\Components\TextEntry::make('email')
                                     ->icon('heroicon-o-envelope')
                                     ->placeholder('No registrado'),
+
+                                Infolists\Components\TextEntry::make('departamento.nombre')
+                                    ->label('Departamento')
+                                    ->icon('heroicon-o-map-pin')
+                                    ->placeholder('Sin asignar'),
+
+                                Infolists\Components\TextEntry::make('municipio.nombre')
+                                    ->label('Municipio')
+                                    ->icon('heroicon-o-map-pin')
+                                    ->placeholder('Sin asignar'),
 
                                 Infolists\Components\TextEntry::make('direccion')
                                     ->columnSpanFull()
