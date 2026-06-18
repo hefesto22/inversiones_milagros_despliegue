@@ -93,5 +93,10 @@ class DatabaseSeeder extends Seeder
                 ])
             );
         }
+
+        // =============================
+        // CATÁLOGO GEOGRÁFICO HONDURAS
+        // =============================
+        $this->call(DepartamentoMunicipioSeeder::class);
     }
 }

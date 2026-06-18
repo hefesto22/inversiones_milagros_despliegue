@@ -21,6 +21,8 @@ class Cliente extends Model
         'rtn',
         'telefono',
         'direccion',
+        'departamento_id',
+        'municipio_id',
         'email',
         'tipo',
         'limite_credito',
@@ -48,6 +50,16 @@ class Cliente extends Model
     // ============================================
     // RELACIONES
     // ============================================
+
+    public function departamento(): BelongsTo
+    {
+        return $this->belongsTo(Departamento::class, 'departamento_id');
+    }
+
+    public function municipio(): BelongsTo
+    {
+        return $this->belongsTo(Municipio::class, 'municipio_id');
+    }
 
     public function creador(): BelongsTo
     {
