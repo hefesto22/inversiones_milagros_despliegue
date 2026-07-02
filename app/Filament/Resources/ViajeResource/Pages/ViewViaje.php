@@ -439,9 +439,15 @@ class ViewViaje extends ViewRecord
 
         foreach ($ventas as $venta) {
             foreach ($venta->detalles as $detalle) {
+                // Líneas a precio 0 son entregas sin venta real (cambio/reposición),
+                // no descuentos: se excluyen del cálculo.
+                if ((float) $detalle->precio_base <= 0) {
+                    continue;
+                }
+
                 $precioSugerido = $detalle->viajeCarga?->precio_venta_sugerido ?? $detalle->precio_base;
                 $precioVendido = $detalle->precio_base;
-                
+
                 if ($precioVendido < $precioSugerido) {
                     $descuento = ($precioSugerido - $precioVendido) * $detalle->cantidad;
                     $descuentoTotal += $descuento;
@@ -528,8 +534,14 @@ class ViewViaje extends ViewRecord
 
         foreach ($ventas as $venta) {
             foreach ($venta->detalles as $detalle) {
+                // Líneas a precio 0 (entregas por cambio/reposición) no son ventas
+                // reales: no cuentan ni en lo esperado ni en lo realizado.
+                if ((float) $detalle->precio_base <= 0) {
+                    continue;
+                }
+
                 $precioSugerido = $detalle->viajeCarga?->precio_venta_sugerido ?? $detalle->precio_base;
-                
+
                 $totalEsperado += $precioSugerido * $detalle->cantidad;
                 $totalRealizado += $detalle->precio_base * $detalle->cantidad;
             }
