@@ -642,6 +642,13 @@ class Viaje extends Model
             return;
         }
 
+        // Líneas a precio 0 no generan comisión: son entregas sin venta real
+        // (cambio/reposición al cliente, cortesía). Sin esta guarda, la
+        // comisión fija le pagaría al chofer por producto que entregó gratis.
+        if ((float) $detalle->precio_base <= 0) {
+            return;
+        }
+
         $categoriaId = $producto->categoria_id;
 
         $carga = $this->cargas()->where('producto_id', $producto->id)->first();
@@ -699,6 +706,13 @@ class Viaje extends Model
     protected function calcularComisionDetalle(Venta $venta, VentaDetalle $detalle): void
     {
         $producto = $detalle->producto;
+
+        // Misma guarda que calcularComisionDetalleRuta: precio 0 = entrega
+        // sin venta real, no genera comisión.
+        if ((float) $detalle->precio_unitario <= 0) {
+            return;
+        }
+
         $categoriaId = $producto->categoria_id;
         $unidadId = $detalle->unidad_id;
 
