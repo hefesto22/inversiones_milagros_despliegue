@@ -237,6 +237,69 @@ final class WacService
         });
     }
 
+    /**
+     * Aplica un Ajuste de Inventario tipo SalidaReclasificacion o MermaResidual
+     * al WAC del lote (salida).
+     *
+     * Comportamiento idéntico a aplicarVenta/aplicarMerma — la diferencia es
+     * semántica (motivo='ajuste_salida' para distinguir en bitácora).
+     */
+    public function aplicarAjusteSalida(
+        Lote  $lote,
+        float $huevosSalida,
+        array $contextoAuditoria = []
+    ): ?WacDelta {
+        return $this->aplicarSalida($lote, $huevosSalida, 'ajuste_salida', $contextoAuditoria);
+    }
+
+    /**
+     * Aplica un Ajuste de Inventario tipo EntradaReclasificacion al WAC del
+     * lote destino (entrada con costo unitario explícito).
+     *
+     * Aritmética:
+     *   costo_entrante    = huevos_entrantes × costo_unit_aplicado
+     *   nuevo_numerador   = numerador_prev + costo_entrante
+     *   nuevo_denominador = denominador_prev + huevos_entrantes
+     *   nuevo_costo_unit  = nuevo_numerador / nuevo_denominador
+     *
+     * Si el costo_unit_aplicado es exactamente el WAC actual del destino, el
+     * WAC permanece sin cambio (esa es la lógica de la reclasificación: preservar
+     * el costo del destino y materializar la pérdida valorativa en el origen).
+     *
+     * @throws InvalidArgumentException si los parámetros son inválidos
+     */
+    public function aplicarAjusteEntrada(
+        Lote  $lote,
+        float $huevosEntrantes,
+        float $costoUnitarioAplicado,
+        array $contextoAuditoria = []
+    ): WacDelta {
+        if ($huevosEntrantes <= 0) {
+            throw new InvalidArgumentException(
+                "aplicarAjusteEntrada: huevosEntrantes debe ser > 0, recibido {$huevosEntrantes}"
+            );
+        }
+        if ($costoUnitarioAplicado < 0) {
+            throw new InvalidArgumentException(
+                "aplicarAjusteEntrada: costoUnitarioAplicado no puede ser negativo"
+            );
+        }
+
+        $costoEntrante = round($huevosEntrantes * $costoUnitarioAplicado, self::DECIMALES_COSTO_TOTAL);
+
+        // Reutilizamos aplicarCompra con el costo precalculado — es matemáticamente
+        // equivalente a una compra desde el punto de vista del WAC.
+        return $this->aplicarCompra(
+            lote:             $lote,
+            huevosFacturados: $huevosEntrantes,
+            costoCompra:      $costoEntrante,
+            contextoAuditoria: array_merge($contextoAuditoria, [
+                'tipo_movimiento_origen' => 'ajuste_entrada',
+                'costo_unitario_aplicado' => $costoUnitarioAplicado,
+            ]),
+        );
+    }
+
     // =================================================================
     // LÓGICA COMPARTIDA
     // =================================================================
