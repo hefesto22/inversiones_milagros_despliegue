@@ -51,34 +51,38 @@ class AjusteInventarioResource extends Resource
     {
         return $form->schema([
             Forms\Components\Section::make('Tipo de ajuste')
+                ->description('Reclasificación mueve huevos entre lotes (corrección de etiqueta, sin pérdida). Merma residual descuenta huevos perdidos.')
                 ->columns(2)
                 ->schema([
                     Forms\Components\Select::make('tipo_movimiento')
                         ->label('Tipo de movimiento')
                         ->options(AjusteTipoMovimiento::options())
                         ->required()
-                        ->live()
-                        ->helperText('Reclasificación = mueve huevos entre lotes. Merma residual = los pierde sin reclasificar.'),
+                        ->native(false)
+                        ->live(),
 
                     Forms\Components\Select::make('motivo')
                         ->label('Motivo')
                         ->options(AjusteMotivo::options())
                         ->required()
-                        ->helperText('Justificación del ajuste — queda en bitácora.'),
+                        ->native(false)
+                        ->helperText('Queda en la bitácora del ajuste.'),
                 ]),
 
             Forms\Components\Section::make('Lote origen')
+                ->description('El lote del que salen los huevos.')
                 ->columns(2)
                 ->schema([
                     Forms\Components\Select::make('bodega_id')
                         ->label('Bodega')
                         ->options(Bodega::query()->pluck('nombre', 'id'))
                         ->required()
+                        ->native(false)
                         ->live()
                         ->default(fn () => Bodega::query()->value('id')),
 
                     Forms\Components\Select::make('lote_id')
-                        ->label('Lote origen (de dónde salen los huevos)')
+                        ->label('Lote origen')
                         ->options(function (Forms\Get $get) {
                             $bodegaId = $get('bodega_id');
                             if (! $bodegaId) {
@@ -90,12 +94,27 @@ class AjusteInventarioResource extends Resource
                                 ->with('producto:id,nombre')
                                 ->get()
                                 ->mapWithKeys(fn ($l) => [
-                                    $l->id => "{$l->numero_lote} — {$l->producto?->nombre} ({$l->cantidad_huevos_remanente} huevos disp.)"
+                                    $l->id => "{$l->numero_lote} — {$l->producto?->nombre}"
                                 ])->toArray();
                         })
                         ->searchable()
                         ->required()
                         ->live(),
+
+                    Forms\Components\Placeholder::make('info_lote_origen')
+                        ->label('Situación actual del lote')
+                        ->columnSpanFull()
+                        ->visible(fn (Forms\Get $get) => filled($get('lote_id')))
+                        ->content(function (Forms\Get $get) {
+                            $lote = Lote::with('producto:id,nombre')->find($get('lote_id'));
+                            if (! $lote) {
+                                return '—';
+                            }
+                            $huevos   = number_format((float) $lote->cantidad_huevos_remanente, 0);
+                            $cartones = number_format((float) $lote->cantidad_huevos_remanente / 30, 1);
+                            $costo    = number_format((float) $lote->costo_por_huevo_efectivo, 4);
+                            return "{$huevos} huevos disponibles (≈ {$cartones} cart 1×30) · costo actual L {$costo} / huevo";
+                        }),
                 ]),
 
             Forms\Components\Section::make('Destino (solo para reclasificación)')
@@ -132,15 +151,8 @@ class AjusteInventarioResource extends Resource
                         ->label('Costo unitario aplicado (L / huevo)')
                         ->numeric()
                         ->step(0.0001)
-                        ->helperText('Por defecto = costo del lote ORIGEN. Los huevos viajan con su costo original — no se marca pérdida. Cambialo solo si querés materializar una pérdida valorativa al momento del ajuste (caso raro: ajuste por calidad).')
-                        ->default(function (Forms\Get $get) {
-                            $loteOrigenId = $get('lote_id');
-                            if (! $loteOrigenId) {
-                                return null;
-                            }
-                            $lote = Lote::find($loteOrigenId);
-                            return $lote?->costo_por_huevo;
-                        }),
+                        ->placeholder('Automático: costo del lote origen')
+                        ->helperText('Déjalo vacío (recomendado): los huevos viajan con el costo del lote origen, sin pérdida. Solo llénalo para materializar una pérdida valorativa inmediata (caso raro: ajuste por calidad).'),
                 ]),
 
             Forms\Components\Section::make('Cantidad y justificación')
@@ -166,13 +178,7 @@ class AjusteInventarioResource extends Resource
                         ->required()
                         ->rows(3)
                         ->columnSpanFull()
-                        ->helperText('Obligatoria. Explica por qué se hace el ajuste.'),
-
-                    Forms\Components\FileUpload::make('evidencia_path')
-                        ->label('Evidencia (foto del conteo físico, opcional)')
-                        ->image()
-                        ->directory('ajustes-inventario/evidencias')
-                        ->columnSpanFull(),
+                        ->helperText('Obligatoria. Explica por qué se hace el ajuste — queda en la bitácora permanente.'),
                 ]),
         ]);
     }

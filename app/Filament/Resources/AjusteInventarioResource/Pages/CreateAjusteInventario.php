@@ -44,7 +44,7 @@ class CreateAjusteInventario extends CreateRecord
                 costoUnitarioAplicado: $costoAplicado,
                 motivo:                $motivo,
                 descripcion:           $data['descripcion'],
-                evidenciaPath:         $data['evidencia_path'] ?? null,
+                evidenciaPath:         null,
                 solicitante:           $user,
             );
             // Retornamos la salida (el resource lo muestra en la lista; la entrada está vinculada)
@@ -61,7 +61,7 @@ class CreateAjusteInventario extends CreateRecord
                 huevosAMermar:  (float) $data['huevos_a_mover'],
                 motivo:         $motivo,
                 descripcion:    $data['descripcion'],
-                evidenciaPath:  $data['evidencia_path'] ?? null,
+                evidenciaPath:  null,
                 solicitante:    $user,
             );
             Notification::make()->title('Merma residual creada')->success()->send();
