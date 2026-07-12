@@ -6,6 +6,7 @@ namespace Tests\Unit\Models;
 
 use App\Models\Lote;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 /**
@@ -28,7 +29,7 @@ class LoteTest extends TestCase
     // ACCESSOR: costo_por_huevo_efectivo
     // ============================================
 
-    /** @test */
+    #[Test]
     public function costo_por_huevo_efectivo_devuelve_legacy_cuando_read_source_es_legacy(): void
     {
         config(['inventario.wac.read_source' => 'legacy']);
@@ -43,7 +44,7 @@ class LoteTest extends TestCase
         $this->assertNotEquals(3.0, $lote->costo_por_huevo_efectivo, 'No debe leer WAC');
     }
 
-    /** @test */
+    #[Test]
     public function costo_por_huevo_efectivo_devuelve_wac_cuando_read_source_es_wac(): void
     {
         config(['inventario.wac.read_source' => 'wac']);
@@ -58,7 +59,7 @@ class LoteTest extends TestCase
         $this->assertNotEquals(2.605, $lote->costo_por_huevo_efectivo, 'No debe leer legacy');
     }
 
-    /** @test */
+    #[Test]
     public function costo_por_huevo_efectivo_retorna_cero_cuando_wac_es_null_y_flag_es_wac(): void
     {
         config(['inventario.wac.read_source' => 'wac']);
@@ -71,7 +72,7 @@ class LoteTest extends TestCase
         $this->assertEquals(0.0, $lote->costo_por_huevo_efectivo);
     }
 
-    /** @test */
+    #[Test]
     public function costo_por_huevo_efectivo_retorna_cero_cuando_legacy_es_null_y_flag_es_legacy(): void
     {
         config(['inventario.wac.read_source' => 'legacy']);
@@ -83,7 +84,7 @@ class LoteTest extends TestCase
         $this->assertEquals(0.0, $lote->costo_por_huevo_efectivo);
     }
 
-    /** @test */
+    #[Test]
     public function costo_por_huevo_efectivo_siempre_retorna_tipo_float(): void
     {
         config(['inventario.wac.read_source' => 'legacy']);
@@ -93,7 +94,7 @@ class LoteTest extends TestCase
         $this->assertIsFloat($lote->costo_por_huevo_efectivo);
     }
 
-    /** @test */
+    #[Test]
     public function costo_por_huevo_efectivo_usa_legacy_como_default_cuando_flag_tiene_valor_invalido(): void
     {
         // Valor no documentado — fallback a legacy por seguridad
@@ -111,7 +112,7 @@ class LoteTest extends TestCase
     // ACCESSOR: costo_por_carton_facturado_efectivo
     // ============================================
 
-    /** @test */
+    #[Test]
     public function costo_por_carton_efectivo_devuelve_legacy_cuando_read_source_es_legacy(): void
     {
         config(['inventario.wac.read_source' => 'legacy']);
@@ -125,7 +126,7 @@ class LoteTest extends TestCase
         $this->assertEquals(78.15, $lote->costo_por_carton_facturado_efectivo);
     }
 
-    /** @test */
+    #[Test]
     public function costo_por_carton_efectivo_devuelve_wac_cuando_read_source_es_wac(): void
     {
         config(['inventario.wac.read_source' => 'wac']);
@@ -139,7 +140,7 @@ class LoteTest extends TestCase
         $this->assertEquals(90.0, $lote->costo_por_carton_facturado_efectivo);
     }
 
-    /** @test */
+    #[Test]
     public function costo_por_carton_efectivo_retorna_cero_cuando_wac_es_null_y_flag_es_wac(): void
     {
         config(['inventario.wac.read_source' => 'wac']);
@@ -151,7 +152,7 @@ class LoteTest extends TestCase
         $this->assertEquals(0.0, $lote->costo_por_carton_facturado_efectivo);
     }
 
-    /** @test */
+    #[Test]
     public function costo_por_carton_efectivo_siempre_retorna_tipo_float(): void
     {
         config(['inventario.wac.read_source' => 'wac']);
@@ -165,7 +166,7 @@ class LoteTest extends TestCase
     // HELPER: Lote::columnaSqlCostoPorHuevo()
     // ============================================
 
-    /** @test */
+    #[Test]
     public function columna_sql_costo_por_huevo_retorna_legacy_por_default(): void
     {
         config(['inventario.wac.read_source' => 'legacy']);
@@ -173,7 +174,7 @@ class LoteTest extends TestCase
         $this->assertEquals('lotes.costo_por_huevo', Lote::columnaSqlCostoPorHuevo());
     }
 
-    /** @test */
+    #[Test]
     public function columna_sql_costo_por_huevo_retorna_wac_cuando_flag_es_wac(): void
     {
         config(['inventario.wac.read_source' => 'wac']);
@@ -181,7 +182,7 @@ class LoteTest extends TestCase
         $this->assertEquals('lotes.wac_costo_por_huevo', Lote::columnaSqlCostoPorHuevo());
     }
 
-    /** @test */
+    #[Test]
     public function columna_sql_costo_por_huevo_cae_a_legacy_cuando_flag_es_invalido(): void
     {
         config(['inventario.wac.read_source' => 'otro_valor']);
@@ -189,7 +190,7 @@ class LoteTest extends TestCase
         $this->assertEquals('lotes.costo_por_huevo', Lote::columnaSqlCostoPorHuevo());
     }
 
-    /** @test */
+    #[Test]
     public function columna_sql_costo_por_huevo_devuelve_identificador_calificado_con_tabla(): void
     {
         // Garantizar que el formato "tabla.columna" se mantiene para uso seguro
@@ -205,7 +206,7 @@ class LoteTest extends TestCase
     // HELPER: Lote::columnaSqlCostoPorCartonFacturado()
     // ============================================
 
-    /** @test */
+    #[Test]
     public function columna_sql_costo_por_carton_retorna_legacy_por_default(): void
     {
         config(['inventario.wac.read_source' => 'legacy']);
@@ -216,7 +217,7 @@ class LoteTest extends TestCase
         );
     }
 
-    /** @test */
+    #[Test]
     public function columna_sql_costo_por_carton_retorna_wac_cuando_flag_es_wac(): void
     {
         config(['inventario.wac.read_source' => 'wac']);
@@ -227,7 +228,7 @@ class LoteTest extends TestCase
         );
     }
 
-    /** @test */
+    #[Test]
     public function columna_sql_costo_por_carton_cae_a_legacy_cuando_flag_es_invalido(): void
     {
         config(['inventario.wac.read_source' => 'banana']);
