@@ -341,8 +341,14 @@ class CompraStateManager
                     );
                 }
 
-                $bodegaProducto->stock -= $cantidadRecibida;
-                $bodegaProducto->save();
+                // Kardex: usar la primitiva con evento (equivalente a stock -= con el
+                // pre-check de arriba; forzar=true porque la validación ya se hizo)
+                $bodegaProducto->reducirStock($cantidadRecibida, true, [
+                    'kardex_tipo'            => 'cancelacion_compra',
+                    'kardex_descripcion'     => "Cancelación de compra #{$compra->id}",
+                    'kardex_referencia_type' => $compra->getMorphClass(),
+                    'kardex_referencia_id'   => $compra->id,
+                ]);
                 $resultado['productos_revertidos']++;
 
                 Log::info('BodegaProducto: stock revertido por cancelación', [

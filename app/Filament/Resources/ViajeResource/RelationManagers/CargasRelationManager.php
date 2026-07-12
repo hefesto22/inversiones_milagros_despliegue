@@ -658,8 +658,12 @@ class CargasRelationManager extends RelationManager
                                     $record = $model::create($data);
 
                                     if ($tomarDeBodega > 0) {
-                                        $bodegaProducto->stock = max(0, $stockEnBodega - $tomarDeBodega);
-                                        $bodegaProducto->save();
+                                        $bodegaProducto->reducirStock($tomarDeBodega, true, [
+                                            'kardex_tipo'            => 'carga_viaje',
+                                            'kardex_descripcion'     => "Carga al viaje #{$viaje->id}",
+                                            'kardex_referencia_type' => $viaje->getMorphClass(),
+                                            'kardex_referencia_id'   => $viaje->id,
+                                        ]);
                                     }
 
                                     if ($viaje->estado === Viaje::ESTADO_PLANIFICADO) {
@@ -692,8 +696,12 @@ class CargasRelationManager extends RelationManager
                                     $data['reempaque_id'] = null;
                                     $record = $model::create($data);
 
-                                    $bodegaProducto->stock = max(0, $stockEnBodega - $cantidadSolicitada);
-                                    $bodegaProducto->save();
+                                    $bodegaProducto->reducirStock($cantidadSolicitada, true, [
+                                            'kardex_tipo'            => 'carga_viaje',
+                                            'kardex_descripcion'     => "Carga al viaje #{$viaje->id}",
+                                            'kardex_referencia_type' => $viaje->getMorphClass(),
+                                            'kardex_referencia_id'   => $viaje->id,
+                                        ]);
 
                                     if ($viaje->estado === Viaje::ESTADO_PLANIFICADO) {
                                         $viaje->iniciarCarga();
@@ -981,8 +989,12 @@ class CargasRelationManager extends RelationManager
 
                                     // Descontar de bodega si aplica
                                     if ($tomarDeBodega > 0) {
-                                        $bodegaProducto->stock = max(0, $stockActual - $tomarDeBodega);
-                                        $bodegaProducto->save();
+                                        $bodegaProducto->reducirStock($tomarDeBodega, true, [
+                                            'kardex_tipo'            => 'carga_viaje',
+                                            'kardex_descripcion'     => "Carga al viaje #{$viaje->id}",
+                                            'kardex_referencia_type' => $viaje->getMorphClass(),
+                                            'kardex_referencia_id'   => $viaje->id,
+                                        ]);
                                     }
 
                                     // Costo promedio ponderado total de la carga
@@ -1031,8 +1043,12 @@ class CargasRelationManager extends RelationManager
                                     $data['costo_unitario_lote'] = 0;
 
                                     $record->update($data);
-                                    $bodegaProducto->stock = max(0, $stockActual - $diferencia);
-                                    $bodegaProducto->save();
+                                    $bodegaProducto->reducirStock($diferencia, true, [
+                                            'kardex_tipo'            => 'carga_viaje',
+                                            'kardex_descripcion'     => "Carga al viaje #{$viaje->id}",
+                                            'kardex_referencia_type' => $viaje->getMorphClass(),
+                                            'kardex_referencia_id'   => $viaje->id,
+                                        ]);
 
                                     Notification::make()->title('Carga actualizada')
                                         ->body("Cantidad actualizada de {$cantidadAnterior} a {$cantidadNueva}")

@@ -435,7 +435,12 @@ class DescargasRelationManager extends RelationManager
                     ? floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? $record->costo_unitario)
                     : $record->costo_unitario;
 
-                $bodegaProducto->actualizarCostoPromedio($cartonesCompletos, $costoParaReintegro);
+                $bodegaProducto->actualizarCostoPromedio($cartonesCompletos, $costoParaReintegro, [
+                    'kardex_tipo'            => 'retorno_viaje',
+                    'kardex_descripcion'     => "Retorno de viaje #{$viaje->id}",
+                    'kardex_referencia_type' => $viaje->getMorphClass(),
+                    'kardex_referencia_id'   => $viaje->id,
+                ]);
                 $mensajes[] = "{$cartonesCompletos} cartones al stock";
             }
 
@@ -474,7 +479,12 @@ class DescargasRelationManager extends RelationManager
                     ? floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? $record->costo_unitario)
                     : $record->costo_unitario;
 
-                $bodegaProducto->actualizarCostoPromedio($fraccion, $costoParaReintegro);
+                $bodegaProducto->actualizarCostoPromedio($fraccion, $costoParaReintegro, [
+                    'kardex_tipo'            => 'retorno_viaje',
+                    'kardex_descripcion'     => "Retorno de viaje #{$viaje->id}",
+                    'kardex_referencia_type' => $viaje->getMorphClass(),
+                    'kardex_referencia_id'   => $viaje->id,
+                ]);
                 $mensajes[] = number_format($fraccion, 4) . " unidades al stock";
             }
 
@@ -516,9 +526,17 @@ class DescargasRelationManager extends RelationManager
             createdBy: Auth::id(),
         );
 
+        $viaje = $this->getOwnerRecord();
+
         $lote->devolverHuevos(
             cantidadHuevos: (float) $cantidadHuevos,
             huevosRegaloDevueltos: 0.0,
+            contexto: [
+                'kardex_tipo'            => 'retorno_viaje',
+                'kardex_descripcion'     => "Retorno de viaje #{$viaje->id} — sueltos al lote único",
+                'kardex_referencia_type' => $viaje->getMorphClass(),
+                'kardex_referencia_id'   => $viaje->id,
+            ],
         );
     }
 }

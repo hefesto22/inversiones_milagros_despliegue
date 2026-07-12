@@ -185,7 +185,12 @@ final class ReempaqueService
                 'costo_parcial' => round($resultado['costo'], 4),
             ]);
 
-            $lote->reducirRemanente($huevosAUsar, $resultado['huevos_regalo_usados']);
+            $lote->reducirRemanente($huevosAUsar, $resultado['huevos_regalo_usados'], [
+                'kardex_descripcion'     => trim("Reempaque {$reempaque->numero_reempaque}" . ($origen ? " — {$origen}" : '')),
+                'kardex_referencia_type' => $reempaque->getMorphClass(),
+                'kardex_referencia_id'   => $reempaque->id,
+                'reempaque_id'           => $reempaque->id,
+            ]);
             $costoTotal += $resultado['costo'];
             $huevosRestantes -= $huevosAUsar;
         }
@@ -272,7 +277,12 @@ final class ReempaqueService
             $costoRevertido = $huevosFacturadosDevueltos * $costoPorHuevo;
             $costoDevuelto += $costoRevertido;
 
-            $lote->devolverHuevos($huevosADevolverDeEsteRL, $huevosRegaloDevueltos);
+            $lote->devolverHuevos($huevosADevolverDeEsteRL, $huevosRegaloDevueltos, [
+                'kardex_descripcion'     => "Reversión de reempaque {$reempaque->numero_reempaque}",
+                'kardex_referencia_type' => $reempaque->getMorphClass(),
+                'kardex_referencia_id'   => $reempaque->id,
+                'reempaque_id'           => $reempaque->id,
+            ]);
 
             $cartonesFacturadosDevueltos = $huevosFacturadosDevueltos / $huevosPorCarton;
             $cartonesRegaloDevueltos = $huevosRegaloDevueltos / $huevosPorCarton;
@@ -351,7 +361,8 @@ final class ReempaqueService
     public function devolverStockABodega(
         BodegaProducto $bodegaProducto,
         float $cantidadDevolver,
-        float $costoOriginal
+        float $costoOriginal,
+        array $contextoKardex = []
     ): void {
         if ($cantidadDevolver <= 0) return;
 
@@ -371,6 +382,15 @@ final class ReempaqueService
         $bodegaProducto->stock = $nuevoStock;
         $bodegaProducto->actualizarPrecioVentaSegunCosto();
         $bodegaProducto->save();
+
+        // Kardex: entrada de producto terminado devuelto a bodega
+        \App\Events\Inventario\StockBodegaMovido::dispatch(
+            $bodegaProducto,
+            $cantidadDevolver,
+            $costoOriginal > 0 ? $costoOriginal : null,
+            'devolver_stock_bodega',
+            $contextoKardex,
+        );
 
         Log::info("ReempaqueService: Stock devuelto a bodega", [
             'producto_id' => $bodegaProducto->producto_id,

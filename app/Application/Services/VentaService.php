@@ -115,7 +115,12 @@ final class VentaService
 
                     // Descontar de bodega
                     if ($tomarDeBodega > 0 && $bodegaProducto) {
-                        $bodegaProducto->reducirStock($tomarDeBodega);
+                        $bodegaProducto->reducirStock($tomarDeBodega, false, [
+                            'kardex_tipo'            => 'venta',
+                            'kardex_descripcion'     => "Venta {$venta->numero_venta}",
+                            'kardex_referencia_type' => $venta->getMorphClass(),
+                            'kardex_referencia_id'   => $venta->id,
+                        ]);
                     }
 
                     // Guardar campos de origen en el detalle
@@ -152,7 +157,12 @@ final class VentaService
                     }
 
                     // Descontar stock y guardar campos de origen
-                    $bodegaProducto->reducirStock($cantidadSolicitada);
+                    $bodegaProducto->reducirStock($cantidadSolicitada, false, [
+                        'kardex_tipo'            => 'venta',
+                        'kardex_descripcion'     => "Venta {$venta->numero_venta}",
+                        'kardex_referencia_type' => $venta->getMorphClass(),
+                        'kardex_referencia_id'   => $venta->id,
+                    ]);
 
                     $detalle->cantidad_de_bodega = $cantidadSolicitada;
                     $detalle->cantidad_de_lote = 0;
@@ -336,7 +346,12 @@ final class VentaService
 
                         if ($bodegaProducto) {
                             $costoOriginal = floatval($detalle->costo_bodega_original ?? $detalle->costo_unitario ?? 0);
-                            $bodegaProducto->actualizarCostoPromedio($cantidadDeBodega, $costoOriginal);
+                            $bodegaProducto->actualizarCostoPromedio($cantidadDeBodega, $costoOriginal, [
+                                'kardex_tipo'            => 'cancelacion_venta',
+                                'kardex_descripcion'     => "Cancelación de venta {$venta->numero_venta}",
+                                'kardex_referencia_type' => $venta->getMorphClass(),
+                                'kardex_referencia_id'   => $venta->id,
+                            ]);
                         }
                     }
                 }
