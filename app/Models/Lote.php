@@ -489,9 +489,9 @@ class Lote extends Model
      * Envuelto en transacción con lock pesimista para evitar que dos ventas
      * simultáneas reduzcan el stock por debajo de cero.
      */
-    public function reducirRemanente(float $cantidadHuevos, float $huevosRegaloUsados = 0): void
+    public function reducirRemanente(float $cantidadHuevos, float $huevosRegaloUsados = 0, array $contexto = []): void
     {
-        DB::transaction(function () use ($cantidadHuevos, $huevosRegaloUsados) {
+        DB::transaction(function () use ($cantidadHuevos, $huevosRegaloUsados, $contexto) {
             // Recargar con lock para leer el remanente real actual
             $this->refresh();
             self::where('id', $this->id)->lockForUpdate()->first();
@@ -526,7 +526,7 @@ class Lote extends Model
                 $this,
                 $huevosFacturadosConsumidos,
                 (float) $huevosRegaloUsados,
-                [],
+                $contexto,
             );
         });
     }
@@ -535,9 +535,9 @@ class Lote extends Model
      * Devolver huevos al lote (reversión parcial de reempaque).
      * Inverso de reducirRemanente: incrementa el remanente y ajusta huevos_regalo_consumidos.
      */
-    public function devolverHuevos(float $cantidadHuevos, float $huevosRegaloDevueltos = 0): void
+    public function devolverHuevos(float $cantidadHuevos, float $huevosRegaloDevueltos = 0, array $contexto = []): void
     {
-        DB::transaction(function () use ($cantidadHuevos, $huevosRegaloDevueltos) {
+        DB::transaction(function () use ($cantidadHuevos, $huevosRegaloDevueltos, $contexto) {
             $this->refresh();
             self::where('id', $this->id)->lockForUpdate()->first();
 
@@ -572,7 +572,7 @@ class Lote extends Model
                 $this,
                 $huevosFacturadosDevueltos,
                 (float) $huevosRegaloDevueltos,
-                [],
+                $contexto,
             );
         });
     }

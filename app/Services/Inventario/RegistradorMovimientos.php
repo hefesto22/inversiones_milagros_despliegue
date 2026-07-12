@@ -49,6 +49,8 @@ final class RegistradorMovimientos
         ?string                  $descripcion = null,
         array                    $contexto = [],
         ?int                     $userId = null,
+        ?string                  $referenciaTipo = null,
+        ?int                     $referenciaId = null,
     ): ?MovimientoInventario {
         return $this->registrar([
             'nivel'              => MovimientoInventario::NIVEL_LOTE,
@@ -58,7 +60,7 @@ final class RegistradorMovimientos
             'bodega_id'          => $lote->bodega_id,
             'unidad'             => MovimientoInventario::UNIDAD_HUEVOS,
             'saldo_despues'      => (float) $lote->cantidad_huevos_remanente,
-        ], $tipo, $delta, $costoUnitario, $referencia, $descripcion, $contexto, $userId, null, null);
+        ], $tipo, $delta, $costoUnitario, $referencia, $descripcion, $contexto, $userId, $referenciaTipo, $referenciaId);
     }
 
     /**

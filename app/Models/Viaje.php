@@ -356,7 +356,12 @@ class Viaje extends Model
                     $costoOriginal = floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? 0);
 
                     if ($bodegaProducto) {
-                        $reempaqueService->devolverStockABodega($bodegaProducto, $cantidadDeBodega, $costoOriginal);
+                        $reempaqueService->devolverStockABodega($bodegaProducto, $cantidadDeBodega, $costoOriginal, [
+                            'kardex_tipo'            => 'retorno_viaje',
+                            'kardex_descripcion'     => "Cancelación de viaje #{$this->id}",
+                            'kardex_referencia_type' => $this->getMorphClass(),
+                            'kardex_referencia_id'   => $this->id,
+                        ]);
                     } else {
                         $bp = BodegaProducto::create([
                             'bodega_id' => $this->bodega_origen_id,
@@ -473,7 +478,12 @@ class Viaje extends Model
         );
 
         // actualizarCostoPromedio ya hace promedio ponderado correcto con 4 decimales
-        $bodegaProducto->actualizarCostoPromedio($cantidad, $costoUnitario);
+        $bodegaProducto->actualizarCostoPromedio($cantidad, $costoUnitario, [
+            'kardex_tipo'            => 'retorno_viaje',
+            'kardex_descripcion'     => "Retorno de viaje #{$this->id}",
+            'kardex_referencia_type' => $this->getMorphClass(),
+            'kardex_referencia_id'   => $this->id,
+        ]);
     }
 
     /**
@@ -515,6 +525,12 @@ class Viaje extends Model
         $lote->devolverHuevos(
             cantidadHuevos: (float) $cantidadHuevos,
             huevosRegaloDevueltos: 0.0,
+            contexto: [
+                'kardex_tipo'            => 'retorno_viaje',
+                'kardex_descripcion'     => "Retorno de viaje #{$this->id} — sueltos al lote único",
+                'kardex_referencia_type' => $this->getMorphClass(),
+                'kardex_referencia_id'   => $this->id,
+            ],
         );
     }
 

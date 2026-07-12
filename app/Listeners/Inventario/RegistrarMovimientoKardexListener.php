@@ -83,16 +83,19 @@ final class RegistrarMovimientoKardexListener
         }
 
         $this->registrador->registrarLote(
-            lote:          $event->lote,
-            tipo:          $this->tipoDesdeContexto($event->contexto, MovimientoInventarioTipo::SalidaReempaque),
-            delta:         -$huevosTotales,
-            costoUnitario: (float) $event->lote->costo_por_huevo_efectivo,
-            descripcion:   $event->contexto['kardex_descripcion']
+            lote:           $event->lote,
+            tipo:           $this->tipoDesdeContexto($event->contexto, MovimientoInventarioTipo::SalidaReempaque),
+            delta:          -$huevosTotales,
+            costoUnitario:  (float) $event->lote->costo_por_huevo_efectivo,
+            descripcion:    $event->contexto['kardex_descripcion']
                 ?? "Salida de huevos del lote {$event->lote->numero_lote}",
-            contexto:      $event->contexto + [
+            contexto:       $this->contextoLimpio($event->contexto) + [
                 'huevos_facturados' => $event->huevosFacturadosConsumidos,
                 'huevos_regalo'     => $event->huevosRegaloConsumidos,
             ],
+            referenciaTipo: $event->contexto['kardex_referencia_type'] ?? null,
+            referenciaId:   isset($event->contexto['kardex_referencia_id'])
+                ? (int) $event->contexto['kardex_referencia_id'] : null,
         );
     }
 
@@ -105,16 +108,19 @@ final class RegistrarMovimientoKardexListener
         }
 
         $this->registrador->registrarLote(
-            lote:          $event->lote,
-            tipo:          $this->tipoDesdeContexto($event->contexto, MovimientoInventarioTipo::DevolucionReempaque),
-            delta:         $huevosTotales,
-            costoUnitario: (float) $event->lote->costo_por_huevo_efectivo,
-            descripcion:   $event->contexto['kardex_descripcion']
+            lote:           $event->lote,
+            tipo:           $this->tipoDesdeContexto($event->contexto, MovimientoInventarioTipo::DevolucionReempaque),
+            delta:          $huevosTotales,
+            costoUnitario:  (float) $event->lote->costo_por_huevo_efectivo,
+            descripcion:    $event->contexto['kardex_descripcion']
                 ?? "Devolución de huevos al lote {$event->lote->numero_lote}",
-            contexto:      $event->contexto + [
+            contexto:       $this->contextoLimpio($event->contexto) + [
                 'huevos_facturados' => $event->huevosFacturadosDevueltos,
                 'huevos_regalo'     => $event->huevosRegaloDevueltos,
             ],
+            referenciaTipo: $event->contexto['kardex_referencia_type'] ?? null,
+            referenciaId:   isset($event->contexto['kardex_referencia_id'])
+                ? (int) $event->contexto['kardex_referencia_id'] : null,
         );
     }
 
@@ -218,6 +224,18 @@ final class RegistrarMovimientoKardexListener
     // =================================================================
     // HELPERS
     // =================================================================
+
+    /**
+     * Quita las claves kardex_* del contexto antes de persistirlo — ya se
+     * materializaron en columnas propias (tipo, descripcion, referencia).
+     */
+    private function contextoLimpio(array $contexto): array
+    {
+        unset($contexto['kardex_tipo'], $contexto['kardex_descripcion'],
+              $contexto['kardex_referencia_type'], $contexto['kardex_referencia_id']);
+
+        return $contexto;
+    }
 
     /**
      * Resuelve el tipo del asiento: respeta 'kardex_tipo' del contexto si el

@@ -241,6 +241,55 @@ class KardexEventosTest extends TestCase
     }
 
     // =================================================================
+    // CONTEXTO ENRIQUECIDO (Bloque 3) — la tubería caller → evento → asiento
+    // =================================================================
+
+    public function test_salida_de_lote_respeta_contexto_enriquecido_del_caller(): void
+    {
+        $lote  = Lote::factory()->conCompra(3000.0, 7815.0)->create();
+        $otro  = Lote::factory()->conCompra(600.0, 1500.0)->create(); // hace de "documento"
+
+        // Un caller (ej. carga de viaje) pasa su identidad por el contexto
+        $lote->reducirRemanente(300.0, 0.0, [
+            'kardex_tipo'            => 'carga_viaje',
+            'kardex_descripcion'     => 'Carga al viaje #171',
+            'kardex_referencia_type' => $otro->getMorphClass(),
+            'kardex_referencia_id'   => $otro->id,
+        ]);
+
+        $mov = MovimientoInventario::deLote($lote->id)->latest('id')->first();
+
+        $this->assertNotNull($mov);
+        $this->assertSame(MovimientoInventarioTipo::CargaViaje, $mov->tipo);
+        $this->assertSame('Carga al viaje #171', $mov->descripcion);
+        $this->assertSame($otro->getMorphClass(), $mov->referencia_type);
+        $this->assertEquals($otro->id, $mov->referencia_id);
+        // Las claves kardex_* no se duplican dentro del contexto persistido
+        $this->assertArrayNotHasKey('kardex_tipo', $mov->contexto ?? []);
+    }
+
+    public function test_devolucion_de_lote_respeta_contexto_enriquecido_del_caller(): void
+    {
+        $lote = Lote::factory()->conCompra(3000.0, 7815.0)->create();
+        $otro = Lote::factory()->conCompra(600.0, 1500.0)->create();
+
+        $lote->devolverHuevos(90.0, 0.0, [
+            'kardex_tipo'            => 'retorno_viaje',
+            'kardex_descripcion'     => 'Retorno de viaje #171 — sueltos al lote único',
+            'kardex_referencia_type' => $otro->getMorphClass(),
+            'kardex_referencia_id'   => $otro->id,
+        ]);
+
+        $mov = MovimientoInventario::deLote($lote->id)->latest('id')->first();
+
+        $this->assertNotNull($mov);
+        $this->assertSame(MovimientoInventarioTipo::RetornoViaje, $mov->tipo);
+        $this->assertSame('Retorno de viaje #171 — sueltos al lote único', $mov->descripcion);
+        $this->assertEquals($otro->id, $mov->referencia_id);
+        $this->assertEquals(3090.0, (float) $mov->saldo_despues);
+    }
+
+    // =================================================================
     // KILL-SWITCH EN FLUJO REAL
     // =================================================================
 
