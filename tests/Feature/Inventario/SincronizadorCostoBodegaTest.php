@@ -13,6 +13,7 @@ use App\Models\Unidad;
 use App\Services\Inventario\SincronizadorCostoBodega;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Config;
+use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 /**
@@ -79,7 +80,7 @@ class SincronizadorCostoBodegaTest extends TestCase
         return compact('categoria', 'bodega', 'p30', 'p15');
     }
 
-    /** @test */
+    #[Test]
     public function proyecta_el_costo_del_1x30_desde_su_lote(): void
     {
         ['bodega' => $bodega, 'p30' => $p30] = $this->escenarioMarron();
@@ -104,7 +105,7 @@ class SincronizadorCostoBodegaTest extends TestCase
         $this->assertEqualsWithDelta(55.00, (float) $bp->precio_venta_sugerido, 0.01);
     }
 
-    /** @test */
+    #[Test]
     public function deriva_el_costo_del_1x15_desde_el_lote_hermano_de_su_categoria(): void
     {
         ['bodega' => $bodega, 'p15' => $p15] = $this->escenarioMarron();
@@ -126,7 +127,7 @@ class SincronizadorCostoBodegaTest extends TestCase
         $this->assertEqualsWithDelta(25.00, (float) $bp->costo_promedio_actual, 0.01);
     }
 
-    /** @test */
+    #[Test]
     public function respeta_read_source_wac_cuando_esta_configurado(): void
     {
         ['bodega' => $bodega, 'p30' => $p30] = $this->escenarioMarron();
@@ -149,7 +150,7 @@ class SincronizadorCostoBodegaTest extends TestCase
         $this->assertEqualsWithDelta(60.00, (float) $bp->costo_promedio_actual, 0.01);
     }
 
-    /** @test */
+    #[Test]
     public function no_cruza_costos_entre_bodegas(): void
     {
         ['p30' => $p30] = $this->escenarioMarron();

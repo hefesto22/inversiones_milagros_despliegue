@@ -9,6 +9,7 @@ use App\Models\Departamento;
 use App\Models\Municipio;
 use Database\Seeders\DepartamentoMunicipioSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 /**
@@ -30,14 +31,14 @@ class CatalogoGeograficoTest extends TestCase
         $this->seed(DepartamentoMunicipioSeeder::class);
     }
 
-    /** @test */
+    #[Test]
     public function siembra_18_departamentos_y_298_municipios(): void
     {
         $this->assertSame(18, Departamento::count());
         $this->assertSame(298, Municipio::count());
     }
 
-    /** @test */
+    #[Test]
     public function el_seeder_es_idempotente(): void
     {
         // Segunda corrida: no debe duplicar.
@@ -47,7 +48,7 @@ class CatalogoGeograficoTest extends TestCase
         $this->assertSame(298, Municipio::count());
     }
 
-    /** @test */
+    #[Test]
     public function cada_departamento_lista_solo_sus_municipios(): void
     {
         $atlantida = Departamento::where('codigo', '01')->firstOrFail();
@@ -65,7 +66,7 @@ class CatalogoGeograficoTest extends TestCase
         $this->assertCount(28, $fm->municipios);
     }
 
-    /** @test */
+    #[Test]
     public function el_municipio_pertenece_a_su_departamento(): void
     {
         $municipio = Municipio::where('codigo', '0101')->firstOrFail(); // La Ceiba
@@ -74,7 +75,7 @@ class CatalogoGeograficoTest extends TestCase
         $this->assertSame('01', $municipio->departamento->codigo);
     }
 
-    /** @test */
+    #[Test]
     public function el_cliente_guarda_departamento_y_municipio(): void
     {
         $departamento = Departamento::where('codigo', '05')->firstOrFail(); // Cortés

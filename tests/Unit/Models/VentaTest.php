@@ -11,6 +11,7 @@ use App\Models\Producto;
 use App\Models\BodegaProducto;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 class VentaTest extends TestCase
@@ -46,7 +47,7 @@ class VentaTest extends TestCase
     // TESTS DE CREACIÓN
     // ============================================
 
-    /** @test */
+    #[Test]
     public function una_venta_se_crea_en_estado_borrador()
     {
         $venta = Venta::factory()->create([
@@ -60,7 +61,7 @@ class VentaTest extends TestCase
         $this->assertNull($venta->numero_venta);
     }
 
-    /** @test */
+    #[Test]
     public function una_venta_tiene_relacion_con_cliente()
     {
         $venta = Venta::factory()->create([
@@ -72,7 +73,7 @@ class VentaTest extends TestCase
         $this->assertEquals($this->cliente->id, $venta->cliente->id);
     }
 
-    /** @test */
+    #[Test]
     public function una_venta_tiene_relacion_con_bodega()
     {
         $venta = Venta::factory()->create([
@@ -88,7 +89,7 @@ class VentaTest extends TestCase
     // TESTS DE DETALLES Y CÁLCULOS
     // ============================================
 
-    /** @test */
+    #[Test]
     public function una_venta_puede_tener_detalles()
     {
         $venta = Venta::factory()->create([
@@ -108,7 +109,7 @@ class VentaTest extends TestCase
         $this->assertInstanceOf(VentaDetalle::class, $venta->detalles->first());
     }
 
-    /** @test */
+    #[Test]
     public function recalcular_totales_suma_correctamente()
     {
         $venta = Venta::factory()->create([
@@ -159,7 +160,7 @@ class VentaTest extends TestCase
         $this->assertEquals(402.50, $venta->saldo_pendiente);
     }
 
-    /** @test */
+    #[Test]
     public function recalcular_totales_aplica_descuento()
     {
         $venta = Venta::factory()->create([
@@ -197,7 +198,7 @@ class VentaTest extends TestCase
     // TESTS DE GANANCIA
     // ============================================
 
-    /** @test */
+    #[Test]
     public function calcular_ganancia_correctamente()
     {
         $venta = Venta::factory()->create([
@@ -228,7 +229,7 @@ class VentaTest extends TestCase
     // TESTS DE PAGOS
     // ============================================
 
-    /** @test */
+    #[Test]
     public function registrar_pago_actualiza_saldos()
     {
         $venta = Venta::factory()->create([
@@ -251,7 +252,7 @@ class VentaTest extends TestCase
         $this->assertEquals('parcial', $venta->estado_pago);
     }
 
-    /** @test */
+    #[Test]
     public function registrar_pago_completo_marca_pagado()
     {
         $venta = Venta::factory()->create([
@@ -272,7 +273,7 @@ class VentaTest extends TestCase
         $this->assertEquals('pagado', $venta->estado_pago);
     }
 
-    /** @test */
+    #[Test]
     public function registrar_pago_superior_al_saldo_ajusta_saldo_a_cero()
     {
         $venta = Venta::factory()->create([
@@ -294,7 +295,7 @@ class VentaTest extends TestCase
     // TESTS DE VALIDACIÓN DE PAGO
     // ============================================
 
-    /** @test */
+    #[Test]
     public function esta_pagada_retorna_true_si_estado_es_pagado()
     {
         $venta = Venta::factory()->create([
@@ -304,7 +305,7 @@ class VentaTest extends TestCase
         $this->assertTrue($venta->estaPagada());
     }
 
-    /** @test */
+    #[Test]
     public function esta_pagada_retorna_false_si_estado_no_es_pagado()
     {
         $venta = Venta::factory()->create([
@@ -318,7 +319,7 @@ class VentaTest extends TestCase
     // TESTS DE VENCIMIENTO
     // ============================================
 
-    /** @test */
+    #[Test]
     public function esta_vencida_retorna_false_si_esta_pagada()
     {
         $venta = Venta::factory()->create([
@@ -329,7 +330,7 @@ class VentaTest extends TestCase
         $this->assertFalse($venta->estaVencida());
     }
 
-    /** @test */
+    #[Test]
     public function esta_vencida_retorna_false_si_sin_fecha_vencimiento()
     {
         $venta = Venta::factory()->create([
@@ -340,7 +341,7 @@ class VentaTest extends TestCase
         $this->assertFalse($venta->estaVencida());
     }
 
-    /** @test */
+    #[Test]
     public function esta_vencida_retorna_true_si_fecha_es_pasada()
     {
         $venta = Venta::factory()->create([
@@ -351,7 +352,7 @@ class VentaTest extends TestCase
         $this->assertTrue($venta->estaVencida());
     }
 
-    /** @test */
+    #[Test]
     public function esta_vencida_retorna_false_si_fecha_es_futura()
     {
         $venta = Venta::factory()->create([
@@ -362,7 +363,7 @@ class VentaTest extends TestCase
         $this->assertFalse($venta->estaVencida());
     }
 
-    /** @test */
+    #[Test]
     public function get_dias_vencimiento_retorna_dias_correctos()
     {
         // Usamos startOfDay() para evitar el problema de Carbon 3 donde
@@ -380,7 +381,7 @@ class VentaTest extends TestCase
         $this->assertContains($dias, [9, 10]);
     }
 
-    /** @test */
+    #[Test]
     public function get_dias_vencimiento_retorna_null_sin_fecha()
     {
         $venta = Venta::factory()->create([
@@ -394,7 +395,7 @@ class VentaTest extends TestCase
     // TESTS DE COMPLETAR VENTA
     // ============================================
 
-    /** @test */
+    #[Test]
     public function completar_venta_genera_numero_venta()
     {
         // descuento => 0 evita que el random del factory genere un valor mayor
@@ -421,7 +422,7 @@ class VentaTest extends TestCase
         $this->assertStringContainsString('V', $venta->numero_venta);
     }
 
-    /** @test */
+    #[Test]
     public function completar_venta_cambia_estado_a_pendiente_pago_si_credito()
     {
         // descuento => 0 es importante: el factory genera random 0-500 por default
@@ -449,7 +450,7 @@ class VentaTest extends TestCase
         $this->assertEquals('pendiente', $venta->estado_pago);
     }
 
-    /** @test */
+    #[Test]
     public function completar_venta_cambia_estado_a_pagada_si_contado()
     {
         // El enum tipo_pago real es ['efectivo', 'transferencia', 'tarjeta', 'credito'].
@@ -483,7 +484,7 @@ class VentaTest extends TestCase
         $this->assertEquals(0, $venta->saldo_pendiente);
     }
 
-    /** @test */
+    #[Test]
     public function completar_venta_no_completa_si_no_esta_en_borrador()
     {
         // API actualizada: VentaService::completarVenta() lanza InvalidArgumentException
@@ -505,7 +506,7 @@ class VentaTest extends TestCase
     // TESTS DE CANCELACIÓN
     // ============================================
 
-    /** @test */
+    #[Test]
     public function cancelar_venta_cambia_estado()
     {
         $venta = Venta::factory()->create([
@@ -522,7 +523,7 @@ class VentaTest extends TestCase
         $this->assertStringContainsString('Cambio de cliente', $venta->nota);
     }
 
-    /** @test */
+    #[Test]
     public function cancelar_venta_no_cancela_dos_veces()
     {
         // API actualizada: VentaService::cancelarVenta() lanza InvalidArgumentException
@@ -543,7 +544,7 @@ class VentaTest extends TestCase
     // TESTS DE SCOPES
     // ============================================
 
-    /** @test */
+    #[Test]
     public function scope_borrador_filtra_correctamente()
     {
         Venta::factory(3)->create(['estado' => 'borrador']);
@@ -554,7 +555,7 @@ class VentaTest extends TestCase
         $this->assertCount(3, $borradores);
     }
 
-    /** @test */
+    #[Test]
     public function scope_completadas_filtra_correctamente()
     {
         Venta::factory()->create(['estado' => 'completada']);
@@ -567,7 +568,7 @@ class VentaTest extends TestCase
         $this->assertCount(3, $completadas);
     }
 
-    /** @test */
+    #[Test]
     public function scope_pendientes_pago_filtra_correctamente()
     {
         Venta::factory()->create(['estado_pago' => 'pendiente']);
@@ -579,7 +580,7 @@ class VentaTest extends TestCase
         $this->assertCount(2, $pendientes);
     }
 
-    /** @test */
+    #[Test]
     public function scope_del_cliente_filtra_correctamente()
     {
         $cliente1 = Cliente::factory()->create();
@@ -597,7 +598,7 @@ class VentaTest extends TestCase
     // TESTS DE HELPERS
     // ============================================
 
-    /** @test */
+    #[Test]
     public function get_resumen_retorna_array_completo()
     {
         $venta = Venta::factory()->create([
@@ -631,7 +632,7 @@ class VentaTest extends TestCase
     // TESTS DE GENERADOR DE NÚMERO
     // ============================================
 
-    /** @test */
+    #[Test]
     public function generar_numero_venta_crea_numero_unico()
     {
         // El método generarNumeroVenta() en Venta es ahora protected — la
