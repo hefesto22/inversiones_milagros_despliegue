@@ -572,7 +572,7 @@ class LoteResource extends Resource
     public static function getRelations(): array
     {
         return [
-            //
+            LoteResource\RelationManagers\KardexRelationManager::class,
         ];
     }
 

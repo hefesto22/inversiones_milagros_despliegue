@@ -118,6 +118,14 @@ class Lote extends Model
         return $this->hasMany(Merma::class, 'lote_id');
     }
 
+    /**
+     * Kardex del lote — todos los movimientos del libro mayor (inmutable).
+     */
+    public function movimientosKardex(): HasMany
+    {
+        return $this->hasMany(MovimientoInventario::class, 'lote_id');
+    }
+
     // ============================================
     // MÉTODOS ESTÁTICOS
     // ============================================
