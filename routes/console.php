@@ -22,6 +22,17 @@ Schedule::job(new ReconciliarWacVsLegacyJob())
         \Illuminate\Support\Facades\Log::error('❌ Error al despachar reconciliación WAC nocturna');
     });
 
+// 🆕 Kardex — guardián nocturno (03:30, después del reconciliador WAC):
+// compara el último saldo del libro contra el stock real de cada lote y
+// producto. Si algo movió inventario por fuera de los eventos (SQL manual,
+// bug), queda logueado esa misma noche como warning con contexto.
+Schedule::command('kardex:verificar')
+    ->dailyAt('03:30')
+    ->withoutOverlapping()
+    ->onFailure(function () {
+        \Illuminate\Support\Facades\Log::error('❌ Kardex: verificación nocturna encontró divergencias (ver warnings previos)');
+    });
+
 // 🆕 Auto-liquidar comisiones de choferes el día 1 de cada mes a las 00:05
 Schedule::command('comisiones:auto-liquidar')
     ->monthlyOn(1, '00:05') // Día 1, 00:05 AM
