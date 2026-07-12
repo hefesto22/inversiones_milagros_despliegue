@@ -13,7 +13,10 @@ use App\Http\Controllers\EstadoResultadosPdfController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
-Route::redirect('/', '/admin/login');
+// Ruta nombrada 'home' = punto de entrada público. Redirige al login del admin
+// porque el producto no tiene una landing pública. El nombre 'home' es referenciado
+// por los layouts de auth (resources/views/components/layouts/auth/*.blade.php).
+Route::redirect('/', '/admin/login')->name('home');
 
 Route::view('dashboard', 'dashboard')
     ->middleware(['auth', 'verified'])

@@ -19,20 +19,29 @@ class UserFactory extends Factory
     /**
      * Define the model's default state.
      *
-     * Nota: el schema de `users` de este proyecto no incluye `email_verified_at`
-     * (ver migración 0001_01_01_000000_create_users_table.php) — el producto no
-     * implementa verificación de correo. Por eso el factory no puebla esa columna
-     * y no se expone un state unverified().
+     * Por default los usuarios se crean como "verificados" (email_verified_at = now()).
+     * Para casos donde se necesite un usuario sin verificar usar el state unverified().
      *
      * @return array<string, mixed>
      */
     public function definition(): array
     {
         return [
-            'name'           => fake()->name(),
-            'email'          => fake()->unique()->safeEmail(),
-            'password'       => static::$password ??= Hash::make('password'),
-            'remember_token' => Str::random(10),
+            'name'              => fake()->name(),
+            'email'             => fake()->unique()->safeEmail(),
+            'email_verified_at' => now(),
+            'password'          => static::$password ??= Hash::make('password'),
+            'remember_token'    => Str::random(10),
         ];
+    }
+
+    /**
+     * Estado: usuario sin verificar email.
+     */
+    public function unverified(): self
+    {
+        return $this->state(fn (array $attributes) => [
+            'email_verified_at' => null,
+        ]);
     }
 }
