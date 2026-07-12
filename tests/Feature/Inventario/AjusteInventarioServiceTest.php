@@ -576,10 +576,47 @@ class AjusteInventarioServiceTest extends TestCase
         $this->assertEqualsWithDelta(3120.0, (float) $destino->wac_huevos_inventario, 0.001);
         $this->assertEqualsWithDelta(2.023269, (float) $destino->wac_costo_por_huevo, 0.000001);
 
-        // Nota: la entrada delega en aplicarCompra(), por lo que el motivo persistido
-        // en el lote destino es 'compra' (el contexto de auditoría sí lleva
-        // 'tipo_movimiento_origen' => 'ajuste_entrada'). Comportamiento actual documentado.
-        $this->assertSame('compra', $destino->wac_motivo_ultima_actualizacion);
+        // Trazabilidad completa: la bitácora del destino distingue una entrada
+        // por ajuste de una compra real.
+        $this->assertSame('ajuste_entrada', $destino->wac_motivo_ultima_actualizacion);
+    }
+
+    public function test_reclasificacion_usa_costo_efectivo_wac_cuando_read_source_es_wac(): void
+    {
+        Config::set('inventario.wac.read_source', 'wac');
+
+        $bodega = Bodega::factory()->create();
+
+        // Lote origen con DRIFT deliberado: legacy 2.605 vs WAC 2.0.
+        // El ajuste debe valorarse con el costo que muestran las pantallas (WAC).
+        $origen = Lote::factory()
+            ->conCompra(3000.0, 7815.0)          // legacy: 2.605 L/huevo
+            ->wacInicializado(3000.0, 6000.0)    // wac:    2.0 L/huevo
+            ->create(['bodega_id' => $bodega->id]);
+
+        $destino = Lote::factory()->conCompra(3000.0, 6000.0)->create(['bodega_id' => $bodega->id]);
+
+        ['salida' => $salida, 'entrada' => $entrada] = $this->reclasificar($origen, $destino, 120.0);
+
+        // Valorado al costo EFECTIVO (WAC 2.0), no al legacy (2.605)
+        $this->assertEqualsWithDelta(2.0, (float) $salida->costo_unitario_aplicado, 0.000001);
+        $this->assertEqualsWithDelta(2.0, (float) $entrada->costo_unitario_aplicado, 0.000001);
+        $this->assertEqualsWithDelta(240.00, (float) $salida->valor_contable_afectado, 0.01); // 120 × 2.0
+    }
+
+    public function test_merma_residual_usa_costo_efectivo_wac_cuando_read_source_es_wac(): void
+    {
+        Config::set('inventario.wac.read_source', 'wac');
+
+        $lote = Lote::factory()
+            ->conCompra(3000.0, 7815.0)          // legacy: 2.605 L/huevo
+            ->wacInicializado(3000.0, 6000.0)    // wac:    2.0 L/huevo
+            ->create();
+
+        $ajuste = $this->crearMerma($lote, 90.0);
+
+        $this->assertEqualsWithDelta(2.0, (float) $ajuste->costo_unitario_aplicado, 0.000001);
+        $this->assertEqualsWithDelta(180.00, (float) $ajuste->valor_contable_afectado, 0.01); // 90 × 2.0
     }
 
     public function test_wac_intacto_con_shadow_apagado(): void

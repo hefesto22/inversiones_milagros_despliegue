@@ -91,37 +91,53 @@ final class WacService
             );
         }
 
-        return DB::transaction(function () use ($lote, $huevosFacturados, $costoCompra, $contextoAuditoria) {
+        return $this->aplicarEntradaConCosto($lote, $huevosFacturados, $costoCompra, 'compra', $contextoAuditoria);
+    }
+
+    /**
+     * Núcleo compartido de entradas con costo total explícito (compra y
+     * ajuste de inventario tipo entrada). La aritmética es idéntica; el
+     * $motivo distingue el origen en la bitácora del lote
+     * (wac_motivo_ultima_actualizacion) y en el WacDelta.
+     */
+    private function aplicarEntradaConCosto(
+        Lote   $lote,
+        float  $huevosEntrantes,
+        float  $costoEntrante,
+        string $motivo,
+        array  $contextoAuditoria
+    ): WacDelta {
+        return DB::transaction(function () use ($lote, $huevosEntrantes, $costoEntrante, $motivo, $contextoAuditoria) {
             $lote = $this->lockAndRefresh($lote);
 
             $antesRaw = $this->snapshot($lote);
 
-            // aplicarCompra procede aun sobre lote NULL (primera compra del ciclo).
+            // Las entradas proceden aun sobre lote NULL (primera compra del ciclo).
             // Coalescemos a 0 solo para la aritmética; el delta reporta los valores
             // coalescidos como "antes" (equivalente matemático: NULL ≡ 0 al sumar
             // la primera compra).
             //
             // Caso agotado-con-memoria (inv=0, huevos=0, costo_unit>0): la memoria
-            // del costo_unit se DESCARTA naturalmente porque la nueva compra
+            // del costo_unit se DESCARTA naturalmente porque la nueva entrada
             // establece un nuevo WAC desde cero (inv=0+costo, huevos=0+huevos).
             // Es el comportamiento correcto: una nueva compra reinicia el promedio.
             $inventarioAntes = $antesRaw['inventario'] ?? 0.0;
             $huevosAntes     = $antesRaw['huevos']     ?? 0.0;
             $costoUnitAntes  = $antesRaw['costo_unit'] ?? 0.0;
 
-            $inventarioDespues = round($inventarioAntes + $costoCompra, self::DECIMALES_COSTO_TOTAL);
-            $huevosDespues     = round($huevosAntes + $huevosFacturados, self::DECIMALES_HUEVOS);
+            $inventarioDespues = round($inventarioAntes + $costoEntrante, self::DECIMALES_COSTO_TOTAL);
+            $huevosDespues     = round($huevosAntes + $huevosEntrantes, self::DECIMALES_HUEVOS);
             $costoUnitDespues  = $huevosDespues > 0
                 ? round($inventarioDespues / $huevosDespues, self::DECIMALES_COSTO_UNITARIO)
                 : 0.0;
 
-            $this->persistir($lote, $inventarioDespues, $huevosDespues, $costoUnitDespues, 'compra');
+            $this->persistir($lote, $inventarioDespues, $huevosDespues, $costoUnitDespues, $motivo);
 
             return $this->construirDelta(
                 lote:              $lote,
-                motivo:            'compra',
-                deltaHuevos:       $huevosFacturados,
-                deltaCosto:        $costoCompra,
+                motivo:            $motivo,
+                deltaHuevos:       $huevosEntrantes,
+                deltaCosto:        $costoEntrante,
                 antes:             [
                     'inventario' => $inventarioAntes,
                     'huevos'     => $huevosAntes,
@@ -287,14 +303,16 @@ final class WacService
 
         $costoEntrante = round($huevosEntrantes * $costoUnitarioAplicado, self::DECIMALES_COSTO_TOTAL);
 
-        // Reutilizamos aplicarCompra con el costo precalculado — es matemáticamente
-        // equivalente a una compra desde el punto de vista del WAC.
-        return $this->aplicarCompra(
-            lote:             $lote,
-            huevosFacturados: $huevosEntrantes,
-            costoCompra:      $costoEntrante,
+        // Núcleo compartido con aplicarCompra (aritmética idéntica), pero con
+        // motivo propio 'ajuste_entrada' — así la bitácora del lote
+        // (wac_motivo_ultima_actualizacion) distingue una entrada por ajuste
+        // de una compra real y la trazabilidad de "de dónde entró" queda completa.
+        return $this->aplicarEntradaConCosto(
+            lote:              $lote,
+            huevosEntrantes:   $huevosEntrantes,
+            costoEntrante:     $costoEntrante,
+            motivo:            'ajuste_entrada',
             contextoAuditoria: array_merge($contextoAuditoria, [
-                'tipo_movimiento_origen' => 'ajuste_entrada',
                 'costo_unitario_aplicado' => $costoUnitarioAplicado,
             ]),
         );

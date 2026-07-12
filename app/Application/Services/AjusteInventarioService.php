@@ -112,7 +112,12 @@ final class AjusteInventarioService
             }
 
             $requiereAprobacion = $this->requiereAprobacion($huevosAMover, $loteOrigen);
-            $costoOrigen        = (float) ($loteOrigen->costo_por_huevo ?? 0);
+
+            // Costo EFECTIVO del origen (accessor Fase 5): respeta el flag
+            // inventario.wac.read_source. Con 'wac' el ajuste se valora con el
+            // mismo costo que muestran las pantallas — evita descuadres entre
+            // la bitácora del ajuste y lo que el usuario ve en Filament.
+            $costoOrigen = (float) ($loteOrigen->costo_por_huevo_efectivo ?? 0);
 
             // Opción B: por default el costo viaja con los huevos (preservar costo origen)
             $costoAplicado = $costoUnitarioAplicado ?? $costoOrigen;
@@ -212,7 +217,9 @@ final class AjusteInventarioService
             }
 
             $requiereAprobacion = $this->requiereAprobacion($huevosAMermar, $lote);
-            $costoUnitario      = (float) ($lote->costo_por_huevo ?? 0);
+
+            // Costo EFECTIVO (accessor Fase 5) — misma razón que en crearReclasificacion.
+            $costoUnitario = (float) ($lote->costo_por_huevo_efectivo ?? 0);
 
             $ajuste = AjusteInventario::create([
                 'lote_id'                 => $lote->id,
