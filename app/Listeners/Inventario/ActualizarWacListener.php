@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Listeners\Inventario;
 
+use App\Events\Inventario\AjusteEntradaAplicadoAlLote;
+use App\Events\Inventario\AjusteSalidaAplicadaAlLote;
 use App\Events\Inventario\CompraAplicadaAlLote;
 use App\Events\Inventario\DevolucionAplicadaAlLote;
 use App\Events\Inventario\MermaAplicadaAlLote;
@@ -195,6 +197,82 @@ final class ActualizarWacListener
         } catch (Throwable $e) {
             $this->logError('devolucion', $event->lote->id, $e, array_merge($event->contexto, [
                 'huevos_facturados_devueltos' => $event->huevosFacturadosDevueltos,
+            ]));
+        }
+    }
+
+    /**
+     * Ajuste de Inventario tipo Salida (reclasificación, merma residual o corrección negativa).
+     *
+     * Tratado por el WAC como salida idéntica a venta/merma:
+     *   - Reduce numerador y denominador
+     *   - Preserva costo_unit (invariante de salidas)
+     */
+    public function handleAjusteSalida(AjusteSalidaAplicadaAlLote $event): void
+    {
+        if (! $this->shadowModeActivo()) {
+            return;
+        }
+
+        try {
+            if ($event->huevosSalientes <= 0) {
+                $this->logSalto($event->lote->id, 'ajuste_salida', 'salida con huevos<=0');
+                return;
+            }
+
+            $delta = $this->wacService->aplicarAjusteSalida(
+                lote:              $event->lote,
+                huevosSalida:      $event->huevosSalientes,
+                contextoAuditoria: array_merge($event->contextoAuditoria, [
+                    'ajuste_id' => $event->ajuste->id,
+                ]),
+            );
+
+            if ($delta !== null) {
+                $this->logDelta($delta->toArray());
+            }
+        } catch (Throwable $e) {
+            $this->logError('ajuste_salida', $event->lote->id, $e, array_merge($event->contextoAuditoria, [
+                'ajuste_id'        => $event->ajuste->id,
+                'huevos_salientes' => $event->huevosSalientes,
+            ]));
+        }
+    }
+
+    /**
+     * Ajuste de Inventario tipo Entrada (reclasificación o corrección positiva).
+     *
+     * Tratado por el WAC como entrada con costo unitario explícito:
+     *   - Aumenta numerador (huevos × costo_unit_aplicado) y denominador
+     *   - Recalcula el WAC del lote destino
+     */
+    public function handleAjusteEntrada(AjusteEntradaAplicadoAlLote $event): void
+    {
+        if (! $this->shadowModeActivo()) {
+            return;
+        }
+
+        try {
+            if ($event->huevosEntrantes <= 0) {
+                $this->logSalto($event->lote->id, 'ajuste_entrada', 'entrada con huevos<=0');
+                return;
+            }
+
+            $delta = $this->wacService->aplicarAjusteEntrada(
+                lote:                  $event->lote,
+                huevosEntrantes:       $event->huevosEntrantes,
+                costoUnitarioAplicado: $event->costoUnitarioAplicado,
+                contextoAuditoria:     array_merge($event->contextoAuditoria, [
+                    'ajuste_id' => $event->ajuste->id,
+                ]),
+            );
+
+            $this->logDelta($delta->toArray());
+        } catch (Throwable $e) {
+            $this->logError('ajuste_entrada', $event->lote->id, $e, array_merge($event->contextoAuditoria, [
+                'ajuste_id'              => $event->ajuste->id,
+                'huevos_entrantes'       => $event->huevosEntrantes,
+                'costo_unitario_aplicado' => $event->costoUnitarioAplicado,
             ]));
         }
     }

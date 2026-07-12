@@ -87,4 +87,49 @@ return [
 
     ],
 
+    'ajustes' => [
+
+        /*
+        |--------------------------------------------------------------------------
+        | Umbral de Aprobación Dual
+        |--------------------------------------------------------------------------
+        |
+        | Cantidad de huevos (valor absoluto) por encima de la cual un ajuste
+        | requiere aprobación del dueño antes de aplicarse. Ajustes menores se
+        | aplican directamente por el encargado pero quedan en bitácora.
+        |
+        | Sugerido: 300 huevos (= 10 cartones 1x30). Permite que rotura cotidiana
+        | y reclasificaciones pequeñas pasen rápido, pero discrepancias mayores
+        | siempre pasen por la mesa del dueño.
+        |
+        */
+        'umbral_aprobacion_huevos' => (float) env('AJUSTES_UMBRAL_APROBACION_HUEVOS', 300),
+
+        /*
+        |--------------------------------------------------------------------------
+        | Porcentaje Máximo Ajustable por Lote
+        |--------------------------------------------------------------------------
+        |
+        | Máximo porcentaje del lote que se puede ajustar en una sola operación.
+        | Previene errores de captura catastróficos (ej. ajustar -100% por error).
+        | Operaciones que exceden este % requieren autorización especial.
+        |
+        */
+        'porcentaje_maximo_lote' => (float) env('AJUSTES_PCT_MAX_LOTE', 25),
+
+        /*
+        |--------------------------------------------------------------------------
+        | Días Máximos para Crear Corrección de un Ajuste Aplicado
+        |--------------------------------------------------------------------------
+        |
+        | Los ajustes aplicados son inmutables, pero un superadmin puede crear
+        | un ajuste de corrección (tipo_movimiento=ajuste_correccion) que revierte
+        | el efecto. Pasados estos días, ni el superadmin puede revertir — solo
+        | queda el reporte histórico.
+        |
+        */
+        'dias_max_correccion' => (int) env('AJUSTES_DIAS_CORRECCION', 30),
+
+    ],
+
 ];
