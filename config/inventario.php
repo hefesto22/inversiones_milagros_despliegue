@@ -132,4 +132,39 @@ return [
 
     ],
 
+    'kardex' => [
+
+        /*
+        |--------------------------------------------------------------------------
+        | Kardex Habilitado (kill-switch)
+        |--------------------------------------------------------------------------
+        |
+        | Cuando está activo, cada movimiento de inventario (lote y bodega)
+        | asienta una fila inmutable en movimientos_inventario vía el
+        | RegistradorMovimientos. Apagarlo detiene el registro sin romper
+        | ninguna operación de negocio — solo deja de escribirse el libro.
+        |
+        */
+        'habilitado' => env('KARDEX_HABILITADO', true),
+
+        /*
+        |--------------------------------------------------------------------------
+        | Modo Estricto
+        |--------------------------------------------------------------------------
+        |
+        | false (rollout): un error al asentar en el Kardex se loguea como error
+        |   y la operación de negocio (venta, carga, reempaque) continúa.
+        | true (régimen): el asiento es parte de la transacción — si el Kardex
+        |   no puede escribir, la operación completa se revierte. Exactitud
+        |   garantizada por diseño.
+        |
+        | Mismo patrón de despliegue seguro usado en el shadow-mode del WAC:
+        | arrancar en false, subir a true cuando kardex:verificar reporte cero
+        | divergencias por ~2 semanas.
+        |
+        */
+        'estricto' => env('KARDEX_ESTRICTO', false),
+
+    ],
+
 ];

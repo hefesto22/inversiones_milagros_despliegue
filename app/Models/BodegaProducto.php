@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Events\Inventario\StockBodegaMovido;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
@@ -97,11 +98,20 @@ class BodegaProducto extends Model
         $this->save();
     }
 
-    public function entregarReservado(float $cantidad): void
+    public function entregarReservado(float $cantidad, array $contextoKardex = []): void
     {
         $this->stock = max(0, $this->stock - $cantidad);
         $this->stock_reservado = max(0, $this->stock_reservado - $cantidad);
         $this->save();
+
+        // Kardex: salida física de stock (la reserva por sí sola no es movimiento físico)
+        StockBodegaMovido::dispatch(
+            $this,
+            -$cantidad,
+            floatval($this->costo_promedio_actual ?? 0) ?: null,
+            'entregar_reservado',
+            $contextoKardex,
+        );
     }
 
     // =======================
@@ -111,7 +121,7 @@ class BodegaProducto extends Model
     /**
      * Actualizar costo promedio con nueva entrada (Weighted Average Cost)
      */
-    public function actualizarCostoPromedio(float $cantidadNueva, float $costoUnitarioNuevo): void
+    public function actualizarCostoPromedio(float $cantidadNueva, float $costoUnitarioNuevo, array $contextoKardex = []): void
     {
         if ($cantidadNueva < 0) {
             throw new \InvalidArgumentException("La cantidad no puede ser negativa");
@@ -127,6 +137,8 @@ class BodegaProducto extends Model
         if ($costoUnitarioNuevo <= 0) {
             $this->stock = $stockAnterior + $cantidadNueva;
             $this->save();
+
+            StockBodegaMovido::dispatch($this, $cantidadNueva, null, 'entrada_con_costo', $contextoKardex);
             return;
         }
 
@@ -150,6 +162,9 @@ class BodegaProducto extends Model
         $this->actualizarPrecioVentaSegunCosto();
 
         $this->save();
+
+        // Kardex: entrada de producto terminado valorada al costo del movimiento
+        StockBodegaMovido::dispatch($this, $cantidadNueva, $costoUnitarioNuevo, 'entrada_con_costo', $contextoKardex);
     }
 
     /**
@@ -191,7 +206,7 @@ class BodegaProducto extends Model
     /**
      * Reducir stock con validacion
      */
-    public function reducirStock(float $cantidad, bool $forzar = false): void
+    public function reducirStock(float $cantidad, bool $forzar = false, array $contextoKardex = []): void
     {
         if ($cantidad <= 0) {
             return;
@@ -203,9 +218,18 @@ class BodegaProducto extends Model
 
         $this->stock = max(0, $this->stock - $cantidad);
         $this->save();
+
+        // Kardex: salida de producto terminado al costo promedio vigente
+        StockBodegaMovido::dispatch(
+            $this,
+            -$cantidad,
+            floatval($this->costo_promedio_actual ?? 0) ?: null,
+            'reducir_stock',
+            $contextoKardex,
+        );
     }
 
-    public function agregarStockSinCosto(float $cantidad): void
+    public function agregarStockSinCosto(float $cantidad, array $contextoKardex = []): void
     {
         if ($cantidad <= 0) {
             return;
@@ -213,6 +237,8 @@ class BodegaProducto extends Model
 
         $this->stock += $cantidad;
         $this->save();
+
+        StockBodegaMovido::dispatch($this, $cantidad, null, 'entrada_sin_costo', $contextoKardex);
     }
 
     public function getAnalisisCostos(): array
