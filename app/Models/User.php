@@ -35,9 +35,7 @@ class User extends Authenticatable
     protected function casts(): array
     {
         return [
-            // Nota: `email_verified_at` no existe en el schema de `users` de este proyecto
-            // (el producto no implementa verificación de correo). Cast removido para evitar
-            // confusión y quedar alineado con la migración 0001_01_01_000000_create_users_table.
+            'email_verified_at' => 'datetime',
             'password' => 'hashed',
         ];
     }

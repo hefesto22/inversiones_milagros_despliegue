@@ -19,21 +19,48 @@ class CompraStateManagerTest extends TestCase
         );
     }
 
-    public function test_borrador_puede_transicionar_a_todos_los_estados_intermedios(): void
+    public function test_borrador_puede_transicionar_a_estados_intermedios_permitidos(): void
     {
-        $destinos = [
+        // El state manager fue refactorizado para BLOQUEAR el salto directo
+        // de Borrador a estados "recibidos" (RecibidaPagada y RecibidaPendientePago)
+        // porque eso bypassea el procesamiento de inventario.
+        // Ver: app/Services/Compra/CompraStateManager.php const TRANSITIONS.
+        //
+        // Transiciones permitidas desde Borrador:
+        //   - Ordenada (flujo normal)
+        //   - PorRecibirPagada (pago anticipado, sin recibir)
+        //   - PorRecibirPendientePago (orden a crédito, sin recibir)
+        //   - Cancelada (siempre permitido)
+        $destinosPermitidos = [
             CompraEstado::Ordenada,
-            CompraEstado::RecibidaPagada,
-            CompraEstado::RecibidaPendientePago,
             CompraEstado::PorRecibirPagada,
             CompraEstado::PorRecibirPendientePago,
             CompraEstado::Cancelada,
         ];
 
-        foreach ($destinos as $destino) {
+        foreach ($destinosPermitidos as $destino) {
             $this->assertTrue(
                 CompraStateManager::puedeTransicionar(CompraEstado::Borrador, $destino),
                 "Borrador debería poder transicionar a {$destino->value}"
+            );
+        }
+    }
+
+    public function test_borrador_no_puede_saltar_directo_a_estados_recibidos(): void
+    {
+        // Guard arquitectónico: si Borrador → Recibida* fuera válido, se podría
+        // marcar la compra como recibida sin procesar el inventario en lotes.
+        // El flujo correcto exige pasar por Ordenada primero, o por
+        // PorRecibir* si hay pago anticipado.
+        $destinosBloqueados = [
+            CompraEstado::RecibidaPagada,
+            CompraEstado::RecibidaPendientePago,
+        ];
+
+        foreach ($destinosBloqueados as $destino) {
+            $this->assertFalse(
+                CompraStateManager::puedeTransicionar(CompraEstado::Borrador, $destino),
+                "Borrador NO debería poder saltar a {$destino->value} (bypaseo de inventario)"
             );
         }
     }
@@ -107,11 +134,14 @@ class CompraStateManagerTest extends TestCase
     // TRANSICIONES DISPONIBLES
     // ============================================
 
-    public function test_transiciones_disponibles_desde_borrador_tiene_6_opciones(): void
+    public function test_transiciones_disponibles_desde_borrador_tiene_4_opciones(): void
     {
+        // Tras refactor que prohibe salto directo Borrador → Recibida*, las
+        // transiciones válidas desde Borrador son: Ordenada, PorRecibirPagada,
+        // PorRecibirPendientePago, Cancelada. Total: 4.
         $transiciones = CompraStateManager::transicionesDisponibles(CompraEstado::Borrador);
 
-        $this->assertCount(6, $transiciones);
+        $this->assertCount(4, $transiciones);
     }
 
     public function test_transiciones_disponibles_desde_estado_final_es_vacio(): void

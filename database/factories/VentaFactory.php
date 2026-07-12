@@ -21,7 +21,9 @@ class VentaFactory extends Factory
             'cliente_id' => Cliente::factory(),
             'bodega_id' => Bodega::factory(),
             'numero_venta' => null,
-            'tipo_pago' => $this->faker->randomElement(['contado', 'credito']),
+            // Enum real en migración: ['efectivo', 'transferencia', 'tarjeta', 'credito']
+            // El valor previo 'contado' no existe en el enum y rompía inserts random.
+            'tipo_pago' => $this->faker->randomElement(['efectivo', 'transferencia', 'tarjeta', 'credito']),
             'subtotal' => $this->faker->randomFloat(2, 100, 5000),
             'total_isv' => $this->faker->randomFloat(2, 15, 750),
             'descuento' => $this->faker->randomFloat(2, 0, 500),
@@ -93,8 +95,10 @@ class VentaFactory extends Factory
 
     public function contado(): self
     {
+        // "Contado" en este modelo se representa como 'efectivo'.
+        // El enum no tiene literal 'contado' — quedaba como bug latente.
         return $this->state(fn(array $attributes) => [
-            'tipo_pago' => 'contado',
+            'tipo_pago' => 'efectivo',
         ]);
     }
 }
