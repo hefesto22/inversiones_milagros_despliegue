@@ -204,7 +204,7 @@
             <span class="info-label">Cliente:</span>
             <span>{{ $venta->cliente?->nombre ?? 'Consumidor Final' }}</span>
         </div>
-        @if($venta->cliente?->rtn && $venta->cliente->rtn !== 'CF-0000000000000')
+        @if($venta->cliente?->rtn && !$venta->cliente->esConsumidorFinal())
         <div class="info-row">
             <span class="info-label">RTN:</span>
             <span>{{ $venta->cliente->rtn }}</span>
