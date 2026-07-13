@@ -2,25 +2,23 @@
 
 namespace App\Filament\Pages;
 
+use App\Models\Cliente;
 use App\Models\Viaje;
 use App\Models\ViajeCarga;
 use App\Models\ViajeVenta;
-use App\Models\Cliente;
-use App\Models\User;
+use App\Services\PrecioVentaService;
+use Filament\Forms\Components\TextInput;
+use Filament\Notifications\Notification;
 use Filament\Pages\Page;
-use Filament\Tables\Table;
-use Filament\Tables\Columns\TextColumn;
-use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Actions\Action;
+use Filament\Tables\Columns\IconColumn;
+use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
 use Filament\Tables\Contracts\HasTable;
-use Filament\Notifications\Notification;
-use Filament\Forms\Components\TextInput;
-use Filament\Forms\Components\Select;
-use Filament\Forms\Components\Textarea;
+use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Database\Eloquent\Builder;
 use Livewire\Attributes\Computed;
 
 class PuntoVentaRuta extends Page implements HasTable
@@ -28,26 +26,36 @@ class PuntoVentaRuta extends Page implements HasTable
     use InteractsWithTable;
 
     protected static ?string $navigationIcon = 'heroicon-o-shopping-cart';
+
     protected static ?string $navigationLabel = 'Punto de Venta';
+
     protected static ?string $title = 'Punto de Venta en Ruta';
+
     protected static ?string $slug = 'punto-venta-ruta';
+
     protected static ?int $navigationSort = 1;
 
     protected static string $view = 'filament.pages.punto-venta-ruta';
 
     // Propiedades del carrito
     public array $carrito = [];
+
     public float $descuento = 0;
-    
+
     // Datos del cliente - DEBE SELECCIONARSE PRIMERO
     public ?int $cliente_id = null;
+
     public string $nombre_cliente = '';
+
     public string $rtn_cliente = '';
+
     public string $direccion_cliente = '';
+
     public string $telefono_cliente = '';
-    
+
     // Tipo de pago
     public string $tipo_pago = 'contado';
+
     public string $observaciones = '';
 
     // Control de confirmación
@@ -64,6 +72,7 @@ class PuntoVentaRuta extends Page implements HasTable
                 $cantidad += $item['cantidad'];
             }
         }
+
         return $cantidad;
     }
 
@@ -73,9 +82,10 @@ class PuntoVentaRuta extends Page implements HasTable
     #[Computed]
     public function clienteSeleccionado(): ?Cliente
     {
-        if (!$this->cliente_id) {
+        if (! $this->cliente_id) {
             return null;
         }
+
         return Cliente::find($this->cliente_id);
     }
 
@@ -93,16 +103,36 @@ class PuntoVentaRuta extends Page implements HasTable
      */
     public function getUltimoPrecioCliente(int $productoId): ?array
     {
-        if (!$this->cliente_id) {
+        if (! $this->cliente_id) {
             return null;
         }
 
         $cliente = Cliente::find($this->cliente_id);
-        if (!$cliente) {
+        if (! $cliente) {
             return null;
         }
 
         return $cliente->getUltimoPrecio($productoId);
+    }
+
+    /**
+     * Precio EXACTO bloqueado para el cliente actual y el producto de la carga.
+     *
+     * Retorna float si el cliente tiene bloqueo (actualmente Consumidor Final),
+     * o null si el precio queda editable normalmente. Centraliza la consulta
+     * al servicio para que el form y la validación backend usen la misma fuente.
+     */
+    public function precioBloqueadoParaProducto($carga): ?float
+    {
+        $cliente = $this->clienteSeleccionado;
+        $producto = $carga?->producto;
+
+        if (! $cliente || ! $producto) {
+            return null;
+        }
+
+        return app(PrecioVentaService::class)
+            ->obtenerPrecioBloqueado($cliente, $producto);
     }
 
     /**
@@ -119,9 +149,10 @@ class PuntoVentaRuta extends Page implements HasTable
         $cliente = $this->clienteSeleccionado;
         $producto = $carga->producto;
 
-        if (!$cliente || !$producto) {
+        if (! $cliente || ! $producto) {
             // Fallback: costo + 1
             $costoBase = (float) ($carga->costo_unitario ?? 0);
+
             return [
                 'precio_minimo' => $costoBase + 1,
                 'fuente' => 'proteccion',
@@ -143,6 +174,7 @@ class PuntoVentaRuta extends Page implements HasTable
 
         // Sin regla de descuento → costo + L 1.00
         $costoBase = (float) ($carga->costo_unitario ?? 0);
+
         return [
             'precio_minimo' => $costoBase + 1,
             'fuente' => 'proteccion',
@@ -155,14 +187,14 @@ class PuntoVentaRuta extends Page implements HasTable
     public function seleccionarCliente(int $clienteId): void
     {
         $cliente = Cliente::find($clienteId);
-        
+
         if ($cliente) {
             $this->cliente_id = $cliente->id;
             $this->nombre_cliente = $cliente->nombre;
             $this->rtn_cliente = $cliente->rtn ?? '';
             $this->direccion_cliente = $cliente->direccion ?? '';
             $this->telefono_cliente = $cliente->telefono ?? '';
-            
+
             // Limpiar carrito al cambiar cliente (los precios pueden ser diferentes)
             if (count($this->carrito) > 0) {
                 Notification::make()
@@ -192,7 +224,7 @@ class PuntoVentaRuta extends Page implements HasTable
         $this->direccion_cliente = '';
         $this->telefono_cliente = '';
         $this->carrito = [];
-        
+
         Notification::make()
             ->title('Cliente removido')
             ->body('Seleccione un cliente para continuar.')
@@ -201,21 +233,15 @@ class PuntoVentaRuta extends Page implements HasTable
     }
 
     /**
-     * Crear venta como Consumidor Final (sin cliente registrado)
+     * Crear venta como Consumidor Final (sin cliente registrado).
+     *
+     * Delega en Cliente::consumidorFinal() para que el RTN especial y los
+     * defaults del registro vivan en un solo lugar (Cliente.php).
      */
     public function crearConsumidorFinal(): void
     {
-        // Buscar o crear cliente "Consumidor Final"
-        $consumidorFinal = Cliente::firstOrCreate(
-            ['rtn' => 'CF-0000000000000'],
-            [
-                'nombre' => 'Consumidor Final',
-                'tipo' => 'minorista',
-                'estado' => true,
-                'dias_credito' => 0,
-                'limite_credito' => 0,
-            ]
-        );
+        // Cliente especial idempotente — ver Cliente::consumidorFinal()
+        $consumidorFinal = Cliente::consumidorFinal();
 
         $this->cliente_id = $consumidorFinal->id;
         $this->nombre_cliente = $consumidorFinal->nombre;
@@ -225,7 +251,7 @@ class PuntoVentaRuta extends Page implements HasTable
 
         Notification::make()
             ->title('Venta a Consumidor Final')
-            ->body('Se usarán los precios estándar.')
+            ->body('Precios bloqueados al valor autorizado por administración.')
             ->success()
             ->send();
     }
@@ -238,8 +264,8 @@ class PuntoVentaRuta extends Page implements HasTable
         return Cliente::where('estado', true)
             ->where(function ($q) use ($query) {
                 $q->where('nombre', 'like', "%{$query}%")
-                  ->orWhere('rtn', 'like', "%{$query}%")
-                  ->orWhere('telefono', 'like', "%{$query}%");
+                    ->orWhere('rtn', 'like', "%{$query}%")
+                    ->orWhere('telefono', 'like', "%{$query}%");
             })
             ->limit(10)
             ->get(['id', 'nombre', 'rtn', 'telefono', 'tipo'])
@@ -253,10 +279,12 @@ class PuntoVentaRuta extends Page implements HasTable
     public static function canAccess(): bool
     {
         $user = Auth::user();
-        if (!$user) return false;
+        if (! $user) {
+            return false;
+        }
 
         // Solo choferes pueden acceder
-        if (!static::esChofer()) {
+        if (! static::esChofer()) {
             return false;
         }
 
@@ -270,7 +298,9 @@ class PuntoVentaRuta extends Page implements HasTable
     protected static function esSuperAdminOJefeOEncargado(): bool
     {
         $user = Auth::user();
-        if (!$user) return false;
+        if (! $user) {
+            return false;
+        }
 
         return DB::table('model_has_roles')
             ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
@@ -286,7 +316,9 @@ class PuntoVentaRuta extends Page implements HasTable
     protected static function esChofer(): bool
     {
         $user = Auth::user();
-        if (!$user) return false;
+        if (! $user) {
+            return false;
+        }
 
         return DB::table('model_has_roles')
             ->join('roles', 'model_has_roles.role_id', '=', 'roles.id')
@@ -303,7 +335,9 @@ class PuntoVentaRuta extends Page implements HasTable
     protected static function getViajeActivoUsuario(): ?Viaje
     {
         $user = Auth::user();
-        if (!$user) return null;
+        if (! $user) {
+            return null;
+        }
 
         return Viaje::where('chofer_id', $user->id)
             ->where('estado', Viaje::ESTADO_EN_RUTA)
@@ -328,8 +362,8 @@ class PuntoVentaRuta extends Page implements HasTable
     public function infoViaje(): array
     {
         $viaje = $this->viajeActual;
-        
-        if (!$viaje) {
+
+        if (! $viaje) {
             return [
                 'numero' => 'Sin viaje',
                 'camion' => '-',
@@ -343,7 +377,7 @@ class PuntoVentaRuta extends Page implements HasTable
             'numero' => $viaje->numero_viaje,
             'camion' => $viaje->camion?->placa ?? '-',
             'chofer' => $viaje->chofer?->name ?? '-',
-            'estado' => match($viaje->estado) {
+            'estado' => match ($viaje->estado) {
                 Viaje::ESTADO_CARGANDO => 'Cargando',
                 Viaje::ESTADO_EN_RUTA => 'En Ruta',
                 default => $viaje->estado,
@@ -360,8 +394,8 @@ class PuntoVentaRuta extends Page implements HasTable
         return $table
             ->query(function (): Builder {
                 $viaje = $this->viajeActual;
-                
-                if (!$viaje) {
+
+                if (! $viaje) {
                     return ViajeCarga::query()->whereRaw('1 = 0');
                 }
 
@@ -387,18 +421,21 @@ class PuntoVentaRuta extends Page implements HasTable
                     ->getStateUsing(function ($record) {
                         $disponibleReal = $record->getCantidadDisponible();
                         $enCarrito = $this->getCantidadEnCarrito($record->id);
+
                         return $disponibleReal - $enCarrito;
                     })
                     ->formatStateUsing(function ($state, $record) {
                         $enCarrito = $this->getCantidadEnCarrito($record->id);
                         if ($enCarrito > 0) {
-                            return number_format($state, 2) . ' (🛒' . number_format($enCarrito, 0) . ')';
+                            return number_format($state, 2).' (🛒'.number_format($enCarrito, 0).')';
                         }
+
                         return number_format($state, 2);
                     })
                     ->badge()
                     ->color(function ($record) {
                         $enCarrito = $this->getCantidadEnCarrito($record->id);
+
                         return $enCarrito > 0 ? 'warning' : 'success';
                     }),
 
@@ -417,7 +454,7 @@ class PuntoVentaRuta extends Page implements HasTable
 
                 TextColumn::make('precio_con_isv')
                     ->label('Precio Cliente')
-                    ->getStateUsing(fn ($record) => 'L ' . number_format($record->getPrecioConIsv(), 2))
+                    ->getStateUsing(fn ($record) => 'L '.number_format($record->getPrecioConIsv(), 2))
                     ->weight('bold')
                     ->color('success')
                     ->tooltip('Precio final que paga el cliente (con ISV si aplica)'),
@@ -441,36 +478,61 @@ class PuntoVentaRuta extends Page implements HasTable
                             ->numeric()
                             ->required()
                             ->prefix('L')
+                            // Si el cliente tiene precio bloqueado (Consumidor Final),
+                            // el campo NO se puede editar. dehydrated(true) garantiza
+                            // que el valor llega al action a pesar de estar disabled.
+                            ->disabled(fn ($record) => $this->precioBloqueadoParaProducto($record) !== null)
+                            ->dehydrated(true)
                             ->default(function ($record) {
-                                // Si es Consumidor Final, siempre usar precio sugerido
-                                $cliente = $this->clienteSeleccionado;
-                                if ($cliente && $cliente->rtn === 'CF-0000000000000') {
-                                    return $record->precio_venta_sugerido;
+                                // 1. Si hay precio bloqueado para este cliente+producto, usarlo
+                                $precioBloqueado = $this->precioBloqueadoParaProducto($record);
+                                if ($precioBloqueado !== null) {
+                                    return $precioBloqueado;
                                 }
-                                
-                                // Para clientes registrados, buscar último precio
+
+                                // 2. Para clientes registrados, buscar último precio
                                 $ultimoPrecio = $this->getUltimoPrecioCliente($record->producto_id);
-                                
                                 if ($ultimoPrecio && $ultimoPrecio['precio_sin_isv']) {
                                     return $ultimoPrecio['precio_sin_isv'];
                                 }
-                                
-                                // Si no hay historial, usar precio sugerido
+
+                                // 3. Fallback: precio sugerido del producto en carga
                                 return $record->precio_venta_sugerido;
                             })
                             ->rules([
                                 function ($record) {
                                     return function (string $attribute, $value, \Closure $fail) use ($record) {
-                                        if (!$record) {
+                                        if (! $record) {
                                             return;
                                         }
 
+                                        // Validación de precio bloqueado tiene prioridad:
+                                        // Para Consumidor Final, el precio debe coincidir EXACTAMENTE.
+                                        $cliente = $this->clienteSeleccionado;
+                                        if ($cliente && $cliente->esConsumidorFinal()) {
+                                            $service = app(PrecioVentaService::class);
+                                            $producto = $record->producto;
+
+                                            if (! $producto) {
+                                                return;
+                                            }
+
+                                            if (! $service->precioCoincide($cliente, $producto, (float) $value)) {
+                                                $fail($service->obtenerMensajeBloqueo($cliente, $producto));
+
+                                                return;
+                                            }
+
+                                            // Coincide: no aplicar validaciones de descuento normal
+                                            return;
+                                        }
+
+                                        // Clientes normales: validación de descuento máximo
                                         $minimo = $this->getPrecioMinimoPermitido($record);
                                         $precioMinimo = $minimo['precio_minimo'];
 
                                         if ((float) $value < $precioMinimo) {
-                                            $sugerido = $precioMinimo;
-                                            $fail("El precio mínimo permitido es L " . number_format($precioMinimo, 2) . ". Precio sugerido: L " . number_format($sugerido, 2));
+                                            $fail('El precio mínimo permitido es L '.number_format($precioMinimo, 2));
                                         }
                                     };
                                 },
@@ -478,26 +540,33 @@ class PuntoVentaRuta extends Page implements HasTable
                             ->helperText(function ($record) {
                                 $textos = [];
 
+                                // Si es precio bloqueado, mostrar etiqueta clara
+                                $precioBloqueado = $this->precioBloqueadoParaProducto($record);
+                                if ($precioBloqueado !== null) {
+                                    return '🔒 Precio fijo autorizado: L '.number_format($precioBloqueado, 2)
+                                        .($record->producto && $record->producto->aplica_isv ? ' • +15% ISV' : '');
+                                }
+
                                 // Último precio a este cliente
                                 $ultimoPrecio = $this->getUltimoPrecioCliente($record->producto_id);
                                 if ($ultimoPrecio && $ultimoPrecio['precio_sin_isv']) {
                                     $fecha = $ultimoPrecio['fecha'] ? \Carbon\Carbon::parse($ultimoPrecio['fecha'])->format('d/m/Y') : '';
-                                    $texto = 'Último precio a este cliente: L ' . number_format($ultimoPrecio['precio_sin_isv'], 2);
+                                    $texto = 'Último precio a este cliente: L '.number_format($ultimoPrecio['precio_sin_isv'], 2);
                                     if ($fecha) {
-                                        $texto .= ' (' . $fecha . ')';
+                                        $texto .= ' ('.$fecha.')';
                                     }
                                     $textos[] = $texto;
                                 }
 
                                 // Precio mínimo permitido
                                 $minimo = $this->getPrecioMinimoPermitido($record);
-                                $textos[] = 'Precio mínimo: L ' . number_format($minimo['precio_minimo'], 2);
+                                $textos[] = 'Precio mínimo: L '.number_format($minimo['precio_minimo'], 2);
 
                                 // ISV
                                 if ($record->producto && $record->producto->aplica_isv) {
                                     $textos[] = '+15% ISV';
                                 }
-                                
+
                                 return implode(' • ', $textos);
                             }),
                     ])
@@ -521,11 +590,11 @@ class PuntoVentaRuta extends Page implements HasTable
     {
         // Validar disponibilidad
         $disponible = $carga->getCantidadDisponible();
-        
+
         // Verificar cuánto ya está en el carrito para este producto
         $cantidadEnCarrito = $this->getCantidadEnCarrito($carga->id);
         $indiceExistente = null;
-        
+
         foreach ($this->carrito as $key => $item) {
             if ($item['carga_id'] === $carga->id && $item['precio_base'] == $precioBase) {
                 $indiceExistente = $key;
@@ -539,21 +608,68 @@ class PuntoVentaRuta extends Page implements HasTable
                 ->body("Solo hay {$disponible} unidades disponibles. Ya tienes {$cantidadEnCarrito} en el carrito.")
                 ->danger()
                 ->send();
+
             return;
         }
 
-        // Validar precio mínimo permitido (regla de descuento o costo + 1)
-        $minimo = $this->getPrecioMinimoPermitido($carga);
-        $precioMinimo = $minimo['precio_minimo'];
+        // ============================================================
+        // VALIDACIÓN BACKEND DE PRECIO BLOQUEADO (Consumidor Final)
+        // ============================================================
+        // Defensa en profundidad: aunque el campo del form está disabled
+        // para Consumidor Final, alguien podría manipular el DOM y enviar
+        // un precio distinto. Aquí se rechaza la operación si el precio
+        // no coincide con el autorizado.
+        $cliente = $this->clienteSeleccionado;
 
-        if ($precioBase < $precioMinimo) {
-            Notification::make()
-                ->title('Precio no permitido')
-                ->body("El precio mínimo permitido es L " . number_format($precioMinimo, 2) . ". Precio sugerido: L " . number_format($precioMinimo, 2))
-                ->danger()
-                ->duration(8000)
-                ->send();
-            return;
+        // Inicializamos $precioMinimo FUERA del if/else porque se usa más
+        // abajo al construir el item del carrito. Para Consumidor Final
+        // el "mínimo" conceptual es el precio bloqueado mismo (precio único).
+        $precioMinimo = 0.0;
+
+        if ($cliente && $cliente->esConsumidorFinal()) {
+            $service = app(PrecioVentaService::class);
+            $producto = $carga->producto;
+
+            if (! $producto) {
+                Notification::make()
+                    ->title('Producto inválido')
+                    ->body('No se pudo identificar el producto.')
+                    ->danger()
+                    ->send();
+
+                return;
+            }
+
+            if (! $service->precioCoincide($cliente, $producto, $precioBase)) {
+                Notification::make()
+                    ->title('Precio bloqueado')
+                    ->body($service->obtenerMensajeBloqueo($cliente, $producto))
+                    ->danger()
+                    ->duration(8000)
+                    ->send();
+
+                return;
+            }
+
+            // Cliente con precio bloqueado: el "mínimo" reportado en el
+            // carrito es el mismo precio autorizado (no hay rango variable).
+            $precioBloqueado = $service->obtenerPrecioBloqueado($cliente, $producto);
+            $precioMinimo = $precioBloqueado ?? $precioBase;
+        } else {
+            // Cliente normal: validar precio mínimo permitido (descuento o costo+1)
+            $minimo = $this->getPrecioMinimoPermitido($carga);
+            $precioMinimo = $minimo['precio_minimo'];
+
+            if ($precioBase < $precioMinimo) {
+                Notification::make()
+                    ->title('Precio no permitido')
+                    ->body('El precio mínimo permitido es L '.number_format($precioMinimo, 2))
+                    ->danger()
+                    ->duration(8000)
+                    ->send();
+
+                return;
+            }
         }
 
         // Calcular precio con ISV si aplica
@@ -564,12 +680,13 @@ class PuntoVentaRuta extends Page implements HasTable
         // Si ya existe el producto con el mismo precio, acumular cantidad
         if ($indiceExistente !== null) {
             $this->carrito[$indiceExistente]['cantidad'] += $cantidad;
-            
+
             Notification::make()
                 ->title('Cantidad actualizada')
                 ->body("Ahora tienes {$this->carrito[$indiceExistente]['cantidad']} {$carga->unidad->nombre} de {$carga->producto->nombre}")
                 ->success()
                 ->send();
+
             return;
         }
 
@@ -594,9 +711,9 @@ class PuntoVentaRuta extends Page implements HasTable
 
         $mensaje = "{$cantidad} {$carga->unidad->nombre} de {$carga->producto->nombre}";
         if ($aplicaIsv) {
-            $mensaje .= " (+ ISV = L " . number_format($precioConIsv, 2) . ")";
+            $mensaje .= ' (+ ISV = L '.number_format($precioConIsv, 2).')';
         }
-        
+
         Notification::make()
             ->title('Producto agregado')
             ->body($mensaje)
@@ -612,9 +729,10 @@ class PuntoVentaRuta extends Page implements HasTable
         foreach ($this->carrito as $key => $item) {
             if ($item['uid'] === $uid) {
                 $nuevaCantidad = $item['cantidad'] + $delta;
-                
+
                 if ($nuevaCantidad <= 0) {
                     $this->quitarDelCarrito($uid);
+
                     return;
                 }
 
@@ -623,7 +741,7 @@ class PuntoVentaRuta extends Page implements HasTable
                 if ($carga) {
                     $disponible = $carga->getCantidadDisponible();
                     $otrosEnCarrito = 0;
-                    
+
                     foreach ($this->carrito as $otro) {
                         if ($otro['carga_id'] === $item['carga_id'] && $otro['uid'] !== $uid) {
                             $otrosEnCarrito += $otro['cantidad'];
@@ -635,6 +753,7 @@ class PuntoVentaRuta extends Page implements HasTable
                             ->title('Stock insuficiente')
                             ->danger()
                             ->send();
+
                         return;
                     }
                 }
@@ -650,8 +769,8 @@ class PuntoVentaRuta extends Page implements HasTable
      */
     public function quitarDelCarrito(string $uid): void
     {
-        $this->carrito = array_values(array_filter($this->carrito, fn($item) => $item['uid'] !== $uid));
-        
+        $this->carrito = array_values(array_filter($this->carrito, fn ($item) => $item['uid'] !== $uid));
+
         Notification::make()
             ->title('Producto eliminado')
             ->success()
@@ -677,6 +796,7 @@ class PuntoVentaRuta extends Page implements HasTable
         foreach ($this->carrito as $item) {
             $total += $item['precio_base'] * $item['cantidad'];
         }
+
         return round($total, 2);
     }
 
@@ -690,6 +810,7 @@ class PuntoVentaRuta extends Page implements HasTable
         foreach ($this->carrito as $item) {
             $total += $item['monto_isv'] * $item['cantidad'];
         }
+
         return round($total, 2);
     }
 
@@ -703,6 +824,7 @@ class PuntoVentaRuta extends Page implements HasTable
         foreach ($this->carrito as $item) {
             $total += $item['precio_con_isv'] * $item['cantidad'];
         }
+
         return round($total, 2);
     }
 
@@ -750,15 +872,17 @@ class PuntoVentaRuta extends Page implements HasTable
                 ->body('Agregue productos antes de procesar la venta.')
                 ->danger()
                 ->send();
+
             return;
         }
 
-        if (!$this->cliente_id) {
+        if (! $this->cliente_id) {
             Notification::make()
                 ->title('Error')
                 ->body('Debe seleccionar un cliente.')
                 ->danger()
                 ->send();
+
             return;
         }
 
@@ -784,25 +908,28 @@ class PuntoVentaRuta extends Page implements HasTable
                 ->body('Agregue productos antes de procesar la venta.')
                 ->danger()
                 ->send();
+
             return;
         }
 
         $viaje = $this->viajeActual;
-        if (!$viaje) {
+        if (! $viaje) {
             Notification::make()
                 ->title('Error')
                 ->body('No hay viaje activo.')
                 ->danger()
                 ->send();
+
             return;
         }
 
-        if (!$this->cliente_id) {
+        if (! $this->cliente_id) {
             Notification::make()
                 ->title('Error')
                 ->body('Debe seleccionar un cliente.')
                 ->danger()
                 ->send();
+
             return;
         }
 
@@ -813,15 +940,15 @@ class PuntoVentaRuta extends Page implements HasTable
             $ultimaVenta = ViajeVenta::where('viaje_id', $viaje->id)
                 ->orderBy('id', 'desc')
                 ->first();
-            
+
             $secuencia = 1;
             if ($ultimaVenta && $ultimaVenta->numero_venta) {
                 $partes = explode('-', $ultimaVenta->numero_venta);
                 $ultimoNumero = (int) end($partes);
                 $secuencia = $ultimoNumero + 1;
             }
-            
-            $numeroVenta = 'VR-' . $viaje->id . '-' . str_pad($secuencia, 4, '0', STR_PAD_LEFT);
+
+            $numeroVenta = 'VR-'.$viaje->id.'-'.str_pad($secuencia, 4, '0', STR_PAD_LEFT);
 
             // Crear la venta
             $venta = ViajeVenta::create([
@@ -895,7 +1022,7 @@ class PuntoVentaRuta extends Page implements HasTable
 
             Notification::make()
                 ->title('Venta registrada!')
-                ->body('Total: L ' . number_format($totalVenta, 2) . ' - ' . $venta->numero_venta)
+                ->body('Total: L '.number_format($totalVenta, 2).' - '.$venta->numero_venta)
                 ->success()
                 ->duration(5000)
                 ->send();
@@ -903,7 +1030,7 @@ class PuntoVentaRuta extends Page implements HasTable
         } catch (\Exception $e) {
             DB::rollBack();
             $this->mostrarConfirmacion = false;
-            
+
             Notification::make()
                 ->title('Error al procesar venta')
                 ->body($e->getMessage())
@@ -922,7 +1049,7 @@ class PuntoVentaRuta extends Page implements HasTable
         }
 
         $cliente = Cliente::where('rtn', $this->rtn_cliente)->first();
-        
+
         if ($cliente) {
             $this->cliente_id = $cliente->id;
             $this->nombre_cliente = $cliente->nombre;

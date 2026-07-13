@@ -24,6 +24,7 @@ class ClienteProducto extends Model
         'total_ventas',
         'cantidad_total_vendida',
         'descuento_maximo_override',
+        'precio_autorizado',
     ];
 
     protected $casts = [
@@ -34,6 +35,7 @@ class ClienteProducto extends Model
         'total_ventas' => 'integer',
         'cantidad_total_vendida' => 'decimal:2',
         'descuento_maximo_override' => 'decimal:4',
+        'precio_autorizado' => 'decimal:4',
     ];
 
     // ============================================
@@ -59,7 +61,7 @@ class ClienteProducto extends Model
      */
     public function tieneOverrideDescuento(): bool
     {
-        return !is_null($this->descuento_maximo_override);
+        return ! is_null($this->descuento_maximo_override);
     }
 
     /**
@@ -67,7 +69,7 @@ class ClienteProducto extends Model
      */
     public function getDescuentoOverride(): ?float
     {
-        if (!$this->tieneOverrideDescuento()) {
+        if (! $this->tieneOverrideDescuento()) {
             return null;
         }
 
@@ -103,7 +105,7 @@ class ClienteProducto extends Model
      */
     public function getDiasDesdeUltimaVenta(): ?int
     {
-        if (!$this->fecha_ultima_venta) {
+        if (! $this->fecha_ultima_venta) {
             return null;
         }
 

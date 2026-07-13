@@ -5,10 +5,13 @@ namespace App\Filament\Resources\VentaResource\Pages;
 use App\Filament\Resources\VentaResource;
 use App\Filament\Resources\VentaResource\Widgets\ProductosDisponiblesWidget;
 use App\Models\Cliente;
+use App\Models\Producto;
+use App\Services\PrecioVentaService;
+use Filament\Notifications\Notification;
 use Filament\Resources\Pages\CreateRecord;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\On;
-use Filament\Notifications\Notification;
 
 class CreateVenta extends CreateRecord
 {
@@ -29,7 +32,61 @@ class CreateVenta extends CreateRecord
         $data['estado'] = 'borrador';
         $data['estado_pago'] = 'pendiente';
 
+        // Defensa en profundidad: validar precios bloqueados ANTES de persistir.
+        // El field-level disabled/rules en Filament puede saltarse vía DOM,
+        // así que aquí verificamos cada detalle de venta contra el servicio.
+        $this->validarPreciosBloqueados($data);
+
         return $data;
+    }
+
+    /**
+     * Verifica que para clientes con precio bloqueado (Consumidor Final),
+     * cada detalle de venta tenga el precio_unitario autorizado. Si algún
+     * detalle viola el bloqueo, aborta con ValidationException.
+     *
+     * @throws ValidationException
+     */
+    protected function validarPreciosBloqueados(array $data): void
+    {
+        $clienteId = $data['cliente_id'] ?? null;
+        $detalles = $data['detalles'] ?? [];
+
+        if (! $clienteId || empty($detalles)) {
+            return;
+        }
+
+        $cliente = Cliente::find($clienteId);
+        if (! $cliente || ! $cliente->esConsumidorFinal()) {
+            return; // Sin bloqueo
+        }
+
+        $service = app(PrecioVentaService::class);
+        $errores = [];
+
+        foreach ($detalles as $idx => $detalle) {
+            $productoId = $detalle['producto_id'] ?? null;
+            $precioUnitario = (float) ($detalle['precio_unitario'] ?? 0);
+
+            if (! $productoId) {
+                continue;
+            }
+
+            $producto = Producto::find($productoId);
+            if (! $producto) {
+                continue;
+            }
+
+            if (! $service->precioCoincide($cliente, $producto, $precioUnitario)) {
+                $errores["detalles.{$idx}.precio_unitario"] = [
+                    $service->obtenerMensajeBloqueo($cliente, $producto),
+                ];
+            }
+        }
+
+        if (! empty($errores)) {
+            throw ValidationException::withMessages($errores);
+        }
     }
 
     protected function afterCreate(): void
@@ -94,7 +151,7 @@ class CreateVenta extends CreateRecord
             }
         }
 
-        if (!$encontrado) {
+        if (! $encontrado) {
             // El precio_unitario que viene YA INCLUYE ISV si aplica
             $precioConIsv = floatval($producto['precio_unitario']);
             $aplicaIsv = $producto['aplica_isv'] ?? false;

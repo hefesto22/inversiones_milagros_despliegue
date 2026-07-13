@@ -16,6 +16,22 @@ class Cliente extends Model
 
     protected $table = 'clientes';
 
+    /**
+     * RTN reservado del cliente "Consumidor Final" (venta sin cliente registrado).
+     *
+     * Este cliente se crea automáticamente con firstOrCreate y se identifica
+     * por este RTN único. Para ventas a este cliente, el precio queda BLOQUEADO
+     * (no editable) al valor configurado en cliente_producto.precio_autorizado
+     * o, en su defecto, al precio_venta_maximo del producto.
+     *
+     * Esto cierra el hueco de control donde vendedores podían reportar
+     * precios menores al cobrado y quedarse con la diferencia.
+     *
+     * @see Cliente::esConsumidorFinal()
+     * @see \App\Services\PrecioVentaService::obtenerPrecioBloqueado()
+     */
+    public const RTN_CONSUMIDOR_FINAL = 'CF-0000000000000';
+
     protected $fillable = [
         'nombre',
         'rtn',
@@ -110,6 +126,45 @@ class Cliente extends Model
     }
 
     // ============================================
+    // CONSUMIDOR FINAL
+    // ============================================
+
+    /**
+     * Indica si este cliente es el registro especial "Consumidor Final".
+     *
+     * Identificación por RTN único (CF-0000000000000) para evitar acoplamiento
+     * al ID o al nombre, que podrían variar por entorno. Centralizar aquí
+     * elimina el string mágico hardcodeado en otros archivos.
+     */
+    public function esConsumidorFinal(): bool
+    {
+        return $this->rtn === self::RTN_CONSUMIDOR_FINAL;
+    }
+
+    /**
+     * Obtiene o crea el cliente especial "Consumidor Final".
+     *
+     * Idempotente: gracias al UNIQUE constraint en clientes.rtn, múltiples
+     * llamadas concurrentes resuelven al mismo registro sin duplicados.
+     */
+    public static function consumidorFinal(): self
+    {
+        return self::firstOrCreate(
+            ['rtn' => self::RTN_CONSUMIDOR_FINAL],
+            [
+                'nombre' => 'Consumidor Final',
+                'tipo' => 'minorista',
+                'estado' => true,
+                'dias_credito' => 0,
+                'limite_credito' => 0,
+                'acepta_devolucion' => false,
+                'dias_devolucion' => 0,
+                'porcentaje_devolucion_max' => 0,
+            ]
+        );
+    }
+
+    // ============================================
     // MÉTODOS DE DESCUENTO
     // ============================================
 
@@ -193,6 +248,7 @@ class Cliente extends Model
         }
 
         $deudaProyectada = $this->saldo_pendiente + $montoVenta;
+
         return $deudaProyectada <= $this->limite_credito;
     }
 
@@ -278,11 +334,12 @@ class Cliente extends Model
      */
     public function dentroPlazoDevolución(Venta $venta): bool
     {
-        if (!$this->acepta_devolucion) {
+        if (! $this->acepta_devolucion) {
             return false;
         }
 
         $diasDesdeVenta = $venta->created_at->diffInDays(now());
+
         return $diasDesdeVenta <= $this->dias_devolucion;
     }
 
@@ -299,7 +356,7 @@ class Cliente extends Model
             ->where('producto_id', $productoId)
             ->first();
 
-        if (!$pivot) {
+        if (! $pivot) {
             return null;
         }
 

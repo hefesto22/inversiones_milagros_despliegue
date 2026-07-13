@@ -2,20 +2,21 @@
 
 namespace App\Filament\Resources;
 
+use App\Application\Services\ReempaqueService;
 use App\Filament\Resources\VentaResource\Pages;
 use App\Filament\Resources\VentaResource\RelationManagers;
-use App\Models\Venta;
-use App\Models\Producto;
-use App\Models\Cliente;
 use App\Models\BodegaProducto;
-use App\Application\Services\ReempaqueService;
+use App\Models\Cliente;
+use App\Models\Producto;
+use App\Models\Venta;
+use App\Services\PrecioVentaService;
 use Filament\Forms;
 use Filament\Forms\Form;
+use Filament\Infolists;
+use Filament\Infolists\Infolist;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
-use Filament\Infolists;
-use Filament\Infolists\Infolist;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -39,7 +40,7 @@ class VentaResource extends Resource
         $query = parent::getEloquentQuery();
         $currentUser = Auth::user();
 
-        if (!$currentUser) {
+        if (! $currentUser) {
             return $query->whereRaw('1 = 0');
         }
 
@@ -87,9 +88,9 @@ class VentaResource extends Resource
                                             $cliente = Cliente::find($state);
                                             if ($cliente) {
                                                 if ($cliente->dias_credito > 0) {
-                                                    $set('info_credito', "Límite: L " . number_format($cliente->limite_credito, 2) .
-                                                        " | Disponible: L " . number_format($cliente->getCreditoDisponible(), 2) .
-                                                        " | Deuda: L " . number_format($cliente->saldo_pendiente, 2));
+                                                    $set('info_credito', 'Límite: L '.number_format($cliente->limite_credito, 2).
+                                                        ' | Disponible: L '.number_format($cliente->getCreditoDisponible(), 2).
+                                                        ' | Deuda: L '.number_format($cliente->saldo_pendiente, 2));
                                                 } else {
                                                     $set('info_credito', 'Solo contado');
                                                 }
@@ -111,6 +112,7 @@ class VentaResource extends Resource
                                     ->createOptionUsing(function (array $data): int {
                                         $data['estado'] = true;
                                         $data['created_by'] = Auth::id();
+
                                         return Cliente::create($data)->id;
                                     }),
 
@@ -119,7 +121,7 @@ class VentaResource extends Resource
                                     ->options(function () {
                                         $currentUser = Auth::user();
 
-                                        if (!$currentUser) {
+                                        if (! $currentUser) {
                                             return [];
                                         }
 
@@ -150,7 +152,7 @@ class VentaResource extends Resource
                                     ->default(function () {
                                         $currentUser = Auth::user();
 
-                                        if (!$currentUser) {
+                                        if (! $currentUser) {
                                             return null;
                                         }
 
@@ -161,7 +163,7 @@ class VentaResource extends Resource
                                             ->whereIn('roles.name', ['Super Admin', 'Jefe'])
                                             ->exists();
 
-                                        if (!$esSuperAdminOJefe) {
+                                        if (! $esSuperAdminOJefe) {
                                             return DB::table('bodega_user')
                                                 ->join('bodegas', 'bodega_user.bodega_id', '=', 'bodegas.id')
                                                 ->where('bodega_user.user_id', $currentUser->id)
@@ -174,7 +176,7 @@ class VentaResource extends Resource
                                     ->disabled(function () {
                                         $currentUser = Auth::user();
 
-                                        if (!$currentUser) {
+                                        if (! $currentUser) {
                                             return true;
                                         }
 
@@ -185,13 +187,13 @@ class VentaResource extends Resource
                                             ->whereIn('roles.name', ['Super Admin', 'Jefe'])
                                             ->exists();
 
-                                        return !$esSuperAdminOJefe;
+                                        return ! $esSuperAdminOJefe;
                                     })
                                     ->dehydrated()
                                     ->helperText(function () {
                                         $currentUser = Auth::user();
 
-                                        if (!$currentUser) {
+                                        if (! $currentUser) {
                                             return '';
                                         }
 
@@ -277,14 +279,15 @@ class VentaResource extends Resource
                             ->schema([
                                 Forms\Components\Select::make('producto_id')
                                     ->label('Producto')
-                                    ->options(fn (Forms\Get $get) =>
-                                        Producto::where('activo', true)->pluck('nombre', 'id')
+                                    ->options(fn (Forms\Get $get) => Producto::where('activo', true)->pluck('nombre', 'id')
                                     )
                                     ->required()
                                     ->searchable()
                                     ->live()
                                     ->afterStateUpdated(function ($state, Forms\Set $set, Forms\Get $get) {
-                                        if (!$state) return;
+                                        if (! $state) {
+                                            return;
+                                        }
 
                                         $producto = Producto::find($state);
                                         $bodegaId = $get('../../bodega_id');
@@ -311,6 +314,23 @@ class VentaResource extends Resource
                                                     } else {
                                                         $precioSinIsv = $precioConIsv;
                                                     }
+
+                                                    // Si el cliente es Consumidor Final, el precio queda
+                                                    // FORZADO al valor autorizado por administración. Esto
+                                                    // cierra el hueco donde vendedores reportaban precios
+                                                    // distintos a los cobrados.
+                                                    if ($clienteId) {
+                                                        $cliente = Cliente::find($clienteId);
+                                                        if ($cliente) {
+                                                            $precioBloqueado = app(PrecioVentaService::class)
+                                                                ->obtenerPrecioBloqueado($cliente, $producto);
+
+                                                            if ($precioBloqueado !== null) {
+                                                                $precioSinIsv = $precioBloqueado;
+                                                            }
+                                                        }
+                                                    }
+
                                                     $set('precio_unitario', number_format($precioSinIsv, 2, '.', ''));
 
                                                     // Costo: usar promedio ponderado bodega+lote si usa lotes
@@ -335,7 +355,7 @@ class VentaResource extends Resource
 
                                                 if ($ultimoPrecio && $ultimoPrecio['precio_sin_isv']) {
                                                     $set('precio_anterior', $ultimoPrecio['precio_sin_isv']);
-                                                    $set('info_precio_anterior', 'Última venta: L ' . number_format($ultimoPrecio['precio_sin_isv'], 2));
+                                                    $set('info_precio_anterior', 'Última venta: L '.number_format($ultimoPrecio['precio_sin_isv'], 2));
                                                 } else {
                                                     $set('precio_anterior', null);
                                                     $set('info_precio_anterior', 'Primera venta');
@@ -389,17 +409,19 @@ class VentaResource extends Resource
                                     })
                                     ->helperText(function (Forms\Get $get) {
                                         $stockTotal = floatval($get('stock_disponible') ?? 0);
-                                        if ($stockTotal <= 0) return '';
+                                        if ($stockTotal <= 0) {
+                                            return '';
+                                        }
 
                                         $usaLotes = $get('usa_lotes') ?? false;
-                                        if (!$usaLotes) {
-                                            return 'Stock disponible: ' . intval($stockTotal);
+                                        if (! $usaLotes) {
+                                            return 'Stock disponible: '.intval($stockTotal);
                                         }
 
                                         $enBodega = floatval($get('stock_en_bodega') ?? 0);
                                         $enLote = floatval($get('stock_desde_lote') ?? 0);
 
-                                        return 'Stock: ' . app(ReempaqueService::class)->getStockDisplay($enBodega, $enLote);
+                                        return 'Stock: '.app(ReempaqueService::class)->getStockDisplay($enBodega, $enLote);
                                     }),
 
                                 Forms\Components\TextInput::make('precio_unitario')
@@ -410,10 +432,68 @@ class VentaResource extends Resource
                                     ->minValue(0)
                                     ->step(0.01)
                                     ->live(onBlur: true)
-                                    ->afterStateUpdated(fn (Forms\Get $get, Forms\Set $set) =>
-                                        self::calcularLineaDetalle($get, $set)
+                                    // Para Consumidor Final, el campo se bloquea al valor autorizado.
+                                    // dehydrated(true) garantiza que el valor llega al guardar pese a disabled.
+                                    ->disabled(function (Forms\Get $get) {
+                                        $clienteId = $get('../../cliente_id');
+                                        $productoId = $get('producto_id');
+                                        if (! $clienteId || ! $productoId) {
+                                            return false;
+                                        }
+                                        $cliente = Cliente::find($clienteId);
+                                        $producto = Producto::find($productoId);
+                                        if (! $cliente || ! $producto) {
+                                            return false;
+                                        }
+
+                                        return app(PrecioVentaService::class)
+                                            ->obtenerPrecioBloqueado($cliente, $producto) !== null;
+                                    })
+                                    ->dehydrated(true)
+                                    ->rules([
+                                        function (Forms\Get $get) {
+                                            return function (string $attribute, $value, \Closure $fail) use ($get) {
+                                                $clienteId = $get('../../cliente_id');
+                                                $productoId = $get('producto_id');
+                                                if (! $clienteId || ! $productoId) {
+                                                    return;
+                                                }
+                                                $cliente = Cliente::find($clienteId);
+                                                $producto = Producto::find($productoId);
+                                                if (! $cliente || ! $producto) {
+                                                    return;
+                                                }
+
+                                                if (! $cliente->esConsumidorFinal()) {
+                                                    return; // Sin restricción para otros clientes
+                                                }
+
+                                                $service = app(PrecioVentaService::class);
+                                                if (! $service->precioCoincide($cliente, $producto, (float) $value)) {
+                                                    $fail($service->obtenerMensajeBloqueo($cliente, $producto));
+                                                }
+                                            };
+                                        },
+                                    ])
+                                    ->afterStateUpdated(fn (Forms\Get $get, Forms\Set $set) => self::calcularLineaDetalle($get, $set)
                                     )
-                                    ->helperText(fn (Forms\Get $get) => $get('info_precio_anterior') ?? ''),
+                                    ->helperText(function (Forms\Get $get) {
+                                        $clienteId = $get('../../cliente_id');
+                                        $productoId = $get('producto_id');
+                                        if ($clienteId && $productoId) {
+                                            $cliente = Cliente::find($clienteId);
+                                            $producto = Producto::find($productoId);
+                                            if ($cliente && $producto) {
+                                                $precioBloqueado = app(PrecioVentaService::class)
+                                                    ->obtenerPrecioBloqueado($cliente, $producto);
+                                                if ($precioBloqueado !== null) {
+                                                    return '🔒 Precio fijo autorizado: L '.number_format($precioBloqueado, 2);
+                                                }
+                                            }
+                                        }
+
+                                        return $get('info_precio_anterior') ?? '';
+                                    }),
 
                                 Forms\Components\Hidden::make('precio_anterior')->dehydrated(false),
                                 Forms\Components\Hidden::make('stock_disponible')->dehydrated(false),
@@ -421,8 +501,7 @@ class VentaResource extends Resource
 
                                 Forms\Components\Placeholder::make('isv_display')
                                     ->label('ISV')
-                                    ->content(fn (Forms\Get $get) =>
-                                        'L ' . number_format(($get('total_isv') ?? 0), 2)
+                                    ->content(fn (Forms\Get $get) => 'L '.number_format(($get('total_isv') ?? 0), 2)
                                     ),
 
                                 Forms\Components\Hidden::make('isv_unitario')->default(0),
@@ -432,8 +511,7 @@ class VentaResource extends Resource
 
                                 Forms\Components\Placeholder::make('total_display')
                                     ->label('Total')
-                                    ->content(fn (Forms\Get $get) =>
-                                        'L ' . number_format($get('total_linea') ?? 0, 2)
+                                    ->content(fn (Forms\Get $get) => 'L '.number_format($get('total_linea') ?? 0, 2)
                                     )
                                     ->extraAttributes(['class' => 'font-bold']),
                             ])
@@ -442,20 +520,17 @@ class VentaResource extends Resource
                             ->reorderable(false)
                             ->collapsible()
                             ->cloneable()
-                            ->itemLabel(fn (array $state): ?string =>
-                                isset($state['producto_id'])
+                            ->itemLabel(fn (array $state): ?string => isset($state['producto_id'])
                                     ? Producto::find($state['producto_id'])?->nombre
                                     : 'Nuevo producto'
                             )
                             ->addActionLabel('Agregar producto')
                             ->live()
-                            ->afterStateUpdated(fn (Forms\Get $get, Forms\Set $set) =>
-                                self::calcularTotales($get, $set)
+                            ->afterStateUpdated(fn (Forms\Get $get, Forms\Set $set) => self::calcularTotales($get, $set)
                             )
                             ->deleteAction(
                                 fn (Forms\Components\Actions\Action $action) => $action
-                                    ->after(fn (Forms\Get $get, Forms\Set $set) =>
-                                        self::calcularTotales($get, $set)
+                                    ->after(fn (Forms\Get $get, Forms\Set $set) => self::calcularTotales($get, $set)
                                     )
                             ),
                     ]),
@@ -491,8 +566,7 @@ class VentaResource extends Resource
                                     ->default(0)
                                     ->minValue(0)
                                     ->live(onBlur: true)
-                                    ->afterStateUpdated(fn (Forms\Get $get, Forms\Set $set) =>
-                                        self::calcularTotales($get, $set)
+                                    ->afterStateUpdated(fn (Forms\Get $get, Forms\Set $set) => self::calcularTotales($get, $set)
                                     ),
 
                                 Forms\Components\TextInput::make('total')
@@ -576,8 +650,7 @@ class VentaResource extends Resource
                     ->searchable()
                     ->sortable()
                     ->limit(25)
-                    ->description(fn (Venta $record): string =>
-                        $record->cliente?->telefono ?? ''
+                    ->description(fn (Venta $record): string => $record->cliente?->telefono ?? ''
                     ),
 
                 Tables\Columns\TextColumn::make('bodega.nombre')
@@ -590,8 +663,7 @@ class VentaResource extends Resource
                     ->label('Fecha')
                     ->dateTime('d/m/Y H:i')
                     ->sortable()
-                    ->description(fn (Venta $record): string =>
-                        $record->created_at->diffForHumans()
+                    ->description(fn (Venta $record): string => $record->created_at->diffForHumans()
                     ),
 
                 Tables\Columns\TextColumn::make('tipo_pago')
@@ -638,8 +710,13 @@ class VentaResource extends Resource
                     ->color(fn ($state) => $state > 0 ? 'danger' : 'success')
                     ->weight(fn ($state) => $state > 0 ? 'bold' : 'normal')
                     ->description(function (Venta $record): ?string {
-                        if ($record->saldo_pendiente <= 0) return null;
-                        if ($record->estaVencida()) return 'Vencida';
+                        if ($record->saldo_pendiente <= 0) {
+                            return null;
+                        }
+                        if ($record->estaVencida()) {
+                            return 'Vencida';
+                        }
+
                         return null;
                     }),
 
@@ -741,7 +818,7 @@ class VentaResource extends Resource
                     ->label('Esta semana')
                     ->query(fn (Builder $query) => $query->whereBetween('created_at', [
                         now()->startOfWeek(),
-                        now()->endOfWeek()
+                        now()->endOfWeek(),
                     ])),
 
                 Tables\Filters\Filter::make('este_mes')
@@ -759,11 +836,11 @@ class VentaResource extends Resource
                         ->label('Registrar Pago')
                         ->icon('heroicon-o-banknotes')
                         ->color('success')
-                        ->visible(fn (Venta $record) => $record->saldo_pendiente > 0 && !in_array($record->estado, ['cancelada', 'pagada']))
+                        ->visible(fn (Venta $record) => $record->saldo_pendiente > 0 && ! in_array($record->estado, ['cancelada', 'pagada']))
                         ->form([
                             Forms\Components\Placeholder::make('info_saldo')
                                 ->label('Saldo Pendiente')
-                                ->content(fn (Venta $record) => 'L ' . number_format($record->saldo_pendiente, 2)),
+                                ->content(fn (Venta $record) => 'L '.number_format($record->saldo_pendiente, 2)),
 
                             Forms\Components\TextInput::make('monto')
                                 ->label('Monto a Pagar')
@@ -809,6 +886,7 @@ class VentaResource extends Resource
                                         ->body($e->getMessage())
                                         ->danger()
                                         ->send();
+
                                     return;
                                 }
                             }
@@ -824,7 +902,7 @@ class VentaResource extends Resource
 
                             \Filament\Notifications\Notification::make()
                                 ->title('Pago registrado')
-                                ->body('L ' . number_format($data['monto'], 2))
+                                ->body('L '.number_format($data['monto'], 2))
                                 ->success()
                                 ->send();
                         }),
@@ -835,8 +913,7 @@ class VentaResource extends Resource
                         ->color('danger')
                         ->requiresConfirmation()
                         ->modalHeading('Cancelar Venta')
-                        ->visible(fn (Venta $record) =>
-                            in_array($record->estado, ['borrador', 'completada', 'pendiente_pago']) &&
+                        ->visible(fn (Venta $record) => in_array($record->estado, ['borrador', 'completada', 'pendiente_pago']) &&
                             $record->monto_pagado <= 0
                         )
                         ->form([
@@ -982,6 +1059,7 @@ class VentaResource extends Resource
     public static function getNavigationBadge(): ?string
     {
         $count = static::getModel()::where('estado', 'borrador')->count();
+
         return $count > 0 ? $count : null;
     }
 

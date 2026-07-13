@@ -86,23 +86,24 @@ class PreciosRelationManager extends RelationManager
                             ->where('activo', true)
                             ->first();
 
-                        if (!$regla) {
+                        if (! $regla) {
                             return null;
                         }
 
                         return (float) $regla->descuento_maximo;
                     })
-                    ->formatStateUsing(fn ($state) => $state !== null ? 'L ' . number_format($state, 2) : null)
+                    ->formatStateUsing(fn ($state) => $state !== null ? 'L '.number_format($state, 2) : null)
                     ->placeholder('Sin regla')
                     ->color('gray')
                     ->tooltip(function ($record) {
                         $cliente = $this->getOwnerRecord();
-                        return 'Regla general para tipo: ' . ucfirst($cliente->tipo);
+
+                        return 'Regla general para tipo: '.ucfirst($cliente->tipo);
                     }),
 
                 Tables\Columns\TextColumn::make('descuento_maximo_override')
                     ->label('Descuento Especial')
-                    ->formatStateUsing(fn ($state) => $state !== null ? 'L ' . number_format($state, 2) : null)
+                    ->formatStateUsing(fn ($state) => $state !== null ? 'L '.number_format($state, 2) : null)
                     ->placeholder('Usa regla general')
                     ->color('danger')
                     ->weight('bold')
@@ -114,7 +115,7 @@ class PreciosRelationManager extends RelationManager
                         $cliente = $this->getOwnerRecord();
                         $producto = Producto::find($record->producto_id);
 
-                        if (!$producto) {
+                        if (! $producto) {
                             return null;
                         }
 
@@ -128,10 +129,22 @@ class PreciosRelationManager extends RelationManager
 
                         return $resultado['precio_minimo'];
                     })
-                    ->formatStateUsing(fn ($state) => $state !== null ? 'L ' . number_format($state, 2) : null)
+                    ->formatStateUsing(fn ($state) => $state !== null ? 'L '.number_format($state, 2) : null)
                     ->placeholder('Sin restricción')
                     ->color('success')
                     ->weight('bold'),
+
+                // ==========================================================
+                // COLUMNA PRECIO AUTORIZADO (solo visible para Consumidor Final)
+                // ==========================================================
+                Tables\Columns\TextColumn::make('precio_autorizado')
+                    ->label('🔒 Precio Autorizado')
+                    ->formatStateUsing(fn ($state) => $state !== null ? 'L '.number_format($state, 2) : null)
+                    ->placeholder('Usa precio del producto')
+                    ->color('warning')
+                    ->weight('bold')
+                    ->tooltip('Precio fijo autorizado por Admin. Solo aplica a Consumidor Final.')
+                    ->visible(fn () => $this->getOwnerRecord()->esConsumidorFinal()),
             ])
             ->filters([
                 Tables\Filters\Filter::make('con_ventas_recientes')
@@ -148,10 +161,73 @@ class PreciosRelationManager extends RelationManager
                     ->toggle(),
             ])
             ->headerActions([
+                // ==========================================================
+                // ACCIÓN: Configurar Precio Autorizado (solo Consumidor Final)
+                // ==========================================================
+                Tables\Actions\Action::make('configurar_precio_autorizado')
+                    ->label('Configurar Precio Autorizado')
+                    ->icon('heroicon-o-lock-closed')
+                    ->color('warning')
+                    ->visible(fn () => $this->getOwnerRecord()->esConsumidorFinal()
+                        && auth()->user()?->can('update_cliente::precio')
+                    )
+                    ->form([
+                        Forms\Components\Select::make('producto_id')
+                            ->label('Producto')
+                            ->options(fn () => Producto::where('activo', true)->orderBy('nombre')->pluck('nombre', 'id'))
+                            ->required()
+                            ->searchable()
+                            ->preload()
+                            ->live()
+                            ->afterStateUpdated(function ($state, Forms\Set $set) {
+                                if ($state) {
+                                    $producto = Producto::find($state);
+                                    if ($producto && $producto->precio_venta_maximo > 0) {
+                                        $set('info_precio_default', 'Precio default actual: L '.number_format($producto->precio_venta_maximo, 2));
+                                    } else {
+                                        $set('info_precio_default', 'Producto sin precio_venta_maximo configurado — debe configurarse antes de vender a Consumidor Final.');
+                                    }
+                                }
+                            }),
+
+                        Forms\Components\Placeholder::make('info_precio_default')
+                            ->label('')
+                            ->content(fn (Forms\Get $get) => $get('info_precio_default') ?? '')
+                            ->visible(fn (Forms\Get $get) => ! empty($get('info_precio_default'))),
+
+                        Forms\Components\TextInput::make('precio_autorizado')
+                            ->label('Precio Autorizado (sin ISV)')
+                            ->prefix('L')
+                            ->numeric()
+                            ->required()
+                            ->minValue(0.01)
+                            ->step(0.0001)
+                            ->helperText('Este valor reemplazará el precio_venta_maximo del producto SOLO para Consumidor Final.'),
+                    ])
+                    ->action(function (array $data) {
+                        ClienteProducto::updateOrCreate(
+                            [
+                                'cliente_id' => $this->getOwnerRecord()->id,
+                                'producto_id' => $data['producto_id'],
+                            ],
+                            [
+                                'precio_autorizado' => $data['precio_autorizado'],
+                            ]
+                        );
+
+                        \Filament\Notifications\Notification::make()
+                            ->title('Precio autorizado configurado')
+                            ->body('Las próximas ventas a Consumidor Final usarán L '.number_format($data['precio_autorizado'], 2).' para este producto.')
+                            ->success()
+                            ->send();
+                    }),
+
                 Tables\Actions\Action::make('agregar_descuento_especial')
                     ->label('Agregar Descuento Especial')
                     ->icon('heroicon-o-tag')
                     ->color('warning')
+                    // Ocultar para Consumidor Final: ese cliente usa precio_autorizado.
+                    ->visible(fn () => ! $this->getOwnerRecord()->esConsumidorFinal())
                     ->form([
                         Forms\Components\Select::make('producto_id')
                             ->label('Producto')
@@ -170,7 +246,7 @@ class PreciosRelationManager extends RelationManager
                                     $cliente = $this->getOwnerRecord();
 
                                     if ($producto && $producto->precio_venta_maximo > 0) {
-                                        $set('info_precio', 'Precio de venta: L ' . number_format($producto->precio_venta_maximo, 2));
+                                        $set('info_precio', 'Precio de venta: L '.number_format($producto->precio_venta_maximo, 2));
 
                                         // Mostrar regla por tipo si existe
                                         $regla = ProductoPrecioTipo::where('producto_id', $state)
@@ -179,9 +255,9 @@ class PreciosRelationManager extends RelationManager
                                             ->first();
 
                                         if ($regla) {
-                                            $set('info_regla', 'Regla por tipo (' . ucfirst($cliente->tipo) . '): Descuento máx. L ' . number_format($regla->descuento_maximo, 2));
+                                            $set('info_regla', 'Regla por tipo ('.ucfirst($cliente->tipo).'): Descuento máx. L '.number_format($regla->descuento_maximo, 2));
                                         } else {
-                                            $set('info_regla', 'Sin regla por tipo configurada para ' . ucfirst($cliente->tipo));
+                                            $set('info_regla', 'Sin regla por tipo configurada para '.ucfirst($cliente->tipo));
                                         }
                                     } else {
                                         $set('info_precio', 'Sin precio de venta configurado');
@@ -193,12 +269,12 @@ class PreciosRelationManager extends RelationManager
                         Forms\Components\Placeholder::make('info_precio')
                             ->label('')
                             ->content(fn (Forms\Get $get) => $get('info_precio') ?? '')
-                            ->visible(fn (Forms\Get $get) => !empty($get('info_precio'))),
+                            ->visible(fn (Forms\Get $get) => ! empty($get('info_precio'))),
 
                         Forms\Components\Placeholder::make('info_regla')
                             ->label('')
                             ->content(fn (Forms\Get $get) => $get('info_regla') ?? '')
-                            ->visible(fn (Forms\Get $get) => !empty($get('info_regla'))),
+                            ->visible(fn (Forms\Get $get) => ! empty($get('info_regla'))),
 
                         Forms\Components\TextInput::make('descuento_maximo_override')
                             ->label('Descuento Máximo Especial (L)')
@@ -239,11 +315,72 @@ class PreciosRelationManager extends RelationManager
                     }),
             ])
             ->actions([
+                // ==========================================================
+                // ACCIÓN: Editar Precio Autorizado (solo Consumidor Final)
+                // ==========================================================
+                Tables\Actions\Action::make('editar_precio_autorizado')
+                    ->label('Precio Autorizado')
+                    ->icon('heroicon-o-lock-closed')
+                    ->color('warning')
+                    ->size('sm')
+                    ->visible(fn () => $this->getOwnerRecord()->esConsumidorFinal()
+                        && auth()->user()?->can('update_cliente::precio')
+                    )
+                    ->form([
+                        Forms\Components\Placeholder::make('info_producto')
+                            ->label('Producto')
+                            ->content(fn ($record) => $record->producto->nombre ?? 'N/A'),
+
+                        Forms\Components\Placeholder::make('info_precio_default')
+                            ->label('Precio default (sin autorización)')
+                            ->content(function ($record) {
+                                $producto = $record->producto;
+                                if ($producto && $producto->precio_venta_maximo > 0) {
+                                    return 'L '.number_format($producto->precio_venta_maximo, 2);
+                                }
+
+                                return 'Sin precio_venta_maximo configurado';
+                            }),
+
+                        Forms\Components\TextInput::make('precio_autorizado')
+                            ->label('Precio Autorizado (sin ISV)')
+                            ->prefix('L')
+                            ->numeric()
+                            ->minValue(0)
+                            ->step(0.0001)
+                            ->default(fn ($record) => $record->precio_autorizado)
+                            ->helperText('Dejar vacío o 0 para volver a usar el precio_venta_maximo del producto.'),
+                    ])
+                    ->action(function ($record, array $data) {
+                        $precio = $data['precio_autorizado'] ?? null;
+
+                        if (empty($precio) || $precio <= 0) {
+                            $record->update(['precio_autorizado' => null]);
+
+                            \Filament\Notifications\Notification::make()
+                                ->title('Precio autorizado removido')
+                                ->body('Se volverá a usar el precio_venta_maximo del producto.')
+                                ->success()
+                                ->send();
+                        } else {
+                            $record->update(['precio_autorizado' => $precio]);
+
+                            \Filament\Notifications\Notification::make()
+                                ->title('Precio autorizado actualizado')
+                                ->body('Nuevo precio para Consumidor Final: L '.number_format($precio, 2))
+                                ->success()
+                                ->send();
+                        }
+                    }),
+
                 Tables\Actions\Action::make('editar_descuento')
                     ->label('Descuento')
                     ->icon('heroicon-o-pencil-square')
                     ->color('warning')
                     ->size('sm')
+                    // Ocultar para Consumidor Final: ese cliente usa precio_autorizado,
+                    // no reglas de descuento variable. Mantener limpia la UI.
+                    ->visible(fn () => ! $this->getOwnerRecord()->esConsumidorFinal())
                     ->form([
                         Forms\Components\Placeholder::make('info_producto')
                             ->label('Producto')
@@ -254,8 +391,9 @@ class PreciosRelationManager extends RelationManager
                             ->content(function ($record) {
                                 $producto = $record->producto;
                                 if ($producto && $producto->precio_venta_maximo > 0) {
-                                    return 'L ' . number_format($producto->precio_venta_maximo, 2);
+                                    return 'L '.number_format($producto->precio_venta_maximo, 2);
                                 }
+
                                 return 'Sin precio configurado';
                             }),
 
@@ -269,10 +407,10 @@ class PreciosRelationManager extends RelationManager
                                     ->first();
 
                                 if ($regla) {
-                                    return 'Descuento máx. L ' . number_format($regla->descuento_maximo, 2) . ' (tipo: ' . ucfirst($cliente->tipo) . ')';
+                                    return 'Descuento máx. L '.number_format($regla->descuento_maximo, 2).' (tipo: '.ucfirst($cliente->tipo).')';
                                 }
 
-                                return 'Sin regla para tipo ' . ucfirst($cliente->tipo);
+                                return 'Sin regla para tipo '.ucfirst($cliente->tipo);
                             }),
 
                         Forms\Components\TextInput::make('descuento_maximo_override')
@@ -302,7 +440,7 @@ class PreciosRelationManager extends RelationManager
 
                             \Filament\Notifications\Notification::make()
                                 ->title('Descuento especial actualizado')
-                                ->body('Descuento máximo: L ' . number_format($override, 2))
+                                ->body('Descuento máximo: L '.number_format($override, 2))
                                 ->success()
                                 ->send();
                         }
@@ -313,7 +451,9 @@ class PreciosRelationManager extends RelationManager
                     ->icon('heroicon-o-x-circle')
                     ->color('danger')
                     ->size('sm')
-                    ->visible(fn ($record) => $record->descuento_maximo_override !== null)
+                    ->visible(fn ($record) => $record->descuento_maximo_override !== null
+                        && ! $this->getOwnerRecord()->esConsumidorFinal()
+                    )
                     ->requiresConfirmation()
                     ->modalHeading('Quitar Descuento Especial')
                     ->modalDescription('Se eliminará el descuento especial y se usará la regla general por tipo de cliente.')
