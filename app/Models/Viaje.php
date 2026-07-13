@@ -6,17 +6,12 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
-use App\Models\ViajeVenta;
-use App\Models\Traits\CalculaComisionesViaje;
 
 class Viaje extends Model
 {
     use HasFactory;
-
 
     protected $table = 'viajes';
 
@@ -74,15 +69,22 @@ class Viaje extends Model
 
     // Estados del viaje
     public const ESTADO_PLANIFICADO = 'planificado';
-    public const ESTADO_CARGANDO = 'cargando';
-    public const ESTADO_EN_RUTA = 'en_ruta';
-    public const ESTADO_REGRESANDO = 'regresando';
-    public const ESTADO_DESCARGANDO = 'descargando';
-    public const ESTADO_LIQUIDANDO = 'liquidando';
-    public const ESTADO_CERRADO = 'cerrado';
-    public const ESTADO_CANCELADO = 'cancelado';
-    public const ESTADO_RECARGANDO = 'recargando';
 
+    public const ESTADO_CARGANDO = 'cargando';
+
+    public const ESTADO_EN_RUTA = 'en_ruta';
+
+    public const ESTADO_REGRESANDO = 'regresando';
+
+    public const ESTADO_DESCARGANDO = 'descargando';
+
+    public const ESTADO_LIQUIDANDO = 'liquidando';
+
+    public const ESTADO_CERRADO = 'cerrado';
+
+    public const ESTADO_CANCELADO = 'cancelado';
+
+    public const ESTADO_RECARGANDO = 'recargando';
 
     // ============================================
     // RELACIONES
@@ -172,11 +174,11 @@ class Viaje extends Model
     {
         $this->estado = $nuevoEstado;
 
-        if ($nuevoEstado === self::ESTADO_EN_RUTA && !$this->fecha_salida) {
+        if ($nuevoEstado === self::ESTADO_EN_RUTA && ! $this->fecha_salida) {
             $this->fecha_salida = now();
         }
 
-        if ($nuevoEstado === self::ESTADO_REGRESANDO && !$this->fecha_regreso) {
+        if ($nuevoEstado === self::ESTADO_REGRESANDO && ! $this->fecha_regreso) {
             $this->fecha_regreso = now();
         }
 
@@ -212,6 +214,7 @@ class Viaje extends Model
     {
         $this->cambiarEstado(self::ESTADO_LIQUIDANDO);
     }
+
     public function iniciarRecarga(): void
     {
         $this->cambiarEstado(self::ESTADO_RECARGANDO);
@@ -245,7 +248,7 @@ class Viaje extends Model
     {
         $cuenta = $this->chofer?->cuenta;
 
-        if (!$cuenta) {
+        if (! $cuenta) {
             return;
         }
 
@@ -294,7 +297,7 @@ class Viaje extends Model
 
     /**
      * Cancelar viaje y devolver stock a bodega
-     * 
+     *
      * 🎯 FIX INTEGRAL:
      * - Valida que no tenga ventas activas (confirmadas/completadas)
      * - Separa correctamente unidades de bodega vs reempaque
@@ -310,8 +313,8 @@ class Viaje extends Model
 
         if ($ventasActivas > 0) {
             throw new \Exception(
-                "No se puede cancelar el viaje. Tiene {$ventasActivas} venta(s) activa(s). " .
-                    "Cancele todas las ventas primero."
+                "No se puede cancelar el viaje. Tiene {$ventasActivas} venta(s) activa(s). ".
+                    'Cancele todas las ventas primero.'
             );
         }
 
@@ -337,7 +340,7 @@ class Viaje extends Model
                 if ($cantidadDeLote > 0 && $carga->reempaque_id) {
                     $reempaque = Reempaque::find($carga->reempaque_id);
 
-                    if ($reempaque && !$reempaque->estaInactivo()) {
+                    if ($reempaque && ! $reempaque->estaInactivo()) {
                         $reempaqueService->revertirReempaqueParcial(
                             $carga->reempaque_id,
                             $carga->producto_id,
@@ -357,10 +360,10 @@ class Viaje extends Model
 
                     if ($bodegaProducto) {
                         $reempaqueService->devolverStockABodega($bodegaProducto, $cantidadDeBodega, $costoOriginal, [
-                            'kardex_tipo'            => 'retorno_viaje',
-                            'kardex_descripcion'     => "Cancelación de viaje #{$this->id}",
+                            'kardex_tipo' => 'retorno_viaje',
+                            'kardex_descripcion' => "Cancelación de viaje #{$this->id}",
                             'kardex_referencia_type' => $this->getMorphClass(),
-                            'kardex_referencia_id'   => $this->id,
+                            'kardex_referencia_id' => $this->id,
                         ]);
                     } else {
                         $bp = BodegaProducto::create([
@@ -380,8 +383,8 @@ class Viaje extends Model
             // Agregar motivo de cancelación
             if ($motivo) {
                 $this->observaciones = $this->observaciones
-                    ? $this->observaciones . "\n[CANCELADO] " . $motivo
-                    : "[CANCELADO] " . $motivo;
+                    ? $this->observaciones."\n[CANCELADO] ".$motivo
+                    : '[CANCELADO] '.$motivo;
             }
 
             // Cambiar estado
@@ -390,148 +393,24 @@ class Viaje extends Model
     }
 
     /**
-     * Procesar reintegro de descargas al cerrar el viaje
+     * Procesar reintegro de descargas al cerrar el viaje.
      *
-     * 🎯 FIX: Usa costo_bodega_original de la carga correspondiente
-     * para que el promedio ponderado en bodega sea correcto
+     * Refactor 2026-07-12: delegado a ReintegroDescargasService — único punto
+     * de verdad del destino del retorno (también usado por la acción manual
+     * de DescargasRelationManager). Regla de negocio:
+     *
+     *   - Producto BASE 1x30 (categoría auto-referenciada) → regresa AL LOTE
+     *     (reversión del reempaque automático, costo según WAC actual).
+     *   - OPOA/derivados y productos sin lote → bodega_producto (como antes).
+     *   - Fracciones (sueltos) → lote único del producto.
+     *
+     * El servicio respeta y marca viaje_descargas.procesado_reingreso, por lo
+     * que un reingreso manual previo ya no se duplica al cerrar.
      */
     protected function procesarReintegroDescargas(): void
     {
-        // Obtener descargas que deben reingresar al stock
-        $descargas = $this->descargas()
-            ->where('reingresa_stock', true)
-            ->with('producto')
-            ->get();
-
-        foreach ($descargas as $descarga) {
-            // Solo reingresar productos en buen estado
-            if (!$descarga->estaEnBuenEstado()) {
-                continue;
-            }
-
-            $producto = $descarga->producto;
-            $cantidadTotal = $descarga->cantidad;
-            $unidadesPorBulto = $producto->unidades_por_bulto ?? 1;
-
-            // 🎯 FIX: Obtener el costo correcto desde la carga original (costo_bodega_original)
-            $carga = $this->cargas()->where('producto_id', $descarga->producto_id)->first();
-            $costoParaReintegro = $carga
-                ? floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? $descarga->costo_unitario)
-                : $descarga->costo_unitario;
-
-            // Si el producto no tiene subunidades, todo va directo a bodega_producto
-            if ($unidadesPorBulto <= 1) {
-                $this->reintegrarABodegaProducto(
-                    $descarga->producto_id,
-                    $cantidadTotal,
-                    $costoParaReintegro
-                );
-                continue;
-            }
-
-            // SEPARAR UNIDADES COMPLETAS DE SUELTOS
-            $unidadesCompletas = floor($cantidadTotal);
-            $fraccion = $cantidadTotal - $unidadesCompletas;
-
-            // Reingresar unidades completas a bodega_producto
-            if ($unidadesCompletas > 0) {
-                $this->reintegrarABodegaProducto(
-                    $descarga->producto_id,
-                    $unidadesCompletas,
-                    $costoParaReintegro
-                );
-            }
-
-            // Reingresar fracción (sueltos) al lote único del producto/bodega
-            if ($fraccion > 0.0001) {
-                $huevosSueltos = round($fraccion * $unidadesPorBulto);
-
-                if ($huevosSueltos > 0) {
-                    $this->reintegrarALoteSueltos(
-                        $descarga->producto_id,
-                        $huevosSueltos,
-                        $unidadesPorBulto
-                    );
-                }
-            }
-        }
-    }
-
-    /**
-     * Reingresar stock a bodega_producto (unidades completas)
-     * Usa actualizarCostoPromedio() que ya hace promedio ponderado correcto
-     */
-    protected function reintegrarABodegaProducto(int $productoId, float $cantidad, float $costoUnitario): void
-    {
-        $bodegaProducto = BodegaProducto::firstOrCreate(
-            [
-                'bodega_id' => $this->bodega_origen_id,
-                'producto_id' => $productoId,
-            ],
-            [
-                'stock' => 0,
-                'stock_reservado' => 0,
-                'stock_minimo' => 0,
-                'costo_promedio_actual' => $costoUnitario,
-                'activo' => true,
-            ]
-        );
-
-        // actualizarCostoPromedio ya hace promedio ponderado correcto con 4 decimales
-        $bodegaProducto->actualizarCostoPromedio($cantidad, $costoUnitario, [
-            'kardex_tipo'            => 'retorno_viaje',
-            'kardex_descripcion'     => "Retorno de viaje #{$this->id}",
-            'kardex_referencia_type' => $this->getMorphClass(),
-            'kardex_referencia_id'   => $this->id,
-        ]);
-    }
-
-    /**
-     * Reingresar huevos sueltos al LOTE ÚNICO del producto en esta bodega.
-     *
-     * Refactor 2026-05-18: migrado del patrón obsoleto "SUELTOS-Pxx-Bxx" al
-     * patrón oficial "Lote Único" (LU-B*-P*) que introdujo la migración
-     * 2026_02_02_011619_modificar_lotes_para_lote_unico_y_crear_mermas.
-     *
-     * El método anterior creaba lotes "SUELTOS-*" y violaba la constraint
-     * unique(producto_id, bodega_id, estado) en `lote_unico_producto_bodega`
-     * cuando ya existía un lote único disponible para esa combinación.
-     *
-     * Ahora delega en helpers oficiales que el resto del sistema ya usa
-     * (compras, reempaques, ventas):
-     *   - Lote::obtenerOCrearLoteUnico() → lock pesimista + reset si agotado
-     *   - Lote::devolverHuevos()         → suma remanente y dispara
-     *                                       DevolucionAplicadaAlLote para
-     *                                       que el WAC Perpetuo lo registre.
-     *
-     * Nota sobre el costo unitario:
-     *   La política vigente del sistema (ver docblock de DevolucionAplicadaAlLote)
-     *   es reintegrar al costo unitario actual del lote, no preservar el
-     *   costo original del huevo. El parámetro $costoUnitarioBulto se removió
-     *   porque ya no participa en el cálculo.
-     */
-    protected function reintegrarALoteSueltos(
-        int $productoId,
-        int $cantidadHuevos,
-        int $unidadesPorBulto
-    ): void {
-        $lote = Lote::obtenerOCrearLoteUnico(
-            productoId: $productoId,
-            bodegaId: $this->bodega_origen_id,
-            huevosPorCarton: $unidadesPorBulto,
-            createdBy: Auth::id(),
-        );
-
-        $lote->devolverHuevos(
-            cantidadHuevos: (float) $cantidadHuevos,
-            huevosRegaloDevueltos: 0.0,
-            contexto: [
-                'kardex_tipo'            => 'retorno_viaje',
-                'kardex_descripcion'     => "Retorno de viaje #{$this->id} — sueltos al lote único",
-                'kardex_referencia_type' => $this->getMorphClass(),
-                'kardex_referencia_id'   => $this->id,
-            ],
-        );
+        app(\App\Services\Viaje\ReintegroDescargasService::class)
+            ->procesarReintegrosPendientes($this);
     }
 
     // ============================================
@@ -557,12 +436,12 @@ class Viaje extends Model
             return false;
         }
 
-        return !$this->tieneVentasActivas();
+        return ! $this->tieneVentasActivas();
     }
 
     public function estaActivo(): bool
     {
-        return !in_array($this->estado, [self::ESTADO_CERRADO, self::ESTADO_CANCELADO]);
+        return ! in_array($this->estado, [self::ESTADO_CERRADO, self::ESTADO_CANCELADO]);
     }
 
     public function estaCerrado(): bool
@@ -654,7 +533,7 @@ class Viaje extends Model
     {
         $producto = $detalle->producto;
 
-        if (!$producto) {
+        if (! $producto) {
             return;
         }
 
@@ -788,7 +667,7 @@ class Viaje extends Model
 
     public function getKilometrosRecorridos(): ?int
     {
-        if (!$this->km_salida || !$this->km_regreso) {
+        if (! $this->km_salida || ! $this->km_regreso) {
             return null;
         }
 
@@ -867,11 +746,11 @@ class Viaje extends Model
         parent::boot();
 
         static::creating(function ($viaje) {
-            if (!$viaje->numero_viaje) {
+            if (! $viaje->numero_viaje) {
                 $viaje->numero_viaje = self::generarNumeroViaje($viaje);
             }
 
-            if (!$viaje->estado) {
+            if (! $viaje->estado) {
                 $viaje->estado = self::ESTADO_PLANIFICADO;
             }
         });
@@ -892,6 +771,6 @@ class Viaje extends Model
             $numero = 1;
         }
 
-        return "VJ-{$camionCodigo}-{$fecha}-" . str_pad($numero, 3, '0', STR_PAD_LEFT);
+        return "VJ-{$camionCodigo}-{$fecha}-".str_pad($numero, 3, '0', STR_PAD_LEFT);
     }
 }

@@ -21,6 +21,7 @@ class ViajeDescarga extends Model
         'subtotal_costo',
         'estado_producto',
         'reingresa_stock',
+        'procesado_reingreso',
         'cobrar_chofer',
         'monto_cobrar',
         'observaciones',
@@ -31,13 +32,16 @@ class ViajeDescarga extends Model
         'costo_unitario' => 'decimal:4',
         'subtotal_costo' => 'decimal:4',
         'reingresa_stock' => 'boolean',
+        'procesado_reingreso' => 'boolean',
         'cobrar_chofer' => 'boolean',
         'monto_cobrar' => 'decimal:2',
     ];
 
     // Estados del producto
     public const ESTADO_BUENO = 'bueno';
+
     public const ESTADO_DANADO = 'danado';
+
     public const ESTADO_VENCIDO = 'vencido';
 
     // ============================================

@@ -62,8 +62,8 @@ class ComisionPrecioCeroTest extends TestCase
 
         $n = str_pad((string) ++self::$contadorCamion, 6, '0', STR_PAD_LEFT);
         $camion = Camion::create([
-            'codigo' => 'CAM-C-' . $n,
-            'placa' => 'TSC-' . $n,
+            'codigo' => 'CAM-C-'.$n,
+            'placa' => 'TSC-'.$n,
             'bodega_id' => $bodega->id,
             'activo' => true,
             'created_by' => $admin->id,
@@ -97,7 +97,7 @@ class ComisionPrecioCeroTest extends TestCase
         $venta = ViajeVenta::create([
             'viaje_id' => $viaje->id,
             'cliente_id' => null,
-            'numero_venta' => ViajeVenta::withTrashed()->where('viaje_id', $viaje->id)->count() + 1 . "-T-{$viaje->id}",
+            'numero_venta' => ViajeVenta::withTrashed()->where('viaje_id', $viaje->id)->count() + 1 ."-T-{$viaje->id}",
             'fecha_venta' => now(),
             'tipo_pago' => 'contado',
             'estado' => 'completada',

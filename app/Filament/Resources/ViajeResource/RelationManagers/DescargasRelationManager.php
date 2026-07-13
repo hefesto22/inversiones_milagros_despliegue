@@ -2,19 +2,15 @@
 
 namespace App\Filament\Resources\ViajeResource\RelationManagers;
 
-use App\Models\Lote;
 use App\Models\Producto;
-use App\Models\ViajeCarga;
 use App\Models\ViajeDescarga;
-use App\Models\BodegaProducto;
+use App\Services\Viaje\ReintegroDescargasService;
 use Filament\Forms;
 use Filament\Forms\Form;
+use Filament\Notifications\Notification;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Tables;
 use Filament\Tables\Table;
-use Filament\Notifications\Notification;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\DB;
 
 class DescargasRelationManager extends RelationManager
 {
@@ -49,8 +45,9 @@ class DescargasRelationManager extends RelationManager
                                             ->get()
                                             ->mapWithKeys(function ($carga) {
                                                 $disponible = $carga->getCantidadDisponible();
+
                                                 return [
-                                                    $carga->producto_id => $carga->producto->nombre . " (Disp: {$disponible})"
+                                                    $carga->producto_id => $carga->producto->nombre." (Disp: {$disponible})",
                                                 ];
                                             });
                                     })
@@ -73,7 +70,7 @@ class DescargasRelationManager extends RelationManager
                                                 // Verificar si tiene unidades por bulto (para detectar fracciones)
                                                 $unidadesPorBulto = $producto->unidades_por_bulto ?? null;
                                                 $set('unidades_por_bulto', $unidadesPorBulto);
-                                                $set('tiene_subunidades', !empty($unidadesPorBulto) && $unidadesPorBulto > 1);
+                                                $set('tiene_subunidades', ! empty($unidadesPorBulto) && $unidadesPorBulto > 1);
 
                                                 // Calcular subtotal
                                                 $cantidad = $carga->getCantidadDisponible();
@@ -125,8 +122,8 @@ class DescargasRelationManager extends RelationManager
                                 // Placeholder para mostrar información de fracción
                                 Forms\Components\Placeholder::make('info_fraccion')
                                     ->label('Distribución')
-                                    ->content(fn(Forms\Get $get) => $get('info_fraccion') ?? '-')
-                                    ->visible(fn(Forms\Get $get) => $get('tiene_subunidades') && $get('cantidad'))
+                                    ->content(fn (Forms\Get $get) => $get('info_fraccion') ?? '-')
+                                    ->visible(fn (Forms\Get $get) => $get('tiene_subunidades') && $get('cantidad'))
                                     ->columnSpanFull(),
 
                                 Forms\Components\Select::make('estado_producto')
@@ -178,7 +175,7 @@ class DescargasRelationManager extends RelationManager
                             ->label('Monto a Cobrar')
                             ->numeric()
                             ->prefix('L')
-                            ->visible(fn(Forms\Get $get) => $get('cobrar_chofer'))
+                            ->visible(fn (Forms\Get $get) => $get('cobrar_chofer'))
                             ->helperText('Por defecto es el costo total'),
                     ])
                     ->collapsed()
@@ -210,7 +207,8 @@ class DescargasRelationManager extends RelationManager
 
                             if ($fraccion > 0.0001) {
                                 $unidadesSueltas = round($fraccion * $unidadesPorBulto);
-                                return number_format($state, 4) . " ({$unidadesSueltas} sueltos)";
+
+                                return number_format($state, 4)." ({$unidadesSueltas} sueltos)";
                             }
                         }
 
@@ -227,13 +225,13 @@ class DescargasRelationManager extends RelationManager
                 Tables\Columns\TextColumn::make('estado_producto')
                     ->label('Estado')
                     ->badge()
-                    ->formatStateUsing(fn($state) => match ($state) {
+                    ->formatStateUsing(fn ($state) => match ($state) {
                         'bueno' => 'Bueno',
                         'danado' => 'Dañado',
                         'vencido' => 'Vencido',
                         default => $state,
                     })
-                    ->color(fn($state) => match ($state) {
+                    ->color(fn ($state) => match ($state) {
                         'bueno' => 'success',
                         'danado' => 'warning',
                         'vencido' => 'danger',
@@ -282,7 +280,7 @@ class DescargasRelationManager extends RelationManager
                 Tables\Actions\CreateAction::make()
                     ->label('Agregar Descarga Manual')
                     ->icon('heroicon-o-plus')
-                    ->visible(fn() => in_array($this->getOwnerRecord()->estado, ['regresando', 'descargando', 'liquidando']))
+                    ->visible(fn () => in_array($this->getOwnerRecord()->estado, ['regresando', 'descargando', 'liquidando']))
                     ->mutateFormDataUsing(function (array $data): array {
                         // Limpiar campos temporales
                         unset($data['info_fraccion']);
@@ -292,6 +290,7 @@ class DescargasRelationManager extends RelationManager
                         if ($data['cobrar_chofer'] && empty($data['monto_cobrar'])) {
                             $data['monto_cobrar'] = $data['subtotal_costo'];
                         }
+
                         return $data;
                     })
                     ->before(function (array $data) {
@@ -299,7 +298,7 @@ class DescargasRelationManager extends RelationManager
                             ->where('producto_id', $data['producto_id'])
                             ->first();
 
-                        if (!$carga) {
+                        if (! $carga) {
                             throw new \Exception('Este producto no está cargado en el viaje');
                         }
 
@@ -333,20 +332,27 @@ class DescargasRelationManager extends RelationManager
                 Tables\Actions\ViewAction::make(),
 
                 Tables\Actions\EditAction::make()
-                    ->visible(fn() => !in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado'])),
+                    ->visible(fn () => ! in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado'])),
 
                 Tables\Actions\Action::make('procesar_reingreso')
-                    ->label('Reingresar a Bodega')
+                    ->label('Reingresar a Inventario')
                     ->icon('heroicon-o-arrow-path')
                     ->color('success')
-                    ->visible(fn($record) => $record->reingresa_stock
+                    ->visible(fn ($record) => $record->reingresa_stock
                         && $record->estado_producto === 'bueno'
-                        && !$record->procesado_reingreso
-                        && !in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado']))
+                        && ! $record->procesado_reingreso
+                        && ! in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado']))
                     ->requiresConfirmation()
-                    ->modalHeading('Reingresar Producto a Bodega')
+                    ->modalHeading('Reingresar Producto a Inventario')
                     ->modalDescription(function ($record) {
                         $producto = $record->producto;
+
+                        // Producto base 1x30: los cartones regresan al LOTE, no a bodega
+                        if ($producto && app(ReintegroDescargasService::class)->esProductoBaseDeLote($producto)) {
+                            return 'Producto base de lote: los cartones completos regresarán AL LOTE '
+                                .'(costo según el WAC actual del lote) y las fracciones al lote único. ¿Confirma?';
+                        }
+
                         $unidadesPorBulto = $producto?->unidades_por_bulto;
 
                         if ($unidadesPorBulto && $unidadesPorBulto > 1) {
@@ -355,6 +361,7 @@ class DescargasRelationManager extends RelationManager
 
                             if ($fraccion > 0.0001) {
                                 $huevosSueltos = round($fraccion * $unidadesPorBulto);
+
                                 return "Se reingresarán {$parteEntera} cartones completos al stock y {$huevosSueltos} unidades sueltas al lote único del producto. ¿Confirma?";
                             }
                         }
@@ -366,7 +373,7 @@ class DescargasRelationManager extends RelationManager
                     }),
 
                 Tables\Actions\DeleteAction::make()
-                    ->visible(fn() => !in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado']))
+                    ->visible(fn () => ! in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado']))
                     ->after(function ($record) {
                         // Actualizar cantidad_devuelta en la carga
                         $carga = $this->getOwnerRecord()->cargas()
@@ -386,7 +393,7 @@ class DescargasRelationManager extends RelationManager
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
                     Tables\Actions\DeleteBulkAction::make()
-                        ->visible(fn() => !in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado'])),
+                        ->visible(fn () => ! in_array($this->getOwnerRecord()->estado, ['cerrado', 'cancelado'])),
                 ]),
             ])
             ->defaultSort('created_at', 'desc')
@@ -396,147 +403,34 @@ class DescargasRelationManager extends RelationManager
     }
 
     /**
-     * Procesar el reingreso de producto a bodega
-     * - Cartones completos → BodegaProducto (stock)
-     * - Unidades sueltas → Lote SUELTOS
+     * Procesar el reingreso de una descarga al inventario.
+     *
+     * Refactor 2026-07-12: delegado a ReintegroDescargasService — el mismo
+     * servicio que usa Viaje::cerrar(), de modo que la regla de destino
+     * (producto base 1x30 → LOTE; OPOA/derivados → bodega_producto;
+     * fracciones → lote único) vive en un solo lugar. El servicio marca
+     * viaje_descargas.procesado_reingreso, por lo que el cierre del viaje
+     * ya no duplica un reingreso hecho manualmente aquí.
      */
     protected function procesarReingreso($record): void
     {
-        $viaje = $this->getOwnerRecord();
-        $producto = $record->producto;
-        $bodegaId = $viaje->bodega_origen_id;
-        $unidadesPorBulto = $producto->unidades_por_bulto ?? null;
+        $mensajes = app(ReintegroDescargasService::class)
+            ->procesarReintegro($this->getOwnerRecord(), $record);
 
-        DB::transaction(function () use ($record, $producto, $bodegaId, $unidadesPorBulto) {
-            $cantidad = $record->cantidad;
-            $cartonesCompletos = floor($cantidad);
-            $fraccion = $cantidad - $cartonesCompletos;
-
-            $mensajes = [];
-
-            // 1. Reingresar cartones completos al stock de BodegaProducto
-            if ($cartonesCompletos > 0) {
-                $bodegaProducto = BodegaProducto::firstOrCreate(
-                    [
-                        'bodega_id' => $bodegaId,
-                        'producto_id' => $record->producto_id,
-                    ],
-                    [
-                        'stock' => 0,
-                        'costo_promedio_actual' => 0,
-                        'activo' => true,
-                    ]
-                );
-
-                // FIX: Usar costo_bodega_original de la carga para promedio ponderado correcto
-                $viaje = $this->getOwnerRecord();
-                $carga = $viaje->cargas()->where('producto_id', $record->producto_id)->first();
-                $costoParaReintegro = $carga
-                    ? floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? $record->costo_unitario)
-                    : $record->costo_unitario;
-
-                $bodegaProducto->actualizarCostoPromedio($cartonesCompletos, $costoParaReintegro, [
-                    'kardex_tipo'            => 'retorno_viaje',
-                    'kardex_descripcion'     => "Retorno de viaje #{$viaje->id}",
-                    'kardex_referencia_type' => $viaje->getMorphClass(),
-                    'kardex_referencia_id'   => $viaje->id,
-                ]);
-                $mensajes[] = "{$cartonesCompletos} cartones al stock";
-            }
-
-            // 2. Si hay fracción y el producto tiene unidades por bulto, enviar al lote único
-            if ($fraccion > 0.0001 && $unidadesPorBulto && $unidadesPorBulto > 1) {
-                $huevosSueltos = round($fraccion * $unidadesPorBulto);
-
-                if ($huevosSueltos > 0) {
-                    $this->agregarALoteSueltos(
-                        bodegaId: $bodegaId,
-                        productoId: $record->producto_id,
-                        cantidadHuevos: $huevosSueltos,
-                        unidadesPorBulto: $unidadesPorBulto
-                    );
-
-                    $mensajes[] = "{$huevosSueltos} unidades al lote único";
-                }
-            } elseif ($fraccion > 0.0001) {
-                // Producto sin subunidades, agregar fracción al stock normal
-                $bodegaProducto = BodegaProducto::firstOrCreate(
-                    [
-                        'bodega_id' => $bodegaId,
-                        'producto_id' => $record->producto_id,
-                    ],
-                    [
-                        'stock' => 0,
-                        'costo_promedio_actual' => 0,
-                        'activo' => true,
-                    ]
-                );
-
-                // FIX: Usar costo_bodega_original de la carga para promedio ponderado correcto
-                $viaje = $this->getOwnerRecord();
-                $carga = $viaje->cargas()->where('producto_id', $record->producto_id)->first();
-                $costoParaReintegro = $carga
-                    ? floatval($carga->costo_bodega_original ?? $carga->costo_unitario ?? $record->costo_unitario)
-                    : $record->costo_unitario;
-
-                $bodegaProducto->actualizarCostoPromedio($fraccion, $costoParaReintegro, [
-                    'kardex_tipo'            => 'retorno_viaje',
-                    'kardex_descripcion'     => "Retorno de viaje #{$viaje->id}",
-                    'kardex_referencia_type' => $viaje->getMorphClass(),
-                    'kardex_referencia_id'   => $viaje->id,
-                ]);
-                $mensajes[] = number_format($fraccion, 4) . " unidades al stock";
-            }
-
-            // Marcar como procesado (si tienes este campo)
-            if (method_exists($record, 'setAttribute')) {
-                $record->procesado_reingreso = true;
-                $record->save();
-            }
-
+        if (empty($mensajes)) {
             Notification::make()
-                ->title('Stock reingresado')
-                ->body("Se agregaron: " . implode(', ', $mensajes))
-                ->success()
+                ->title('Sin cambios')
+                ->body('La descarga ya estaba procesada o no aplica para reingreso.')
+                ->warning()
                 ->send();
-        });
-    }
 
-    /**
-     * Agregar huevos sueltos al LOTE ÚNICO del producto en la bodega.
-     *
-     * Refactor 2026-05-18: migrado del patrón obsoleto "SUELTOS-{codigoBodega}"
-     * al patrón oficial "Lote Único" (LU-B*-P*). El método anterior chocaba
-     * contra la constraint unique(producto_id, bodega_id, estado) cada vez
-     * que ya existía un lote único disponible para esa combinación.
-     *
-     * Delega en los helpers oficiales de Lote (los mismos que usan compras,
-     * reempaques y ventas) para mantener consistencia con el motor WAC Perpetuo.
-     */
-    protected function agregarALoteSueltos(
-        int $bodegaId,
-        int $productoId,
-        int $cantidadHuevos,
-        int $unidadesPorBulto
-    ): void {
-        $lote = Lote::obtenerOCrearLoteUnico(
-            productoId: $productoId,
-            bodegaId: $bodegaId,
-            huevosPorCarton: $unidadesPorBulto,
-            createdBy: Auth::id(),
-        );
+            return;
+        }
 
-        $viaje = $this->getOwnerRecord();
-
-        $lote->devolverHuevos(
-            cantidadHuevos: (float) $cantidadHuevos,
-            huevosRegaloDevueltos: 0.0,
-            contexto: [
-                'kardex_tipo'            => 'retorno_viaje',
-                'kardex_descripcion'     => "Retorno de viaje #{$viaje->id} — sueltos al lote único",
-                'kardex_referencia_type' => $viaje->getMorphClass(),
-                'kardex_referencia_id'   => $viaje->id,
-            ],
-        );
+        Notification::make()
+            ->title('Inventario reingresado')
+            ->body('Se agregaron: '.implode(', ', $mensajes))
+            ->success()
+            ->send();
     }
 }

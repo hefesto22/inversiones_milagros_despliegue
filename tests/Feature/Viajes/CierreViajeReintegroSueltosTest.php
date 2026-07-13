@@ -12,9 +12,9 @@ use App\Models\Lote;
 use App\Models\Producto;
 use App\Models\User;
 use App\Models\Viaje;
+use App\Services\Viaje\ReintegroDescargasService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
-use ReflectionClass;
 use Tests\TestCase;
 
 /**
@@ -23,14 +23,15 @@ use Tests\TestCase;
  * cuyo reintegro de descargas generaba huevos sueltos sobre un producto/bodega
  * que ya tenía un lote único disponible (caso normal de producción).
  *
- * El método refactorizado Viaje::reintegrarALoteSueltos ahora delega en
- * Lote::obtenerOCrearLoteUnico + Lote::devolverHuevos en lugar de intentar
- * crear lotes con prefijo "SUELTOS-Pxx-Bxx" que chocaban contra la
- * constraint unique(producto_id, bodega_id, estado).
+ * El reintegro delega en Lote::obtenerOCrearLoteUnico + Lote::devolverHuevos
+ * en lugar de intentar crear lotes con prefijo "SUELTOS-Pxx-Bxx" que chocaban
+ * contra la constraint unique(producto_id, bodega_id, estado).
  *
- * Estos tests usan reflection para invocar el método protected sin tener
- * que montar todo el árbol de cierre (Carga, Descarga, Comisiones, etc).
- * La cobertura del cierre completo end-to-end se deja como deuda separada.
+ * Refactor 2026-07-12: la lógica se movió de Viaje::reintegrarALoteSueltos
+ * (protected, se invocaba vía reflection) a
+ * ReintegroDescargasService::reintegrarSueltosAlLoteUnico (público). Los
+ * escenarios cubiertos son los mismos. La cobertura del cierre end-to-end
+ * vive en ReintegroDescargasBaseAlLoteTest.
  */
 class CierreViajeReintegroSueltosTest extends TestCase
 {
@@ -47,24 +48,25 @@ class CierreViajeReintegroSueltosTest extends TestCase
         // Usar contador estático garantiza unicidad determinística aun con RefreshDatabase.
         $n = str_pad((string) ++self::$contadorCamion, 6, '0', STR_PAD_LEFT);
         $camion = Camion::create([
-            'codigo'     => 'CAM-T-' . $n,   // 12 chars
-            'placa'      => 'TST-' . $n,     // 10 chars
-            'bodega_id'  => $bodegaId,
-            'activo'     => true,
+            'codigo' => 'CAM-T-'.$n,   // 12 chars
+            'placa' => 'TST-'.$n,     // 10 chars
+            'bodega_id' => $bodegaId,
+            'activo' => true,
             'created_by' => $admin->id,
         ]);
 
         return Viaje::create([
-            'camion_id'        => $camion->id,
-            'chofer_id'        => $chofer->id,
+            'camion_id' => $camion->id,
+            'chofer_id' => $chofer->id,
             'bodega_origen_id' => $bodegaId,
-            'fecha_salida'     => now(),
-            'estado'           => 'liquidando',
+            'fecha_salida' => now(),
+            'estado' => 'liquidando',
         ]);
     }
 
     /**
-     * Invoca el método protected reintegrarALoteSueltos vía reflection.
+     * Invoca el reintegro de sueltos vía ReintegroDescargasService
+     * (mismo camino que usan el cierre del viaje y la acción manual).
      */
     private function invocarReintegro(
         Viaje $viaje,
@@ -72,17 +74,19 @@ class CierreViajeReintegroSueltosTest extends TestCase
         int $cantidadHuevos,
         int $unidadesPorBulto
     ): void {
-        $metodo = (new ReflectionClass(Viaje::class))
-            ->getMethod('reintegrarALoteSueltos');
-        $metodo->setAccessible(true);
-        $metodo->invoke($viaje, $productoId, $cantidadHuevos, $unidadesPorBulto);
+        app(ReintegroDescargasService::class)->reintegrarSueltosAlLoteUnico(
+            $viaje,
+            $productoId,
+            $cantidadHuevos,
+            $unidadesPorBulto
+        );
     }
 
     public function test_reintegro_no_explota_cuando_ya_existe_lote_unico_disponible(): void
     {
         // Reproduce exactamente la situación de producción del 2026-05-18:
         // existe un LU-B*-P* con estado=disponible para (producto, bodega).
-        $bodega   = Bodega::factory()->create();
+        $bodega = Bodega::factory()->create();
         $producto = Producto::factory()->create();
 
         $loteExistente = Lote::factory()
@@ -90,8 +94,8 @@ class CierreViajeReintegroSueltosTest extends TestCase
             ->create([
                 'numero_lote' => "LU-B{$bodega->id}-P{$producto->id}",
                 'producto_id' => $producto->id,
-                'bodega_id'   => $bodega->id,
-                'estado'      => LoteEstado::Disponible,
+                'bodega_id' => $bodega->id,
+                'estado' => LoteEstado::Disponible,
             ]);
 
         $viaje = $this->crearViajeMinimo($bodega->id);
@@ -125,7 +129,7 @@ class CierreViajeReintegroSueltosTest extends TestCase
     {
         // Caso que también va a ocurrir en producción: el último cliente vació
         // el lote y luego un viaje regresa con sueltos del mismo producto.
-        $bodega   = Bodega::factory()->create();
+        $bodega = Bodega::factory()->create();
         $producto = Producto::factory()->create();
 
         $loteAgotado = Lote::factory()
@@ -134,7 +138,7 @@ class CierreViajeReintegroSueltosTest extends TestCase
             ->create([
                 'numero_lote' => "LU-B{$bodega->id}-P{$producto->id}",
                 'producto_id' => $producto->id,
-                'bodega_id'   => $bodega->id,
+                'bodega_id' => $bodega->id,
             ]);
 
         $viaje = $this->crearViajeMinimo($bodega->id);
@@ -159,7 +163,7 @@ class CierreViajeReintegroSueltosTest extends TestCase
     public function test_reintegro_crea_lote_unico_cuando_no_existe(): void
     {
         // Producto/bodega nuevo, sin historial de lote.
-        $bodega   = Bodega::factory()->create();
+        $bodega = Bodega::factory()->create();
         $producto = Producto::factory()->create();
 
         $this->assertSame(
@@ -188,7 +192,7 @@ class CierreViajeReintegroSueltosTest extends TestCase
         $this->assertSame(12.0, (float) $loteCreado->cantidad_huevos_remanente);
     }
 
-    public function test_reintegro_dispara_DevolucionAplicadaAlLote_para_que_WAC_se_actualice(): void
+    public function test_reintegro_dispara_devolucion_aplicada_al_lote_para_que_wa_c_se_actualice(): void
     {
         // Garantiza que el reintegro entra al motor WAC central como el resto
         // de los flujos (compras, ventas, devoluciones). Antes del fix el
@@ -196,7 +200,7 @@ class CierreViajeReintegroSueltosTest extends TestCase
         // directo sin pasar por devolverHuevos().
         Event::fake([DevolucionAplicadaAlLote::class]);
 
-        $bodega   = Bodega::factory()->create();
+        $bodega = Bodega::factory()->create();
         $producto = Producto::factory()->create();
 
         Lote::factory()
@@ -204,8 +208,8 @@ class CierreViajeReintegroSueltosTest extends TestCase
             ->create([
                 'numero_lote' => "LU-B{$bodega->id}-P{$producto->id}",
                 'producto_id' => $producto->id,
-                'bodega_id'   => $bodega->id,
-                'estado'      => LoteEstado::Disponible,
+                'bodega_id' => $bodega->id,
+                'estado' => LoteEstado::Disponible,
             ]);
 
         $viaje = $this->crearViajeMinimo($bodega->id);
@@ -214,8 +218,7 @@ class CierreViajeReintegroSueltosTest extends TestCase
 
         Event::assertDispatched(
             DevolucionAplicadaAlLote::class,
-            fn (DevolucionAplicadaAlLote $e) =>
-                $e->lote->producto_id === $producto->id
+            fn (DevolucionAplicadaAlLote $e) => $e->lote->producto_id === $producto->id
                 && $e->lote->bodega_id === $bodega->id
         );
     }
