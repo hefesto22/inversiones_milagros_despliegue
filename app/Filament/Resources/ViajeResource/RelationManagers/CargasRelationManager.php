@@ -4,6 +4,7 @@ namespace App\Filament\Resources\ViajeResource\RelationManagers;
 
 use App\Application\Services\CargaViajeService;
 use App\Application\Services\ReempaqueService;
+use App\Application\Services\TransferenciaCargaService;
 use App\Models\BodegaProducto;
 use App\Models\Lote;
 use App\Models\Producto;
@@ -34,10 +35,14 @@ class CargasRelationManager extends RelationManager
 
     public function isReadOnly(): bool
     {
+        // EN_RUTA se incluye para que la acción "Transferir" (carga entre
+        // camiones) esté disponible; las demás acciones conservan su propio
+        // visible() y no aparecen en ese estado.
         return ! in_array($this->getOwnerRecord()->estado, [
             Viaje::ESTADO_PLANIFICADO,
             Viaje::ESTADO_CARGANDO,
             Viaje::ESTADO_RECARGANDO,
+            Viaje::ESTADO_EN_RUTA,
         ]);
     }
 
@@ -988,6 +993,107 @@ class CargasRelationManager extends RelationManager
                             Log::error('Error al bajar carga: '.$e->getMessage());
                             Notification::make()->title('Error')
                                 ->body('Ocurrió un error al bajar el producto. Por favor intente nuevamente.')
+                                ->danger()->send();
+                        }
+                    }),
+
+                // ── TRANSFERIR A OTRO CAMIÓN (En Ruta / Recargando) ─────────
+                // A veces un camión le pasa producto a otro en la calle. La
+                // carga baja de este viaje (regresa al lote/bodega de donde
+                // salió) y sube al viaje destino en una sola transacción, con
+                // nota [TRANSFERENCIA] en las observaciones de ambos viajes.
+                // La comisión de lo vendido tras el traslado es del chofer
+                // del camión que vende (automático: comisiones son por viaje).
+                Tables\Actions\Action::make('transferir_carga')
+                    ->label('Transferir')
+                    ->icon('heroicon-o-arrows-right-left')
+                    ->color('info')
+                    ->button()
+                    ->visible(fn () => in_array($this->getOwnerRecord()->estado, TransferenciaCargaService::ESTADOS_ORIGEN))
+                    ->modalHeading(fn ($record) => 'Transferir '.($record->producto?->nombre ?? 'producto').' a otro camión')
+                    ->modalSubmitActionLabel('Confirmar Transferencia')
+                    ->modalWidth('lg')
+                    ->form(function ($record) {
+                        $origen = $this->getOwnerRecord();
+                        $destinos = app(TransferenciaCargaService::class)->destinosDisponibles($origen);
+                        $disponible = max(0, $record->getCantidadDisponible());
+
+                        return [
+                            Forms\Components\Placeholder::make('resumen_transferencia')
+                                ->label('Situación actual')
+                                ->content(new \Illuminate\Support\HtmlString(
+                                    '<div class="grid grid-cols-3 gap-4 text-sm">'
+                                    .'<div>Cargado: <strong>'.number_format(floatval($record->cantidad), 2).'</strong></div>'
+                                    .'<div>Vendido/consumido: <strong>'.number_format(max(0, floatval($record->cantidad) - $disponible), 2).'</strong></div>'
+                                    .'<div>En camión: <strong>'.number_format($disponible, 2).'</strong></div>'
+                                    .'</div>'
+                                ))
+                                ->columnSpanFull(),
+
+                            Forms\Components\Select::make('viaje_destino_id')
+                                ->label('Camión / Viaje destino')
+                                ->options($destinos)
+                                ->required()
+                                ->searchable()
+                                ->native(false)
+                                ->helperText($destinos->isEmpty()
+                                    ? 'No hay viajes activos de esta bodega que puedan recibir carga.'
+                                    : 'Solo viajes activos de la misma bodega.'),
+
+                            Forms\Components\TextInput::make('cantidad_transferir')
+                                ->label('Cantidad a Transferir')
+                                ->numeric()
+                                ->required()
+                                ->minValue(0.01)
+                                ->step(0.01)
+                                ->maxValue($disponible)
+                                ->helperText('Máximo: '.number_format($disponible, 2).' (lo disponible en este camión; lo ya vendido no se transfiere).')
+                                ->validationMessages([
+                                    'max' => 'No puede transferir más de lo disponible en el camión.',
+                                    'min' => 'Indique cuántas unidades va a transferir.',
+                                ])
+                                ->live(debounce: 400),
+
+                            Forms\Components\Placeholder::make('aviso_comision')
+                                ->label('')
+                                ->content(new \Illuminate\Support\HtmlString(
+                                    '<span class="text-sm font-medium">🔁 La carga regresará al inventario y subirá al camión destino. La comisión de lo que se venda después será del chofer del camión destino.</span>'
+                                ))
+                                ->columnSpanFull(),
+                        ];
+                    })
+                    ->action(function ($record, array $data) {
+                        $origen = $this->getOwnerRecord();
+                        $destino = Viaje::with('chofer')->find($data['viaje_destino_id'] ?? null);
+                        $cantidad = floatval($data['cantidad_transferir'] ?? 0);
+
+                        if (! $destino) {
+                            Notification::make()->title('Destino inválido')
+                                ->body('Seleccione el camión/viaje que recibirá la carga.')->danger()->send();
+
+                            return;
+                        }
+
+                        try {
+                            $resultado = app(TransferenciaCargaService::class)
+                                ->transferir($origen, $record, $destino, $cantidad);
+
+                            $mensaje = "Se transfirieron {$cantidad} unidades al viaje "
+                                .($destino->numero_viaje ?? "#{$destino->id}")
+                                .' ('.($destino->chofer?->name ?? 'sin chofer').').';
+                            if ($resultado['transferencia_total']) {
+                                $mensaje .= ' El producto salió por completo de este camión.';
+                            }
+
+                            Notification::make()->title('Carga transferida')->body($mensaje)->success()->send();
+                        } catch (\InvalidArgumentException $e) {
+                            Notification::make()->title('Datos inválidos')->body($e->getMessage())->danger()->send();
+                        } catch (\RuntimeException $e) {
+                            Notification::make()->title('No permitido')->body($e->getMessage())->danger()->persistent()->send();
+                        } catch (\Exception $e) {
+                            Log::error('Error al transferir carga: '.$e->getMessage());
+                            Notification::make()->title('Error')
+                                ->body('Ocurrió un error al transferir. Por favor intente nuevamente.')
                                 ->danger()->send();
                         }
                     }),
