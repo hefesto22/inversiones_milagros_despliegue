@@ -31,6 +31,15 @@
         return '<span class="'.$class.'">'.$arrow.number_format($val, 1).'%</span>';
     };
 
+    // Variacion para las filas del desglose por chofer (valor directo, no
+    // sale del mapa $v). Comisiones son gasto: subir = rojo, bajar = verde.
+    $varChofer = function($val) {
+        if ($val === null || $val == 0) return '-';
+        $arrow = $val > 0 ? '+' : '';
+        $class = $val > 0 ? 'var-cost-up' : 'var-cost-down';
+        return '<span class="'.$class.'">'.$arrow.number_format($val, 1).'%</span>';
+    };
+
     $claseMargenBruto  = $d['margen_bruto'] >= 15 ? 'color-green' : 'color-yellow';
     $claseMargenOp     = $d['margen_operativo'] >= 8 ? 'color-green' : ($d['margen_operativo'] >= 0 ? 'color-yellow' : 'color-red');
     $claseCxC          = $d['cuentas_por_cobrar'] > 0 ? 'color-yellow' : 'color-green';
@@ -303,6 +312,9 @@
             <tr class="detail-row"><td><strong>Otros gastos de bodega</strong></td><td class="pct-col">{{ $pct($d['otros_gastos_bodega_venta']) }}</td><td><strong>{{ $lps($d['otros_gastos_bodega_venta']) }}</strong></td><td>{{ $lps($otrosGastosBodegaVentaAnterior) }}</td><td>-</td></tr>
             @endif
             <tr class="detail-row"><td><strong>Comisiones a choferes</strong></td><td class="pct-col">{{ $pct($d['comisiones']) }}</td><td><strong>{{ $lps($d['comisiones']) }}</strong></td><td>{{ $lps($a['comisiones']) }}</td><td>{!! $varComisiones !!}</td></tr>
+            @foreach($comisionesChoferes as $cc)
+            <tr class="sub-detail-row"><td>{{ $cc['nombre'] }}</td><td class="pct-col"></td><td>{{ $lps($cc['actual']) }}</td><td>{{ $lps($cc['anterior']) }}</td><td>{!! $varChofer($cc['var']) !!}</td></tr>
+            @endforeach
             @if($mostrarComisionesPagadas)
             <tr class="sub-detail-row"><td>Comisiones liquidadas</td><td class="pct-col"></td><td>{{ $lps($d['comisiones_pagadas']) }}</td><td>{{ $lps($a['comisiones_pagadas']) }}</td><td>-</td></tr>
             @endif
@@ -391,7 +403,7 @@
         3. <strong>Costo de ventas:</strong> Valuado al costo promedio ponderado (Seccion 13 NIIF para PYMES).<br>
         4. <strong>ISR:</strong> Estimado al {{ $tasaISRPct }}% sobre renta neta gravable, conforme Art. 22 literal a) Ley ISR (Decreto-Ley No. 25). Declaracion anual en Formulario SAR-357.<br>
         5. <strong>Mermas:</strong> Incluyen perdidas por rotura en transporte, en proceso de reempaque, y perdidas en lotes de bodega.<br>
-        6. <strong>Comisiones:</strong> Se registran al momento de generarse (base devengado), independientemente de su liquidacion.<br>
+        6. <strong>Comisiones:</strong> Se registran al momento de generarse (base devengado), independientemente de su liquidacion. Se detallan por chofer bajo la linea "Comisiones a choferes".<br>
         7. <strong>Inversiones:</strong> Las compras de activos fijos se excluyen del Estado de Resultados y se registran en el Balance General.<br>
         8. Las variaciones porcentuales comparan contra el periodo inmediato anterior.
     </div>
