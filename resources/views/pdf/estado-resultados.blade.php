@@ -154,8 +154,12 @@
         .main-table th { background-color: #1a1a1a; color: #fff; font-size: 6pt; font-weight: bold; padding: 3px 4px; text-align: right; text-transform: uppercase; letter-spacing: 0.4px; }
         .main-table th:first-child { text-align: left; width: 40%; }
         .main-table th.col-pct { width: 6%; }
-        .main-table td { padding: 2px 4px; font-size: 7pt; border-bottom: 1px solid #e5e5e5; }
-        .main-table td:not(:first-child) { text-align: right; font-family: 'Courier New', monospace; font-size: 7pt; }
+        .main-table td { padding: 2px 4px; font-size: 7pt; border-bottom: 1px solid #e5e5e5; text-align: right; font-family: 'Courier New', monospace; }
+        /* OJO DomPDF: no soporta :not() y descarta la regla completa (por eso
+           los numeros quedaban alineados a la izquierda, lejos de su encabezado).
+           El default de la celda ahora es derecha/monospace (numeros) y la
+           PRIMERA columna (conceptos) se revierte con :first-child, que si soporta. */
+        .main-table td:first-child { text-align: left; font-family: 'Helvetica', 'Arial', sans-serif; }
 
         .pct-col { font-size: 6pt; color: #888; }
         .pct-final { font-size: 7pt; }
@@ -165,8 +169,8 @@
         .sub-detail-row td:first-child { padding-left: 32px; font-size: 6pt; color: #777; }
         .sub-detail-row td { font-size: 6pt; color: #777; border-bottom: 1px solid #f0f0f0; }
         .subtotal-row td { font-weight: bold; border-bottom: 1.5px solid #999; padding-top: 2px; padding-bottom: 2px; }
-        .deduction-row td:not(:first-child) { color: #c00; }
-        .deduction-row td:first-child { padding-left: 18px; color: #c00; }
+        .deduction-row td { color: #c00; }
+        .deduction-row td:first-child { padding-left: 18px; }
         .total-row td { font-weight: bold; font-size: 8pt; border-top: 2px solid #1a1a1a; border-bottom: 2px solid #1a1a1a; padding: 3px 4px; }
         .total-row-positive td { color: #006600; }
         .total-row-negative td { color: #cc0000; }
