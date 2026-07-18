@@ -205,6 +205,27 @@ class Viaje extends Model
         $this->cambiarEstado(self::ESTADO_REGRESANDO);
     }
 
+    /**
+     * Revertir un "Regresar" presionado por error: el viaje vuelve a "En Ruta".
+     *
+     * Solo es válido mientras el viaje sigue en "Regresando" y aún no se ha
+     * registrado ninguna descarga. Limpia fecha_regreso para que el regreso
+     * real la estampe de nuevo con la hora correcta.
+     */
+    public function volverARuta(): void
+    {
+        if ($this->estado !== self::ESTADO_REGRESANDO) {
+            throw new \Exception('Solo se puede volver a ruta un viaje en estado "Regresando".');
+        }
+
+        if ($this->descargas()->exists()) {
+            throw new \Exception('No se puede volver a ruta: el viaje ya tiene descargas registradas.');
+        }
+
+        $this->fecha_regreso = null;
+        $this->cambiarEstado(self::ESTADO_EN_RUTA);
+    }
+
     public function iniciarDescarga(): void
     {
         $this->cambiarEstado(self::ESTADO_DESCARGANDO);

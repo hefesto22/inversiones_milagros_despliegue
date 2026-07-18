@@ -4,9 +4,9 @@ namespace App\Filament\Resources;
 
 use App\Filament\Resources\ViajeResource\Pages;
 use App\Filament\Resources\ViajeResource\RelationManagers;
-use App\Models\Viaje;
-use App\Models\User;
 use App\Models\Camion;
+use App\Models\User;
+use App\Models\Viaje;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Forms\Set;
@@ -40,7 +40,7 @@ class ViajeResource extends Resource
         /** @var \App\Models\User|null $currentUser */
         $currentUser = Auth::user();
 
-        if (!$currentUser) {
+        if (! $currentUser) {
             return false;
         }
 
@@ -56,7 +56,7 @@ class ViajeResource extends Resource
         /** @var \App\Models\User|null $currentUser */
         $currentUser = Auth::user();
 
-        if (!$currentUser) {
+        if (! $currentUser) {
             return null;
         }
 
@@ -73,7 +73,7 @@ class ViajeResource extends Resource
     {
         $query = Viaje::whereNotIn('estado', [
             Viaje::ESTADO_CERRADO,
-            Viaje::ESTADO_CANCELADO
+            Viaje::ESTADO_CANCELADO,
         ])->whereNotNull('chofer_id');
 
         if ($viajeActualId) {
@@ -88,7 +88,7 @@ class ViajeResource extends Resource
         $query = parent::getEloquentQuery()->with(['camion', 'chofer', 'bodegaOrigen']);
         $currentUser = Auth::user();
 
-        if (!$currentUser) {
+        if (! $currentUser) {
             return $query->whereRaw('1 = 0');
         }
 
@@ -123,11 +123,11 @@ class ViajeResource extends Resource
                                             ->whereDoesntHave('viajes', function ($q) {
                                                 $q->whereNotIn('estado', [
                                                     Viaje::ESTADO_CERRADO,
-                                                    Viaje::ESTADO_CANCELADO
+                                                    Viaje::ESTADO_CANCELADO,
                                                 ]);
                                             });
 
-                                        if (!$puedeSeleccionarBodega && $bodegaUsuario) {
+                                        if (! $puedeSeleccionarBodega && $bodegaUsuario) {
                                             $query->where('bodega_id', $bodegaUsuario);
                                         }
 
@@ -142,7 +142,7 @@ class ViajeResource extends Resource
                                             $chofer = $camion?->getChoferActual();
                                             if ($chofer) {
                                                 $choferesOcupados = static::getChoferesOcupados();
-                                                if (!in_array($chofer->id, $choferesOcupados)) {
+                                                if (! in_array($chofer->id, $choferesOcupados)) {
                                                     $set('chofer_id', $chofer->id);
                                                 }
                                             }
@@ -168,7 +168,7 @@ class ViajeResource extends Resource
 
                                 Forms\Components\Select::make('bodega_origen_id')
                                     ->label('Bodega Origen')
-                                    ->relationship('bodegaOrigen', 'nombre', fn($query) => $query->where('activo', true))
+                                    ->relationship('bodegaOrigen', 'nombre', fn ($query) => $query->where('activo', true))
                                     ->required()
                                     ->searchable()
                                     ->preload()
@@ -177,7 +177,7 @@ class ViajeResource extends Resource
                                             $set('bodega_origen_id', $bodegaUsuario);
                                         }
                                     })
-                                    ->disabled(!$puedeSeleccionarBodega)
+                                    ->disabled(! $puedeSeleccionarBodega)
                                     ->dehydrated(true),
 
                                 Forms\Components\DateTimePicker::make('fecha_salida')
@@ -189,11 +189,11 @@ class ViajeResource extends Resource
                                     ->label('Fecha de Regreso')
                                     ->native(false)
                                     ->seconds(false)
-                                    ->visible(fn($record) => $record && in_array($record->estado, [
+                                    ->visible(fn ($record) => $record && in_array($record->estado, [
                                         Viaje::ESTADO_REGRESANDO,
                                         Viaje::ESTADO_DESCARGANDO,
                                         Viaje::ESTADO_LIQUIDANDO,
-                                        Viaje::ESTADO_CERRADO
+                                        Viaje::ESTADO_CERRADO,
                                     ])),
 
                                 Forms\Components\Select::make('estado')
@@ -240,7 +240,7 @@ class ViajeResource extends Resource
                                     ->label('Km Regreso')
                                     ->numeric()
                                     ->minValue(0)
-                                    ->visible(fn($record) => $record && $record->estado !== Viaje::ESTADO_PLANIFICADO),
+                                    ->visible(fn ($record) => $record && $record->estado !== Viaje::ESTADO_PLANIFICADO),
                             ]),
                     ])
                     ->collapsible()
@@ -268,9 +268,9 @@ class ViajeResource extends Resource
                                     ->label('Efectivo Entregado')
                                     ->numeric()
                                     ->prefix('L')
-                                    ->visible(fn($record) => $record && in_array($record->estado, [
+                                    ->visible(fn ($record) => $record && in_array($record->estado, [
                                         Viaje::ESTADO_LIQUIDANDO,
-                                        Viaje::ESTADO_CERRADO
+                                        Viaje::ESTADO_CERRADO,
                                     ])),
 
                                 Forms\Components\TextInput::make('diferencia_efectivo')
@@ -283,7 +283,7 @@ class ViajeResource extends Resource
                     ])
                     ->collapsible()
                     ->collapsed()
-                    ->visible(fn($record) => $record !== null),
+                    ->visible(fn ($record) => $record !== null),
 
                 Forms\Components\Section::make('Totales del Viaje')
                     ->schema([
@@ -326,7 +326,7 @@ class ViajeResource extends Resource
                                     ->disabled(),
                             ]),
                     ])
-                    ->visible(fn($record) => $record && $record->estado === Viaje::ESTADO_CERRADO)
+                    ->visible(fn ($record) => $record && $record->estado === Viaje::ESTADO_CERRADO)
                     ->collapsible(),
             ]);
     }
@@ -375,7 +375,7 @@ class ViajeResource extends Resource
 
                 Tables\Columns\TextColumn::make('estado')
                     ->badge()
-                    ->formatStateUsing(fn($state) => match ($state) {
+                    ->formatStateUsing(fn ($state) => match ($state) {
                         Viaje::ESTADO_PLANIFICADO => 'Planificado',
                         Viaje::ESTADO_CARGANDO => 'Cargando',
                         Viaje::ESTADO_EN_RUTA => 'En Ruta',
@@ -387,7 +387,7 @@ class ViajeResource extends Resource
                         Viaje::ESTADO_CANCELADO => 'Cancelado',
                         default => $state,
                     })
-                    ->color(fn($state) => match ($state) {
+                    ->color(fn ($state) => match ($state) {
                         Viaje::ESTADO_PLANIFICADO => 'gray',
                         Viaje::ESTADO_CARGANDO => 'info',
                         Viaje::ESTADO_EN_RUTA => 'warning',
@@ -399,7 +399,7 @@ class ViajeResource extends Resource
                         Viaje::ESTADO_CANCELADO => 'danger',
                         default => 'gray',
                     })
-                    ->icon(fn($state) => match ($state) {
+                    ->icon(fn ($state) => match ($state) {
                         Viaje::ESTADO_PLANIFICADO => 'heroicon-o-clipboard-document-list',
                         Viaje::ESTADO_CARGANDO => 'heroicon-o-archive-box-arrow-down',
                         Viaje::ESTADO_EN_RUTA => 'heroicon-o-truck',
@@ -458,7 +458,7 @@ class ViajeResource extends Resource
                     ->relationship('bodegaOrigen', 'nombre')
                     ->searchable()
                     ->preload()
-                    ->visible(fn() => static::esSuperAdminOJefe()),
+                    ->visible(fn () => static::esSuperAdminOJefe()),
 
                 Tables\Filters\SelectFilter::make('chofer_id')
                     ->label('Chofer')
@@ -479,15 +479,15 @@ class ViajeResource extends Resource
                     ])
                     ->query(function (Builder $query, array $data): Builder {
                         return $query
-                            ->when($data['desde'], fn($q, $date) => $q->whereDate('fecha_salida', '>=', $date))
-                            ->when($data['hasta'], fn($q, $date) => $q->whereDate('fecha_salida', '<=', $date));
+                            ->when($data['desde'], fn ($q, $date) => $q->whereDate('fecha_salida', '>=', $date))
+                            ->when($data['hasta'], fn ($q, $date) => $q->whereDate('fecha_salida', '<=', $date));
                     }),
             ])
 
             ->actions([
                 Tables\Actions\ViewAction::make(),
                 Tables\Actions\EditAction::make()
-                    ->visible(fn($record) => !in_array($record->estado, [Viaje::ESTADO_CERRADO, Viaje::ESTADO_CANCELADO])),
+                    ->visible(fn ($record) => ! in_array($record->estado, [Viaje::ESTADO_CERRADO, Viaje::ESTADO_CANCELADO])),
 
                 // Acción: Iniciar Carga
                 Tables\Actions\Action::make('iniciar_carga')
@@ -496,7 +496,7 @@ class ViajeResource extends Resource
                     ->color('info')
                     ->requiresConfirmation()
                     ->modalDescription('El viaje pasará a estado "Cargando".')
-                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_PLANIFICADO)
+                    ->visible(fn ($record) => $record->estado === Viaje::ESTADO_PLANIFICADO)
                     ->action(function ($record) {
                         $record->iniciarCarga();
                         \Filament\Notifications\Notification::make()
@@ -513,7 +513,7 @@ class ViajeResource extends Resource
                     ->color('warning')
                     ->requiresConfirmation()
                     ->modalDescription('El viaje saldrá a ruta. Asegúrese de haber cargado todos los productos.')
-                    ->visible(fn($record) => in_array($record->estado, [Viaje::ESTADO_PLANIFICADO, Viaje::ESTADO_CARGANDO]))
+                    ->visible(fn ($record) => in_array($record->estado, [Viaje::ESTADO_PLANIFICADO, Viaje::ESTADO_CARGANDO]))
                     ->action(function ($record) {
                         if ($record->cargas()->count() === 0) {
                             \Filament\Notifications\Notification::make()
@@ -521,6 +521,7 @@ class ViajeResource extends Resource
                                 ->body('No puede iniciar ruta sin cargar productos.')
                                 ->danger()
                                 ->send();
+
                             return;
                         }
                         $record->iniciarRuta();
@@ -538,7 +539,7 @@ class ViajeResource extends Resource
                     ->requiresConfirmation()
                     ->modalHeading('Recargar Camión')
                     ->modalDescription('El viaje pasará a estado "Recargando". Podrá agregar más productos y luego continuar la ruta.')
-                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_EN_RUTA)
+                    ->visible(fn ($record) => $record->estado === Viaje::ESTADO_EN_RUTA)
                     ->action(function ($record) {
                         $record->iniciarRecarga();
                         \Filament\Notifications\Notification::make()
@@ -557,7 +558,7 @@ class ViajeResource extends Resource
                     ->requiresConfirmation()
                     ->modalHeading('Continuar Ruta')
                     ->modalDescription('El viaje volverá a estado "En Ruta" con los nuevos productos cargados.')
-                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_RECARGANDO)
+                    ->visible(fn ($record) => $record->estado === Viaje::ESTADO_RECARGANDO)
                     ->action(function ($record) {
                         $record->recalcularTotales();
                         $record->iniciarRuta();
@@ -574,11 +575,41 @@ class ViajeResource extends Resource
                     ->color('primary')
                     ->requiresConfirmation()
                     ->modalDescription('El viaje cambiará a estado "Regresando".')
-                    ->visible(fn($record) => in_array($record->estado, [Viaje::ESTADO_EN_RUTA, Viaje::ESTADO_RECARGANDO]))
+                    ->visible(fn ($record) => in_array($record->estado, [Viaje::ESTADO_EN_RUTA, Viaje::ESTADO_RECARGANDO]))
                     ->action(function ($record) {
                         $record->iniciarRegreso();
                         \Filament\Notifications\Notification::make()
                             ->title('Viaje regresando')
+                            ->success()
+                            ->send();
+                    }),
+
+                // Acción: Volver a Ruta (cuando "Regresar" se presionó por error)
+                Tables\Actions\Action::make('volver_a_ruta')
+                    ->label('Volver a Ruta')
+                    ->icon('heroicon-o-truck')
+                    ->color('warning')
+                    ->requiresConfirmation()
+                    ->modalHeading('Volver a Ruta')
+                    ->modalDescription('El viaje volverá a estado "En Ruta". Use esta opción si se presionó "Regresar" por error.')
+                    ->visible(fn ($record) => $record->estado === Viaje::ESTADO_REGRESANDO
+                        && $record->descargas()->doesntExist())
+                    ->action(function ($record) {
+                        try {
+                            $record->volverARuta();
+                        } catch (\Exception $e) {
+                            \Filament\Notifications\Notification::make()
+                                ->title('No se pudo volver a ruta')
+                                ->body($e->getMessage())
+                                ->danger()
+                                ->send();
+
+                            return;
+                        }
+
+                        \Filament\Notifications\Notification::make()
+                            ->title('Viaje en ruta')
+                            ->body('El camión vuelve a estar en ruta y puede seguir vendiendo.')
                             ->success()
                             ->send();
                     }),
@@ -591,7 +622,7 @@ class ViajeResource extends Resource
                     ->modalHeading('Descarga de Productos No Vendidos')
                     ->modalWidth('4xl')
                     ->modalSubmitActionLabel('Confirmar Descarga')
-                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_REGRESANDO)
+                    ->visible(fn ($record) => $record->estado === Viaje::ESTADO_REGRESANDO)
                     ->form(function ($record) {
                         $productosRegresan = [];
                         $totalCosto = 0;
@@ -640,7 +671,7 @@ class ViajeResource extends Resource
 
                         return [
                             Forms\Components\Section::make('Productos que Regresan')
-                                ->description('Total devolución: L ' . number_format($totalCosto, 2) . ' | Marque los productos que desea cobrar al chofer')
+                                ->description('Total devolución: L '.number_format($totalCosto, 2).' | Marque los productos que desea cobrar al chofer')
                                 ->schema([
                                     Forms\Components\Repeater::make('productos')
                                         ->schema([
@@ -664,18 +695,18 @@ class ViajeResource extends Resource
 
                                                     Forms\Components\Placeholder::make('producto_nombre')
                                                         ->label('')
-                                                        ->content(fn(Forms\Get $get) => $get('producto_nombre'))
+                                                        ->content(fn (Forms\Get $get) => $get('producto_nombre'))
                                                         ->columnSpan(4),
 
                                                     Forms\Components\Placeholder::make('cantidad_display')
                                                         ->label('')
-                                                        ->content(fn(Forms\Get $get) => number_format($get('cantidad'), 2) . ' ' . $get('unidad_nombre'))
+                                                        ->content(fn (Forms\Get $get) => number_format($get('cantidad'), 2).' '.$get('unidad_nombre'))
                                                         ->columnSpan(3),
 
                                                     Forms\Components\Placeholder::make('subtotal_display')
                                                         ->label('')
-                                                        ->content(fn(Forms\Get $get) => new \Illuminate\Support\HtmlString(
-                                                            '<span class="font-bold ' . ($get('cobrar') ? 'text-danger-500' : '') . '">L ' . number_format($get('subtotal'), 2) . '</span>'
+                                                        ->content(fn (Forms\Get $get) => new \Illuminate\Support\HtmlString(
+                                                            '<span class="font-bold '.($get('cobrar') ? 'text-danger-500' : '').'">L '.number_format($get('subtotal'), 2).'</span>'
                                                         ))
                                                         ->columnSpan(4),
 
@@ -689,12 +720,12 @@ class ViajeResource extends Resource
                                                 ]),
                                         ])
                                         ->default($productosRegresan)
-                                        ->disabled(fn() => false)
+                                        ->disabled(fn () => false)
                                         ->addable(false)
                                         ->deletable(false)
                                         ->reorderable(false)
                                         ->columnSpanFull()
-                                        ->itemLabel(fn(array $state): ?string => null),
+                                        ->itemLabel(fn (array $state): ?string => null),
                                 ]),
 
                             Forms\Components\Section::make('')
@@ -718,7 +749,7 @@ class ViajeResource extends Resource
                                         ->label('Motivo del Cobro (opcional)')
                                         ->rows(2)
                                         ->placeholder('Ej: Producto dañado por descuido, producto no entregado, etc.')
-                                        ->visible(fn(Forms\Get $get) => ($get('total_cobrar') ?? 0) > 0)
+                                        ->visible(fn (Forms\Get $get) => ($get('total_cobrar') ?? 0) > 0)
                                         ->columnSpanFull(),
                                 ])
                                 ->extraAttributes(['class' => 'bg-gray-50 dark:bg-gray-800 border-2 border-warning-500 rounded-xl']),
@@ -735,9 +766,10 @@ class ViajeResource extends Resource
 
                             \Filament\Notifications\Notification::make()
                                 ->title('Viaje listo para cerrar')
-                                ->body("Todo vendido. Comisión: L " . number_format($record->comision_ganada, 2))
+                                ->body('Todo vendido. Comisión: L '.number_format($record->comision_ganada, 2))
                                 ->success()
                                 ->send();
+
                             return;
                         }
 
@@ -750,6 +782,7 @@ class ViajeResource extends Resource
                                 ->body('No había productos para descargar.')
                                 ->info()
                                 ->send();
+
                             return;
                         }
 
@@ -799,7 +832,7 @@ class ViajeResource extends Resource
                         if ($totalCobrado > 0) {
                             \Filament\Notifications\Notification::make()
                                 ->title('Descarga generada')
-                                ->body("Se crearon {$descargasCreadas} descargas.\n\nTotal a cobrar: L " . number_format($totalCobrado, 2) . "\nProductos: " . implode(', ', $productosCobrados))
+                                ->body("Se crearon {$descargasCreadas} descargas.\n\nTotal a cobrar: L ".number_format($totalCobrado, 2)."\nProductos: ".implode(', ', $productosCobrados))
                                 ->success()
                                 ->duration(10000)
                                 ->send();
@@ -819,7 +852,7 @@ class ViajeResource extends Resource
                     ->color('warning')
                     ->requiresConfirmation()
                     ->modalDescription('Se calcularán comisiones, cobros y totales del viaje.')
-                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_DESCARGANDO && $record->descargas()->exists())
+                    ->visible(fn ($record) => $record->estado === Viaje::ESTADO_DESCARGANDO && $record->descargas()->exists())
                     ->action(function ($record) {
                         try {
                             $resultado = $record->liquidarCompleto();
@@ -827,9 +860,9 @@ class ViajeResource extends Resource
 
                             \Filament\Notifications\Notification::make()
                                 ->title('Liquidación completada')
-                                ->body("Comisión: L " . number_format($resultado['comision_ganada'], 2) .
-                                    " | Cobros: L " . number_format($resultado['cobros'], 2) .
-                                    " | Neto: L " . number_format($resultado['neto_chofer'], 2))
+                                ->body('Comisión: L '.number_format($resultado['comision_ganada'], 2).
+                                    ' | Cobros: L '.number_format($resultado['cobros'], 2).
+                                    ' | Neto: L '.number_format($resultado['neto_chofer'], 2))
                                 ->success()
                                 ->duration(10000)
                                 ->send();
@@ -850,15 +883,15 @@ class ViajeResource extends Resource
                     ->requiresConfirmation()
                     ->modalHeading('Cerrar Viaje')
                     ->modalDescription('Se reintegrará el stock devuelto a la bodega. Esta acción no se puede revertir.')
-                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_LIQUIDANDO)
+                    ->visible(fn ($record) => $record->estado === Viaje::ESTADO_LIQUIDANDO)
                     ->action(function ($record) {
                         try {
                             $record->cerrar();
 
                             \Filament\Notifications\Notification::make()
                                 ->title('Viaje cerrado')
-                                ->body("Stock reintegrado. Comisión: L " . number_format($record->comision_ganada, 2) .
-                                    " | Neto chofer: L " . number_format($record->neto_chofer, 2))
+                                ->body('Stock reintegrado. Comisión: L '.number_format($record->comision_ganada, 2).
+                                    ' | Neto chofer: L '.number_format($record->neto_chofer, 2))
                                 ->success()
                                 ->duration(10000)
                                 ->send();
@@ -884,7 +917,7 @@ class ViajeResource extends Resource
                             ->label('Motivo de cancelación')
                             ->required(),
                     ])
-                    ->visible(fn($record) => $record->puedeCancelarse())
+                    ->visible(fn ($record) => $record->puedeCancelarse())
                     ->action(function ($record, array $data) {
                         try {
                             $record->cancelar($data['motivo']);
@@ -904,7 +937,7 @@ class ViajeResource extends Resource
                     }),
 
                 Tables\Actions\DeleteAction::make()
-                    ->visible(fn($record) => $record->estado === Viaje::ESTADO_PLANIFICADO),
+                    ->visible(fn ($record) => $record->estado === Viaje::ESTADO_PLANIFICADO),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
@@ -939,16 +972,16 @@ class ViajeResource extends Resource
     {
         $currentUser = Auth::user();
 
-        if (!$currentUser) {
+        if (! $currentUser) {
             return null;
         }
 
         $query = static::getModel()::whereNotIn('estado', [
             Viaje::ESTADO_CERRADO,
-            Viaje::ESTADO_CANCELADO
+            Viaje::ESTADO_CANCELADO,
         ]);
 
-        if (!static::esSuperAdminOJefe()) {
+        if (! static::esSuperAdminOJefe()) {
             $bodegaId = static::getBodegaUsuario();
             if ($bodegaId) {
                 $query->where('bodega_origen_id', $bodegaId);
@@ -956,6 +989,7 @@ class ViajeResource extends Resource
         }
 
         $activos = $query->count();
+
         return $activos ?: null;
     }
 
