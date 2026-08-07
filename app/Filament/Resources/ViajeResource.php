@@ -265,6 +265,14 @@ class ViajeResource extends Resource
                                     ->label('Departamentos')
                                     ->relationship('departamentosZona', 'nombre', fn (Builder $query) => $query->orderBy('nombre'))
                                     ->multiple()
+                                    // OJO: estos dos selects son relaciones belongsToMany, no columnas
+                                    // de `viajes`. Si se dehidratan, su valor entra al array que va a
+                                    // Viaje::create() y explota con MassAssignmentException. Filament
+                                    // ya lo deja en false dentro de relationship(), pero CUALQUIER
+                                    // ->disabled() posterior lo pisa (CanBeDisabled::disabled reescribe
+                                    // el callback de dehydrated), así que acá va explícito. La relación
+                                    // se sigue guardando: saveRelationships() no mira la dehidratación.
+                                    ->dehydrated(false)
                                     ->searchable()
                                     ->preload()
                                     ->native(false)
@@ -297,12 +305,19 @@ class ViajeResource extends Resource
                                             ->orderBy('nombre'),
                                     )
                                     ->multiple()
+                                    // Mismo motivo que arriba. Y por eso este campo NO usa ->disabled():
+                                    // además de pisar la dehidratación, un select deshabilitado se salta
+                                    // saveRelationships(), así que al vaciar los departamentos quedarían
+                                    // municipios huérfanos en el pivote recortando la zona en silencio.
+                                    // Sin departamentos elegidos la lista sale vacía, que es suficiente.
+                                    ->dehydrated(false)
                                     ->searchable()
                                     ->preload()
                                     ->native(false)
-                                    ->placeholder('Departamento completo')
+                                    ->placeholder(fn (Forms\Get $get) => blank($get('departamentosZona'))
+                                        ? 'Elegí primero un departamento'
+                                        : 'Departamento completo')
                                     ->helperText('Si marcás municipios de un departamento, el viaje verá SOLO esos municipios de ese departamento.')
-                                    ->disabled(fn (Forms\Get $get) => blank($get('departamentosZona')))
                                     // Defensa server-side: aunque el select muestre otra cosa, no se
                                     // puede guardar un municipio fuera de los departamentos elegidos.
                                     ->rule(fn (Forms\Get $get) => function (string $attribute, $value, \Closure $fail) use ($get) {
