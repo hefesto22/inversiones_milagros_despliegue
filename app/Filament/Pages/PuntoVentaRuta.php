@@ -2,11 +2,13 @@
 
 namespace App\Filament\Pages;
 
+use App\Exceptions\LimiteVentaDiariaException;
 use App\Models\Cliente;
 use App\Models\Viaje;
 use App\Models\ViajeCarga;
 use App\Models\ViajeVenta;
 use App\Services\PrecioVentaService;
+use App\Services\Viaje\LimiteVentaDiariaService;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
@@ -998,6 +1000,13 @@ class PuntoVentaRuta extends Page implements HasTable
         try {
             DB::beginTransaction();
 
+            // Control: una sola factura de ruta por cliente al día (Consumidor
+            // Final exento; el encargado puede autorizar una extra). Va acá
+            // dentro y no antes del try porque usa lockForUpdate: aparte de
+            // aplicar la regla contra dos usuarios a la vez, frena el doble tap
+            // del chofer con mala señal. Devuelve la autorización usada, si hubo.
+            $autorizacionSegundaVenta = app(LimiteVentaDiariaService::class)->verificar($clienteVenta);
+
             // Generar número de venta único
             $ultimaVenta = ViajeVenta::where('viaje_id', $viaje->id)
                 ->orderBy('id', 'desc')
@@ -1052,6 +1061,11 @@ class PuntoVentaRuta extends Page implements HasTable
                 }
             }
 
+            // La autorización se quema recién ahora, con la venta ya creada y
+            // dentro de la misma transacción: si algo revienta más abajo, el
+            // rollback la devuelve intacta y el encargado no tiene que emitir otra.
+            $autorizacionSegundaVenta?->consumir($venta);
+
             // Actualizar total vendido del viaje
             $viaje->increment('total_vendido', $this->totalFinal);
 
@@ -1089,6 +1103,19 @@ class PuntoVentaRuta extends Page implements HasTable
                 ->duration(5000)
                 ->send();
 
+        } catch (LimiteVentaDiariaException $e) {
+            // No es un error del sistema, es una regla de negocio: se le avisa
+            // al chofer con su propio mensaje y sin cara de "algo se rompió".
+            // El carrito NO se toca: si consigue la autorización, reintenta.
+            DB::rollBack();
+            $this->mostrarConfirmacion = false;
+
+            Notification::make()
+                ->title('Una factura por cliente al día')
+                ->body($e->getMessage())
+                ->warning()
+                ->duration(12000)
+                ->send();
         } catch (\Exception $e) {
             DB::rollBack();
             $this->mostrarConfirmacion = false;

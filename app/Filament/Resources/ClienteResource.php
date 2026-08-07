@@ -442,6 +442,70 @@ class ClienteResource extends Resource
                         ->url(fn (Cliente $record) => static::getUrl('view', ['record' => $record]))
                         ->visible(fn (Cliente $record) => $record->saldo_pendiente > 0),
 
+                    // Válvula del control "una factura de ruta por cliente al día".
+                    // Habilita UNA venta extra para hoy, con motivo y con el nombre
+                    // de quien la autorizó: el control no se levanta, se registra.
+                    // @see \App\Services\Viaje\LimiteVentaDiariaService
+                    Tables\Actions\Action::make('autorizar_segunda_venta')
+                        ->label('Autorizar segunda venta')
+                        ->icon('heroicon-o-shield-check')
+                        ->color('warning')
+                        ->modalHeading(fn (Cliente $record) => 'Autorizar segunda venta a '.$record->nombre)
+                        ->modalDescription('Habilita UNA venta de ruta extra para el día de hoy. Si después necesitan otra más, hay que autorizarla de nuevo.')
+                        ->modalSubmitActionLabel('Autorizar')
+                        // Consumidor Final no tiene límite, así que no hay nada que autorizarle.
+                        ->visible(fn (Cliente $record) => ! $record->esConsumidorFinal()
+                            && (Auth::user()?->hasAnyRole(['Super Admin', 'Jefe', 'Encargado']) ?? false))
+                        ->form([
+                            Forms\Components\Placeholder::make('situacion_de_hoy')
+                                ->label('Situación de hoy')
+                                ->content(function (Cliente $record) {
+                                    $servicio = app(\App\Services\Viaje\LimiteVentaDiariaService::class);
+                                    $ventas = $servicio->ventasVivasDelDia($record);
+                                    $pendientes = $servicio->autorizacionesDisponibles($record);
+
+                                    return $ventas.' '.($ventas === 1 ? 'venta de ruta hoy' : 'ventas de ruta hoy')
+                                        .' · '.$pendientes.' '.($pendientes === 1 ? 'autorización sin usar' : 'autorizaciones sin usar');
+                                }),
+
+                            Forms\Components\Textarea::make('motivo')
+                                ->label('Motivo')
+                                ->required()
+                                ->maxLength(255)
+                                ->rows(2)
+                                ->placeholder('Ej: el cliente pidió más producto en la tarde'),
+                        ])
+                        ->action(function (Cliente $record, array $data) {
+                            $servicio = app(\App\Services\Viaje\LimiteVentaDiariaService::class);
+
+                            // Que no se apilen autorizaciones sin usar: si ya hay una
+                            // viva, el chofer todavía la tiene disponible.
+                            if ($servicio->autorizacionesDisponibles($record) > 0) {
+                                \Filament\Notifications\Notification::make()
+                                    ->title('Ya hay una autorización sin usar')
+                                    ->body($record->nombre.' ya tiene una autorización vigente para hoy. El chofer puede facturar con esa.')
+                                    ->warning()
+                                    ->duration(8000)
+                                    ->send();
+
+                                return;
+                            }
+
+                            \App\Models\AutorizacionSegundaVenta::create([
+                                'cliente_id' => $record->id,
+                                'fecha' => today(),
+                                'autorizado_por' => Auth::id(),
+                                'motivo' => $data['motivo'],
+                            ]);
+
+                            \Filament\Notifications\Notification::make()
+                                ->title('Autorización creada')
+                                ->body('El chofer ya puede hacerle una segunda venta a '.$record->nombre.' hoy. Vale por una sola.')
+                                ->success()
+                                ->duration(8000)
+                                ->send();
+                        }),
+
                     Tables\Actions\DeleteAction::make()
                         ->visible(fn (Cliente $record) => $record->saldo_pendiente <= 0),
                 ]),
