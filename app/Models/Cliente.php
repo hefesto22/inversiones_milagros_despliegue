@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -445,6 +446,94 @@ class Cliente extends Model
     public function scopeRuta($query)
     {
         return $query->where('tipo', 'ruta');
+    }
+
+    // ============================================
+    // ZONA DE RUTA
+    // ============================================
+
+    /**
+     * Clientes que el vendedor puede atender en un viaje, según su zona de ruta.
+     *
+     * ESTA ES LA ÚNICA FUENTE DE VERDAD DE LA REGLA. No duplicarla en el
+     * buscador, en la vista ni en las validaciones: todos pasan por acá.
+     *
+     * REGLA:
+     *
+     *   1. Sin viaje, o viaje sin zona definida → no se filtra nada.
+     *      Los viajes históricos y los que ya iban en ruta siguen igual que
+     *      antes de esta feature (sin regresión).
+     *
+     *   2. Cliente COMODÍN → visible en TODOS los viajes.
+     *      Es comodín el que no tiene departamento, o no tiene municipio, o
+     *      ninguno de los dos: solo se considera "ubicado" el que tiene AMBOS.
+     *      Así los clientes viejos siguen atendiéndose hasta que alguien les
+     *      asigne zona (ver acción masiva "Asignar zona" en Clientes).
+     *      Incluye a "Consumidor Final", que no tiene ubicación.
+     *
+     *   3. Cliente ubicado → entra si:
+     *      a) su departamento está en la zona y ese departamento NO tiene
+     *         municipios marcados (o sea, entra completo), o
+     *      b) su municipio está entre los municipios marcados.
+     *
+     * Marcar municipios de un departamento lo RECORTA a esos municipios, no
+     * lo amplía. Ej.: zona = Cortés + Yoro con Choloma marcado → el vendedor
+     * ve todo Yoro, pero de Cortés solo Choloma. Más todos los comodines.
+     *
+     * @see \App\Models\Viaje::departamentosZona()
+     * @see \App\Models\Cliente::perteneceAZonaDe()
+     */
+    public function scopeEnZonaDe(Builder $query, ?Viaje $viaje): Builder
+    {
+        if (! $viaje) {
+            return $query;
+        }
+
+        $departamentoIds = $viaje->departamentosZona()->pluck('departamentos.id')->all();
+
+        // Se traen id + departamento_id de una sola vez: sirven para saber qué
+        // municipios entran y qué departamentos quedan recortados.
+        $municipios = $viaje->municipiosZona()->get(['municipios.id', 'municipios.departamento_id']);
+        $municipioIds = $municipios->pluck('id')->all();
+
+        // Viaje sin zona → sin filtro.
+        if (! $departamentoIds && ! $municipioIds) {
+            return $query;
+        }
+
+        // Departamentos que entran COMPLETOS: los de la zona a los que no se
+        // les marcó ningún municipio.
+        $departamentosRecortados = $municipios->pluck('departamento_id')->unique()->all();
+        $departamentosCompletos = array_values(array_diff($departamentoIds, $departamentosRecortados));
+
+        return $query->where(function (Builder $sub) use ($departamentosCompletos, $municipioIds) {
+            // Comodines: siempre visibles.
+            $sub->whereNull('clientes.departamento_id')
+                ->orWhereNull('clientes.municipio_id');
+
+            if ($departamentosCompletos) {
+                $sub->orWhereIn('clientes.departamento_id', $departamentosCompletos);
+            }
+
+            if ($municipioIds) {
+                $sub->orWhereIn('clientes.municipio_id', $municipioIds);
+            }
+        });
+    }
+
+    /**
+     * ¿Este cliente puede atenderse en este viaje?
+     *
+     * Reusa literalmente el mismo SQL del scope para que la lista que ve el
+     * vendedor y la validación del servidor no puedan divergir nunca: si un
+     * día cambia la regla, cambia en un solo lugar y los dos la heredan.
+     */
+    public function perteneceAZonaDe(?Viaje $viaje): bool
+    {
+        return static::query()
+            ->whereKey($this->getKey())
+            ->enZonaDe($viaje)
+            ->exists();
     }
 
     // ============================================
