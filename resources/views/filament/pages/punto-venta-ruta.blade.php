@@ -108,6 +108,17 @@
         </div>
 
         @if (!$tieneCliente)
+        {{-- Zona de ruta del viaje: explica por qué la lista está recortada --}}
+        @if ($this->zonaDelViaje)
+        <div class="mt-4 flex items-start gap-2 p-3 rounded-lg bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800">
+            <x-heroicon-o-map-pin class="w-5 h-5 shrink-0 text-blue-600 dark:text-blue-400" />
+            <p class="text-sm text-blue-800 dark:text-blue-200">
+                <span class="font-semibold">Zona de este viaje:</span> {{ $this->zonaDelViaje }}.
+                Solo aparecen los clientes de esta zona (más los que aún no tienen zona asignada).
+            </p>
+        </div>
+        @endif
+
         {{-- Buscador de cliente --}}
         <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -157,7 +168,9 @@
                     wire:change="seleccionarCliente($event.target.value)"
                     class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-primary-500 focus:border-primary-500">
                     <option value="">-- Seleccionar cliente --</option>
-                    @foreach (\App\Models\Cliente::where('estado', true)->orderBy('nombre')->limit(50)->get() as $cliente)
+                    {{-- La lista sale del componente (PuntoVentaRuta::clientesDeLaZona)
+                         para que respete la zona del viaje igual que el buscador. --}}
+                    @foreach ($this->clientesDeLaZona() as $cliente)
                     <option value="{{ $cliente->id }}">
                         {{ $cliente->nombre }}
                         @if ($cliente->tipo) ({{ ucfirst($cliente->tipo) }}) @endif

@@ -7,13 +7,13 @@ use App\Filament\Resources\ClienteResource\RelationManagers;
 use App\Models\Cliente;
 use Filament\Forms;
 use Filament\Forms\Form;
+use Filament\Infolists;
+use Filament\Infolists\Infolist;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
-use Filament\Infolists;
-use Filament\Infolists\Infolist;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Auth;
 
 class ClienteResource extends Resource
 {
@@ -159,12 +159,13 @@ class ClienteResource extends Resource
                                 Forms\Components\Placeholder::make('saldo_actual')
                                     ->label('Saldo Pendiente Actual')
                                     ->content(function (?Cliente $record): string {
-                                        if (!$record) {
+                                        if (! $record) {
                                             return 'L 0.00';
                                         }
                                         $saldo = $record->saldo_pendiente ?? 0;
                                         $color = $saldo > 0 ? 'text-red-600 font-bold' : 'text-green-600';
-                                        return "<span class='{$color}'>L " . number_format($saldo, 2) . "</span>";
+
+                                        return "<span class='{$color}'>L ".number_format($saldo, 2).'</span>';
                                     })
                                     ->extraAttributes(['class' => 'text-lg'])
                                     ->visible(fn ($livewire) => $livewire instanceof Pages\EditCliente),
@@ -174,7 +175,7 @@ class ClienteResource extends Resource
                         Forms\Components\Placeholder::make('info_credito')
                             ->label('')
                             ->content(function (?Cliente $record): string {
-                                if (!$record || !$record->limite_credito || $record->limite_credito <= 0) {
+                                if (! $record || ! $record->limite_credito || $record->limite_credito <= 0) {
                                     return '';
                                 }
 
@@ -193,14 +194,14 @@ class ClienteResource extends Resource
                                     <div class='space-y-2'>
                                         <div class='flex justify-between text-sm'>
                                             <span>Crédito Disponible:</span>
-                                            <span class='font-semibold'>L " . number_format($disponible, 2) . "</span>
+                                            <span class='font-semibold'>L ".number_format($disponible, 2)."</span>
                                         </div>
                                         <div class='w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700'>
-                                            <div class='{$colorBarra} h-2.5 rounded-full' style='width: " . min($porcentajeUsado, 100) . "%'></div>
+                                            <div class='{$colorBarra} h-2.5 rounded-full' style='width: ".min($porcentajeUsado, 100)."%'></div>
                                         </div>
-                                        <div class='text-xs text-gray-500 text-right'>" . number_format($porcentajeUsado, 1) . "% utilizado</div>
+                                        <div class='text-xs text-gray-500 text-right'>".number_format($porcentajeUsado, 1).'% utilizado</div>
                                     </div>
-                                ";
+                                ';
                             })
                             ->columnSpanFull()
                             ->visible(fn ($livewire) => $livewire instanceof Pages\EditCliente),
@@ -324,8 +325,7 @@ class ClienteResource extends Resource
                     ->money('HNL')
                     ->sortable()
                     ->toggleable()
-                    ->description(fn (Cliente $record): string =>
-                        $record->dias_credito > 0 ? "{$record->dias_credito} días" : 'Contado'
+                    ->description(fn (Cliente $record): string => $record->dias_credito > 0 ? "{$record->dias_credito} días" : 'Contado'
                     ),
 
                 Tables\Columns\TextColumn::make('saldo_pendiente')
@@ -344,6 +344,7 @@ class ClienteResource extends Resource
                         if ($record->tieneDeudaVencida()) {
                             return '⚠️ Vencida';
                         }
+
                         return null;
                     }),
 
@@ -354,7 +355,8 @@ class ClienteResource extends Resource
                         if ($state === PHP_FLOAT_MAX) {
                             return 'Sin límite';
                         }
-                        return 'L ' . number_format($state, 2);
+
+                        return 'L '.number_format($state, 2);
                     })
                     ->color('success')
                     ->toggleable(isToggledHiddenByDefault: true),
@@ -440,12 +442,148 @@ class ClienteResource extends Resource
                         ->url(fn (Cliente $record) => static::getUrl('view', ['record' => $record]))
                         ->visible(fn (Cliente $record) => $record->saldo_pendiente > 0),
 
+                    // Válvula del control "una factura de ruta por cliente al día".
+                    // Habilita UNA venta extra para hoy, con motivo y con el nombre
+                    // de quien la autorizó: el control no se levanta, se registra.
+                    // @see \App\Services\Viaje\LimiteVentaDiariaService
+                    Tables\Actions\Action::make('autorizar_segunda_venta')
+                        ->label('Autorizar segunda venta')
+                        ->icon('heroicon-o-shield-check')
+                        ->color('warning')
+                        ->modalHeading(fn (Cliente $record) => 'Autorizar segunda venta a '.$record->nombre)
+                        ->modalDescription('Habilita UNA venta de ruta extra para el día de hoy. Si después necesitan otra más, hay que autorizarla de nuevo.')
+                        ->modalSubmitActionLabel('Autorizar')
+                        // Consumidor Final no tiene límite, así que no hay nada que autorizarle.
+                        // El rol de super admin de Shield se llama `super_admin`, no "Super Admin".
+                        ->visible(fn (Cliente $record) => ! $record->esConsumidorFinal()
+                            && (Auth::user()?->hasAnyRole([
+                                config('filament-shield.super_admin.name', 'super_admin'),
+                                'Jefe',
+                                'Encargado',
+                            ]) ?? false))
+                        ->form([
+                            Forms\Components\Placeholder::make('situacion_de_hoy')
+                                ->label('Situación de hoy')
+                                ->content(function (Cliente $record) {
+                                    $servicio = app(\App\Services\Viaje\LimiteVentaDiariaService::class);
+                                    $ventas = $servicio->ventasVivasDelDia($record);
+                                    $pendientes = $servicio->autorizacionesDisponibles($record);
+
+                                    return $ventas.' '.($ventas === 1 ? 'venta de ruta hoy' : 'ventas de ruta hoy')
+                                        .' · '.$pendientes.' '.($pendientes === 1 ? 'autorización sin usar' : 'autorizaciones sin usar');
+                                }),
+
+                            Forms\Components\Textarea::make('motivo')
+                                ->label('Motivo')
+                                ->required()
+                                ->maxLength(255)
+                                ->rows(2)
+                                ->placeholder('Ej: el cliente pidió más producto en la tarde'),
+                        ])
+                        ->action(function (Cliente $record, array $data) {
+                            $servicio = app(\App\Services\Viaje\LimiteVentaDiariaService::class);
+
+                            // Que no se apilen autorizaciones sin usar: si ya hay una
+                            // viva, el chofer todavía la tiene disponible.
+                            if ($servicio->autorizacionesDisponibles($record) > 0) {
+                                \Filament\Notifications\Notification::make()
+                                    ->title('Ya hay una autorización sin usar')
+                                    ->body($record->nombre.' ya tiene una autorización vigente para hoy. El chofer puede facturar con esa.')
+                                    ->warning()
+                                    ->duration(8000)
+                                    ->send();
+
+                                return;
+                            }
+
+                            \App\Models\AutorizacionSegundaVenta::create([
+                                'cliente_id' => $record->id,
+                                'fecha' => today(),
+                                'autorizado_por' => Auth::id(),
+                                'motivo' => $data['motivo'],
+                            ]);
+
+                            \Filament\Notifications\Notification::make()
+                                ->title('Autorización creada')
+                                ->body('El chofer ya puede hacerle una segunda venta a '.$record->nombre.' hoy. Vale por una sola.')
+                                ->success()
+                                ->duration(8000)
+                                ->send();
+                        }),
+
                     Tables\Actions\DeleteAction::make()
                         ->visible(fn (Cliente $record) => $record->saldo_pendiente <= 0),
                 ]),
             ])
             ->bulkActions([
                 Tables\Actions\BulkActionGroup::make([
+                    // Asignar zona en bloque.
+                    //
+                    // Existe porque los clientes creados antes del catálogo
+                    // geográfico no tienen departamento/municipio, y mientras no
+                    // lo tengan aparecen en TODOS los viajes (son "comodines",
+                    // ver Cliente::scopeEnZonaDe). Editarlos de a uno para
+                    // cientos de clientes no es viable.
+                    Tables\Actions\BulkAction::make('asignar_zona')
+                        ->label('Asignar zona')
+                        ->icon('heroicon-o-map-pin')
+                        ->color('warning')
+                        ->modalHeading('Asignar departamento y municipio')
+                        ->modalDescription('Se aplica a TODOS los clientes seleccionados y reemplaza la ubicación que tuvieran. Mientras un cliente no tenga zona, aparece en todos los viajes.')
+                        ->modalSubmitActionLabel('Asignar')
+                        ->visible(fn () => Auth::user()?->can('update_cliente') ?? false)
+                        ->form([
+                            Forms\Components\Select::make('departamento_id')
+                                ->label('Departamento')
+                                ->required()
+                                ->options(fn () => \App\Models\Departamento::orderBy('nombre')->pluck('nombre', 'id'))
+                                ->searchable()
+                                ->preload()
+                                ->native(false)
+                                ->live()
+                                ->afterStateUpdated(fn (Forms\Set $set) => $set('municipio_id', null)),
+
+                            Forms\Components\Select::make('municipio_id')
+                                ->label('Municipio')
+                                ->required()
+                                ->options(fn (Forms\Get $get) => filled($get('departamento_id'))
+                                    ? \App\Models\Municipio::where('departamento_id', $get('departamento_id'))
+                                        ->orderBy('nombre')
+                                        ->pluck('nombre', 'id')
+                                    : [])
+                                ->searchable()
+                                ->preload()
+                                ->native(false)
+                                ->disabled(fn (Forms\Get $get) => blank($get('departamento_id')))
+                                ->placeholder('Seleccione primero un departamento')
+                                // Misma defensa que en el formulario del cliente.
+                                ->rule(fn (Forms\Get $get) => function (string $attribute, $value, \Closure $fail) use ($get) {
+                                    if (filled($value) && ! \App\Models\Municipio::where('id', $value)
+                                        ->where('departamento_id', $get('departamento_id'))
+                                        ->exists()) {
+                                        $fail('El municipio no pertenece al departamento seleccionado.');
+                                    }
+                                }),
+                        ])
+                        ->action(function (\Illuminate\Support\Collection $records, array $data): void {
+                            // update() masivo: no dispara eventos de modelo, por eso
+                            // updated_at y updated_by se ponen a mano.
+                            $actualizados = Cliente::whereKey($records->pluck('id'))->update([
+                                'departamento_id' => $data['departamento_id'],
+                                'municipio_id' => $data['municipio_id'],
+                                'updated_by' => Auth::id(),
+                                'updated_at' => now(),
+                            ]);
+
+                            \Filament\Notifications\Notification::make()
+                                ->title('Zona asignada')
+                                ->body($actualizados.' '.($actualizados === 1 ? 'cliente actualizado' : 'clientes actualizados').'. Ya solo aparecerán en los viajes que cubran esa zona.')
+                                ->success()
+                                ->duration(6000)
+                                ->send();
+                        })
+                        ->deselectRecordsAfterCompletion(),
+
                     Tables\Actions\DeleteBulkAction::make()
                         ->before(function ($records) {
                             foreach ($records as $record) {
@@ -546,7 +684,8 @@ class ClienteResource extends Resource
                                         if ($state === PHP_FLOAT_MAX) {
                                             return 'Sin límite';
                                         }
-                                        return 'L ' . number_format($state, 2);
+
+                                        return 'L '.number_format($state, 2);
                                     })
                                     ->color('success'),
 

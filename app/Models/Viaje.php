@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -164,6 +165,92 @@ class Viaje extends Model
     public function movimientosCuenta(): HasMany
     {
         return $this->hasMany(ChoferCuentaMovimiento::class, 'viaje_id');
+    }
+
+    // ============================================
+    // ZONA DE RUTA
+    // ============================================
+    //
+    // Define por dónde pasa el viaje para que el vendedor solo vea, en el
+    // Punto de Venta en Ruta, los clientes de esa zona.
+    //
+    // La regla de qué cliente entra y cuál no vive en UN SOLO lugar:
+    // Cliente::scopeEnZonaDe(). Estas relaciones solo guardan el dato.
+
+    /**
+     * Departamentos que cubre el viaje.
+     *
+     * Un departamento sin municipios marcados entra COMPLETO.
+     */
+    public function departamentosZona(): BelongsToMany
+    {
+        return $this->belongsToMany(Departamento::class, 'viaje_departamento', 'viaje_id', 'departamento_id')
+            ->withTimestamps();
+    }
+
+    /**
+     * Municipios puntuales que cubre el viaje.
+     *
+     * Marcar municipios de un departamento RECORTA ese departamento a solo
+     * esos municipios (no lo amplía).
+     */
+    public function municipiosZona(): BelongsToMany
+    {
+        return $this->belongsToMany(Municipio::class, 'viaje_municipio', 'viaje_id', 'municipio_id')
+            ->withTimestamps();
+    }
+
+    /**
+     * ¿El viaje tiene zona definida?
+     *
+     * Sin zona = el vendedor ve todos los clientes (comportamiento histórico:
+     * los viajes viejos y los que ya iban en ruta no cambian).
+     */
+    public function tieneZonaDefinida(): bool
+    {
+        return $this->departamentosZona()->exists() || $this->municipiosZona()->exists();
+    }
+
+    /**
+     * Zona en texto legible para mostrarle al chofer y al jefe.
+     *
+     * Ej.: "Cortés (Choloma, La Lima) · Yoro" — Cortés recortado a dos
+     * municipios, Yoro completo. Retorna null si el viaje no tiene zona.
+     */
+    public function descripcionZona(): ?string
+    {
+        $departamentos = $this->departamentosZona()
+            ->orderBy('departamentos.nombre')
+            ->get(['departamentos.id', 'departamentos.nombre']);
+
+        $municipios = $this->municipiosZona()
+            ->orderBy('municipios.nombre')
+            ->get(['municipios.id', 'municipios.nombre', 'municipios.departamento_id']);
+
+        if ($departamentos->isEmpty() && $municipios->isEmpty()) {
+            return null;
+        }
+
+        $municipiosPorDepartamento = $municipios->groupBy('departamento_id');
+
+        $partes = $departamentos->map(function (Departamento $departamento) use ($municipiosPorDepartamento) {
+            $suyos = $municipiosPorDepartamento->get($departamento->id);
+
+            return $suyos && $suyos->isNotEmpty()
+                ? $departamento->nombre.' ('.$suyos->pluck('nombre')->implode(', ').')'
+                : $departamento->nombre;
+        })->all();
+
+        // Municipios cuyo departamento no quedó seleccionado. El formulario no
+        // permite llegar a este estado, pero si el dato existiera igual se
+        // muestra en vez de desaparecer en silencio.
+        $huerfanos = $municipios->whereNotIn('departamento_id', $departamentos->pluck('id')->all());
+
+        foreach ($huerfanos as $municipio) {
+            $partes[] = $municipio->nombre;
+        }
+
+        return implode(' · ', $partes);
     }
 
     // ============================================

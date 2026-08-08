@@ -78,10 +78,19 @@ class Dashboard extends BaseDashboard
         };
     }
 
+    /**
+     * Widgets del Escritorio.
+     *
+     * OJO: esta lista es EXPLÍCITA y le gana al auto-descubrimiento del panel
+     * (`discoverWidgets` en AdminPanelProvider). Un widget nuevo puede estar
+     * perfectamente descubierto y aun así no aparecer si no se agrega acá.
+     * Quién ve cada uno lo decide el propio widget en su canView().
+     */
     public function getWidgets(): array
     {
         return [
             \App\Filament\Widgets\EstadoResultados::class,
+            \App\Filament\Widgets\ExistenciasInventario::class,
             \App\Filament\Widgets\StatsOverview::class,
             \App\Filament\Widgets\VentasChart::class,
             \App\Filament\Widgets\VentasRecientes::class,

@@ -1,15 +1,16 @@
 <?php
 
+use App\Filament\Pages\PuntoVentaRuta;
 use App\Http\Controllers\CargaChoferPdfController;
 use App\Http\Controllers\CotizacionPdfController;
 use App\Http\Controllers\EstadoResultadosPdfController;
+use App\Http\Controllers\ExistenciasPdfController;
 use App\Http\Controllers\FacturaVentaController;
 use App\Http\Controllers\LiquidacionViajePdfController;
 use App\Http\Controllers\ViajeVentaController;
 use App\Livewire\Settings\Appearance;
 use App\Livewire\Settings\Password;
 use App\Livewire\Settings\Profile;
-use App\Models\Cliente;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -31,23 +32,20 @@ Route::middleware(['auth'])->group(function () {
 
     // API para buscar clientes (Punto de Venta en Ruta)
     // throttle:60,1 → máximo 60 peticiones por minuto por IP para evitar scraping/abuso
+    //
+    // La consulta vive en PuntoVentaRuta::buscarClientes() para que el buscador,
+    // el desplegable de respaldo y las validaciones de venta compartan el MISMO
+    // filtro de zona (Cliente::scopeEnZonaDe). El viaje se resuelve del usuario
+    // autenticado, nunca de un parámetro del navegador: así nadie puede pedir
+    // la cartera de otra zona cambiando la URL.
     Route::get('/api/clientes/buscar', function (Request $request) {
-        $query = $request->get('q', '');
+        $query = trim((string) $request->get('q', ''));
 
-        if (strlen($query) < 2) {
+        if (mb_strlen($query) < 2) {
             return response()->json([]);
         }
 
-        $clientes = Cliente::where('estado', true)
-            ->where(function ($q) use ($query) {
-                $q->where('nombre', 'like', "%{$query}%")
-                    ->orWhere('rtn', 'like', "%{$query}%")
-                    ->orWhere('telefono', 'like', "%{$query}%");
-            })
-            ->limit(10)
-            ->get(['id', 'nombre', 'rtn', 'telefono', 'tipo']);
-
-        return response()->json($clientes);
+        return response()->json(PuntoVentaRuta::buscarClientes($query));
     })->middleware('throttle:60,1');
 
     // Imprimir venta de viaje
@@ -106,6 +104,19 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/pdf/estado-resultados/download', [EstadoResultadosPdfController::class, 'download'])
         ->middleware('can:widget_EstadoResultados')
         ->name('estado-resultados.download');
+
+    // =====================================================
+    // EXISTENCIAS DE INVENTARIO
+    // =====================================================
+    // Hoja para contar físico: qué hay y dónde está, sin costos.
+    // La autorización (Super Admin / Jefe) se valida dentro del controlador,
+    // por rol y no con un permiso de Shield — ver el comentario del archivo.
+
+    Route::get('/pdf/existencias', [ExistenciasPdfController::class, 'generate'])
+        ->name('existencias.pdf');
+
+    Route::get('/pdf/existencias/download', [ExistenciasPdfController::class, 'download'])
+        ->name('existencias.download');
 });
 
 require __DIR__.'/auth.php';

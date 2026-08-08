@@ -2,11 +2,13 @@
 
 namespace App\Filament\Pages;
 
+use App\Exceptions\LimiteVentaDiariaException;
 use App\Models\Cliente;
 use App\Models\Viaje;
 use App\Models\ViajeCarga;
 use App\Models\ViajeVenta;
 use App\Services\PrecioVentaService;
+use App\Services\Viaje\LimiteVentaDiariaService;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
@@ -183,10 +185,25 @@ class PuntoVentaRuta extends Page implements HasTable
 
     /**
      * Seleccionar cliente
+     *
+     * Este método es invocable desde el navegador con cualquier ID (Livewire
+     * expone los métodos públicos), así que la zona se valida ACÁ y no solo
+     * escondiendo clientes de la lista.
      */
     public function seleccionarCliente(int $clienteId): void
     {
         $cliente = Cliente::find($clienteId);
+
+        if ($cliente && ! $cliente->perteneceAZonaDe($this->viajeActual)) {
+            Notification::make()
+                ->title('Cliente fuera de la zona del viaje')
+                ->body($cliente->nombre.' no está en la zona asignada a este viaje. Pida al encargado que amplíe la zona o que le asigne el municipio correcto al cliente.')
+                ->danger()
+                ->duration(8000)
+                ->send();
+
+            return;
+        }
 
         if ($cliente) {
             $this->cliente_id = $cliente->id;
@@ -257,11 +274,16 @@ class PuntoVentaRuta extends Page implements HasTable
     }
 
     /**
-     * Buscar clientes (para API o uso interno)
+     * Buscar clientes (usado por el endpoint /api/clientes/buscar del buscador).
+     *
+     * El viaje NO se recibe por parámetro a propósito: se resuelve del usuario
+     * autenticado, para que nadie pueda pedir la cartera de otra zona desde el
+     * navegador. Usuario sin viaje en ruta (ej. un admin) → sin filtro.
      */
     public static function buscarClientes(string $query): array
     {
         return Cliente::where('estado', true)
+            ->enZonaDe(static::getViajeActivoUsuario())
             ->where(function ($q) use ($query) {
                 $q->where('nombre', 'like', "%{$query}%")
                     ->orWhere('rtn', 'like', "%{$query}%")
@@ -270,6 +292,31 @@ class PuntoVentaRuta extends Page implements HasTable
             ->limit(10)
             ->get(['id', 'nombre', 'rtn', 'telefono', 'tipo'])
             ->toArray();
+    }
+
+    /**
+     * Clientes de la zona del viaje, para el desplegable de respaldo.
+     *
+     * Antes la vista traía los clientes con una consulta propia incrustada en
+     * el blade; ahora pasa por el mismo scope que todo lo demás.
+     */
+    public function clientesDeLaZona(int $limite = 50): \Illuminate\Support\Collection
+    {
+        return Cliente::where('estado', true)
+            ->enZonaDe($this->viajeActual)
+            ->orderBy('nombre')
+            ->limit($limite)
+            ->get(['id', 'nombre', 'tipo']);
+    }
+
+    /**
+     * Zona del viaje en texto, para que el chofer entienda por qué ve estos
+     * clientes y no otros. null = viaje sin zona (ve todos).
+     */
+    #[Computed]
+    public function zonaDelViaje(): ?string
+    {
+        return $this->viajeActual?->descripcionZona();
     }
 
     /**
@@ -933,8 +980,32 @@ class PuntoVentaRuta extends Page implements HasTable
             return;
         }
 
+        // Última verificación antes de tocar la base: el cliente puede haber
+        // quedado fuera de zona entre que se seleccionó y se cobró (le
+        // asignaron municipio, o cambió la zona del viaje). Vale más rechazar
+        // la venta que dejar una venta imposible de explicar en la liquidación.
+        $clienteVenta = Cliente::find($this->cliente_id);
+
+        if (! $clienteVenta || ! $clienteVenta->perteneceAZonaDe($viaje)) {
+            Notification::make()
+                ->title('Cliente fuera de la zona del viaje')
+                ->body('Este cliente ya no pertenece a la zona asignada a este viaje. Consulte con el encargado antes de facturarle.')
+                ->danger()
+                ->duration(8000)
+                ->send();
+
+            return;
+        }
+
         try {
             DB::beginTransaction();
+
+            // Control: una sola factura de ruta por cliente al día (Consumidor
+            // Final exento; el encargado puede autorizar una extra). Va acá
+            // dentro y no antes del try porque usa lockForUpdate: aparte de
+            // aplicar la regla contra dos usuarios a la vez, frena el doble tap
+            // del chofer con mala señal. Devuelve la autorización usada, si hubo.
+            $autorizacionSegundaVenta = app(LimiteVentaDiariaService::class)->verificar($clienteVenta);
 
             // Generar número de venta único
             $ultimaVenta = ViajeVenta::where('viaje_id', $viaje->id)
@@ -990,6 +1061,11 @@ class PuntoVentaRuta extends Page implements HasTable
                 }
             }
 
+            // La autorización se quema recién ahora, con la venta ya creada y
+            // dentro de la misma transacción: si algo revienta más abajo, el
+            // rollback la devuelve intacta y el encargado no tiene que emitir otra.
+            $autorizacionSegundaVenta?->consumir($venta);
+
             // Actualizar total vendido del viaje
             $viaje->increment('total_vendido', $this->totalFinal);
 
@@ -1027,6 +1103,19 @@ class PuntoVentaRuta extends Page implements HasTable
                 ->duration(5000)
                 ->send();
 
+        } catch (LimiteVentaDiariaException $e) {
+            // No es un error del sistema, es una regla de negocio: se le avisa
+            // al chofer con su propio mensaje y sin cara de "algo se rompió".
+            // El carrito NO se toca: si consigue la autorización, reintenta.
+            DB::rollBack();
+            $this->mostrarConfirmacion = false;
+
+            Notification::make()
+                ->title('Una factura por cliente al día')
+                ->body($e->getMessage())
+                ->warning()
+                ->duration(12000)
+                ->send();
         } catch (\Exception $e) {
             DB::rollBack();
             $this->mostrarConfirmacion = false;
@@ -1041,6 +1130,9 @@ class PuntoVentaRuta extends Page implements HasTable
 
     /**
      * Buscar cliente por RTN
+     *
+     * Segunda puerta de entrada a un cliente: también respeta la zona, si no
+     * el filtro se saltaría escribiendo el RTN a mano.
      */
     public function buscarCliente(): void
     {
@@ -1049,6 +1141,17 @@ class PuntoVentaRuta extends Page implements HasTable
         }
 
         $cliente = Cliente::where('rtn', $this->rtn_cliente)->first();
+
+        if ($cliente && ! $cliente->perteneceAZonaDe($this->viajeActual)) {
+            Notification::make()
+                ->title('Cliente fuera de la zona del viaje')
+                ->body($cliente->nombre.' no está en la zona asignada a este viaje.')
+                ->danger()
+                ->duration(8000)
+                ->send();
+
+            return;
+        }
 
         if ($cliente) {
             $this->cliente_id = $cliente->id;

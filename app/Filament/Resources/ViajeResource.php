@@ -5,6 +5,7 @@ namespace App\Filament\Resources;
 use App\Filament\Resources\ViajeResource\Pages;
 use App\Filament\Resources\ViajeResource\RelationManagers;
 use App\Models\Camion;
+use App\Models\Municipio;
 use App\Models\User;
 use App\Models\Viaje;
 use Filament\Forms;
@@ -81,6 +82,27 @@ class ViajeResource extends Resource
         }
 
         return $query->pluck('chofer_id')->toArray();
+    }
+
+    /**
+     * ¿Se puede editar la zona de ruta de este viaje?
+     *
+     * Libre mientras el viaje no ha salido (planificado o cargando). Una vez
+     * en ruta o después, solo Super Admin o Jefe: cambiarle la zona a un
+     * chofer que ya va vendiendo le mueve la lista de clientes bajo los pies.
+     */
+    protected static function puedeEditarZona(?Viaje $record): bool
+    {
+        // Viaje nuevo: todavía no salió nadie.
+        if (! $record) {
+            return true;
+        }
+
+        if (in_array($record->estado, [Viaje::ESTADO_PLANIFICADO, Viaje::ESTADO_CARGANDO], true)) {
+            return true;
+        }
+
+        return static::esSuperAdminOJefe();
     }
 
     public static function getEloquentQuery(): Builder
@@ -226,6 +248,104 @@ class ViajeResource extends Resource
                             ->columnSpanFull()
                             ->placeholder('Observaciones del viaje'),
                     ]),
+
+                Forms\Components\Section::make('Zona de Ruta')
+                    ->icon('heroicon-o-map-pin')
+                    ->description('Define qué clientes verá el vendedor en el Punto de Venta durante este viaje. Si la dejás vacía, verá todos. Los clientes que todavía no tienen departamento y municipio asignados aparecen en todos los viajes.')
+                    ->schema([
+                        // Grid EDITABLE. Se oculta entero (no se deshabilita) cuando el
+                        // viaje ya salió y el usuario no es Super Admin/Jefe: un select
+                        // de relación deshabilitado puede llegar a sincronizar vacío al
+                        // guardar el formulario y borrar la zona sin que nadie lo pida.
+                        // Oculto, Filament ni siquiera lo mira.
+                        Forms\Components\Grid::make(2)
+                            ->visible(fn (?Viaje $record) => static::puedeEditarZona($record))
+                            ->schema([
+                                Forms\Components\Select::make('departamentosZona')
+                                    ->label('Departamentos')
+                                    ->relationship('departamentosZona', 'nombre', fn (Builder $query) => $query->orderBy('nombre'))
+                                    ->multiple()
+                                    // OJO: estos dos selects son relaciones belongsToMany, no columnas
+                                    // de `viajes`. Si se dehidratan, su valor entra al array que va a
+                                    // Viaje::create() y explota con MassAssignmentException. Filament
+                                    // ya lo deja en false dentro de relationship(), pero CUALQUIER
+                                    // ->disabled() posterior lo pisa (CanBeDisabled::disabled reescribe
+                                    // el callback de dehydrated), así que acá va explícito. La relación
+                                    // se sigue guardando: saveRelationships() no mira la dehidratación.
+                                    ->dehydrated(false)
+                                    ->searchable()
+                                    ->preload()
+                                    ->native(false)
+                                    ->live()
+                                    ->placeholder('Sin restricción (ve todos los clientes)')
+                                    ->helperText('Cada departamento entra COMPLETO, salvo que le marqués municipios al lado.')
+                                    // Al quitar un departamento se caen los municipios que dependían de él.
+                                    ->afterStateUpdated(function ($state, Forms\Get $get, Set $set) {
+                                        $municipios = $get('municipiosZona') ?: [];
+
+                                        if (! $municipios) {
+                                            return;
+                                        }
+
+                                        $set('municipiosZona', Municipio::whereIn('id', $municipios)
+                                            ->whereIn('departamento_id', $state ?: [0])
+                                            ->pluck('id')
+                                            ->map(fn ($id) => (string) $id)
+                                            ->all());
+                                    }),
+
+                                Forms\Components\Select::make('municipiosZona')
+                                    ->label('Municipios (opcional)')
+                                    ->relationship(
+                                        name: 'municipiosZona',
+                                        titleAttribute: 'nombre',
+                                        // Cascada: solo municipios de los departamentos elegidos.
+                                        modifyQueryUsing: fn (Builder $query, Forms\Get $get) => $query
+                                            ->whereIn('departamento_id', $get('departamentosZona') ?: [0])
+                                            ->orderBy('nombre'),
+                                    )
+                                    ->multiple()
+                                    // Mismo motivo que arriba. Y por eso este campo NO usa ->disabled():
+                                    // además de pisar la dehidratación, un select deshabilitado se salta
+                                    // saveRelationships(), así que al vaciar los departamentos quedarían
+                                    // municipios huérfanos en el pivote recortando la zona en silencio.
+                                    // Sin departamentos elegidos la lista sale vacía, que es suficiente.
+                                    ->dehydrated(false)
+                                    ->searchable()
+                                    ->preload()
+                                    ->native(false)
+                                    ->placeholder(fn (Forms\Get $get) => blank($get('departamentosZona'))
+                                        ? 'Elegí primero un departamento'
+                                        : 'Departamento completo')
+                                    ->helperText('Si marcás municipios de un departamento, el viaje verá SOLO esos municipios de ese departamento.')
+                                    // Defensa server-side: aunque el select muestre otra cosa, no se
+                                    // puede guardar un municipio fuera de los departamentos elegidos.
+                                    ->rule(fn (Forms\Get $get) => function (string $attribute, $value, \Closure $fail) use ($get) {
+                                        $municipios = is_array($value) ? array_filter($value) : [];
+
+                                        if (! $municipios) {
+                                            return;
+                                        }
+
+                                        $fueraDeZona = Municipio::whereIn('id', $municipios)
+                                            ->whereNotIn('departamento_id', $get('departamentosZona') ?: [0])
+                                            ->exists();
+
+                                        if ($fueraDeZona) {
+                                            $fail('Hay municipios que no pertenecen a los departamentos seleccionados.');
+                                        }
+                                    }),
+                            ]),
+
+                        // Viaje ya en ruta y usuario sin permiso: la zona se ve, no se toca.
+                        Forms\Components\Placeholder::make('zona_actual')
+                            ->label('Zona asignada')
+                            ->hidden(fn (?Viaje $record) => static::puedeEditarZona($record))
+                            ->content(fn (?Viaje $record) => $record?->descripcionZona()
+                                ?? 'Sin zona: el vendedor ve todos los clientes.')
+                            ->helperText('El viaje ya salió. Solo Super Admin o Jefe pueden cambiarle la zona.'),
+                    ])
+                    ->collapsible(),
 
                 Forms\Components\Section::make('Kilometraje')
                     ->schema([
