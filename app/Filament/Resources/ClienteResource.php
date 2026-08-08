@@ -454,8 +454,13 @@ class ClienteResource extends Resource
                         ->modalDescription('Habilita UNA venta de ruta extra para el día de hoy. Si después necesitan otra más, hay que autorizarla de nuevo.')
                         ->modalSubmitActionLabel('Autorizar')
                         // Consumidor Final no tiene límite, así que no hay nada que autorizarle.
+                        // El rol de super admin de Shield se llama `super_admin`, no "Super Admin".
                         ->visible(fn (Cliente $record) => ! $record->esConsumidorFinal()
-                            && (Auth::user()?->hasAnyRole(['Super Admin', 'Jefe', 'Encargado']) ?? false))
+                            && (Auth::user()?->hasAnyRole([
+                                config('filament-shield.super_admin.name', 'super_admin'),
+                                'Jefe',
+                                'Encargado',
+                            ]) ?? false))
                         ->form([
                             Forms\Components\Placeholder::make('situacion_de_hoy')
                                 ->label('Situación de hoy')

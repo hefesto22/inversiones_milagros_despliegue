@@ -4,6 +4,7 @@ use App\Filament\Pages\PuntoVentaRuta;
 use App\Http\Controllers\CargaChoferPdfController;
 use App\Http\Controllers\CotizacionPdfController;
 use App\Http\Controllers\EstadoResultadosPdfController;
+use App\Http\Controllers\ExistenciasPdfController;
 use App\Http\Controllers\FacturaVentaController;
 use App\Http\Controllers\LiquidacionViajePdfController;
 use App\Http\Controllers\ViajeVentaController;
@@ -103,6 +104,19 @@ Route::middleware(['auth'])->group(function () {
     Route::get('/pdf/estado-resultados/download', [EstadoResultadosPdfController::class, 'download'])
         ->middleware('can:widget_EstadoResultados')
         ->name('estado-resultados.download');
+
+    // =====================================================
+    // EXISTENCIAS DE INVENTARIO
+    // =====================================================
+    // Hoja para contar físico: qué hay y dónde está, sin costos.
+    // La autorización (Super Admin / Jefe) se valida dentro del controlador,
+    // por rol y no con un permiso de Shield — ver el comentario del archivo.
+
+    Route::get('/pdf/existencias', [ExistenciasPdfController::class, 'generate'])
+        ->name('existencias.pdf');
+
+    Route::get('/pdf/existencias/download', [ExistenciasPdfController::class, 'download'])
+        ->name('existencias.download');
 });
 
 require __DIR__.'/auth.php';
