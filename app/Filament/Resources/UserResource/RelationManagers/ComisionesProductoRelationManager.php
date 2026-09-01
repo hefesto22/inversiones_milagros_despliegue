@@ -2,7 +2,6 @@
 
 namespace App\Filament\Resources\UserResource\RelationManagers;
 
-use App\Models\ChoferComisionProducto;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\RelationManagers\RelationManager;
@@ -45,24 +44,17 @@ class ComisionesProductoRelationManager extends RelationManager
                             ->helperText('Este producto tendrá una comisión diferente')
                             ->columnSpanFull(),
 
+                        // Ver ComisionesConfigRelationManager: la comisión
+                        // reducida se eliminó como regla de negocio (2026-09-01).
                         Forms\Components\TextInput::make('comision_normal')
-                            ->label('Comisión Normal')
+                            ->label('Comisión')
                             ->required()
                             ->numeric()
                             ->prefix('L')
                             ->step(0.01)
                             ->minValue(0)
-                            ->helperText('Cuando vende ≥ precio sugerido'),
-
-                        Forms\Components\TextInput::make('comision_reducida')
-                            ->label('Comisión Reducida')
-                            ->required()
-                            ->numeric()
-                            ->prefix('L')
-                            ->step(0.01)
-                            ->minValue(0)
-                            ->default(0.50)
-                            ->helperText('Cuando vende < precio sugerido'),
+                            ->helperText('Se paga igual venda al precio sugerido o por debajo')
+                            ->columnSpanFull(),
 
                         Forms\Components\DatePicker::make('vigente_desde')
                             ->label('Vigente Desde')
@@ -101,17 +93,11 @@ class ComisionesProductoRelationManager extends RelationManager
                     ->toggleable(),
 
                 Tables\Columns\TextColumn::make('comision_normal')
-                    ->label('Normal')
+                    ->label('Comisión')
                     ->money('HNL')
                     ->sortable()
                     ->color('success')
                     ->weight('bold'),
-
-                Tables\Columns\TextColumn::make('comision_reducida')
-                    ->label('Reducida')
-                    ->money('HNL')
-                    ->sortable()
-                    ->color('warning'),
 
                 Tables\Columns\TextColumn::make('vigente_hasta')
                     ->label('Hasta')
@@ -133,11 +119,18 @@ class ComisionesProductoRelationManager extends RelationManager
                     ->label('Agregar Excepción')
                     ->mutateFormDataUsing(function (array $data): array {
                         $data['created_by'] = Auth::id();
+                        $data['comision_reducida'] = $data['comision_normal'];
+
                         return $data;
                     }),
             ])
             ->actions([
-                Tables\Actions\EditAction::make(),
+                Tables\Actions\EditAction::make()
+                    ->mutateFormDataUsing(function (array $data): array {
+                        $data['comision_reducida'] = $data['comision_normal'];
+
+                        return $data;
+                    }),
                 Tables\Actions\DeleteAction::make(),
             ])
             ->bulkActions([

@@ -149,10 +149,12 @@ class ComisionPrecioCeroTest extends TestCase
         );
     }
 
-    public function test_venta_normal_sigue_generando_comision_reducida_bajo_sugerido(): void
+    public function test_venta_normal_sigue_generando_comision_bajo_sugerido(): void
     {
         // Regresión: la guarda solo aplica a precio <= 0. Vender a L80
-        // (bajo sugerido pero > 0) debe seguir pagando comisión reducida.
+        // (bajo sugerido pero > 0) debe seguir pagando comisión.
+        // Desde 2026-09-01 ya no existe tarifa reducida: paga la normal.
+        // Ver ComisionSinTarifaReducidaTest.
         [$viaje, $carga, $producto] = $this->crearEscenario();
 
         $this->crearVenta($viaje, $carga, $producto, 10, 80.00);

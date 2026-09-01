@@ -6,10 +6,10 @@ use App\Models\ChoferComisionConfig;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Forms\Get;
+use Filament\Notifications\Notification;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Tables;
 use Filament\Tables\Table;
-use Filament\Notifications\Notification;
 use Illuminate\Support\Facades\Auth;
 
 class ComisionesConfigRelationManager extends RelationManager
@@ -58,31 +58,25 @@ class ComisionesConfigRelationManager extends RelationManager
                             ->required()
                             ->live()
                             ->columnSpanFull()
-                            ->helperText(fn (Get $get) => match($get('tipo_comision')) {
+                            ->helperText(fn (Get $get) => match ($get('tipo_comision')) {
                                 ChoferComisionConfig::TIPO_PORCENTAJE => 'El porcentaje se calcula sobre el precio de venta.',
                                 default => 'Monto fijo en Lempiras por unidad vendida.',
                             }),
 
+                        // La comisión reducida se eliminó como regla de negocio
+                        // (2026-09-01): se paga la misma tarifa venda al precio
+                        // sugerido o por debajo. La columna comision_reducida se
+                        // sigue guardando en espejo de comision_normal.
                         Forms\Components\TextInput::make('comision_normal')
-                            ->label('Comisión Normal')
+                            ->label('Comisión')
                             ->required()
                             ->numeric()
                             ->prefix(fn (Get $get) => $get('tipo_comision') === ChoferComisionConfig::TIPO_PORCENTAJE ? '%' : 'L')
                             ->step(0.01)
                             ->minValue(0)
                             ->maxValue(fn (Get $get) => $get('tipo_comision') === ChoferComisionConfig::TIPO_PORCENTAJE ? 100 : null)
-                            ->helperText('Cuando vende ≥ precio sugerido'),
-
-                        Forms\Components\TextInput::make('comision_reducida')
-                            ->label('Comisión Reducida')
-                            ->required()
-                            ->numeric()
-                            ->prefix(fn (Get $get) => $get('tipo_comision') === ChoferComisionConfig::TIPO_PORCENTAJE ? '%' : 'L')
-                            ->step(0.01)
-                            ->minValue(0)
-                            ->maxValue(fn (Get $get) => $get('tipo_comision') === ChoferComisionConfig::TIPO_PORCENTAJE ? 100 : null)
-                            ->default(0.50)
-                            ->helperText('Cuando vende < precio sugerido'),
+                            ->helperText('Se paga igual venda al precio sugerido o por debajo')
+                            ->columnSpanFull(),
 
                         Forms\Components\DatePicker::make('vigente_desde')
                             ->label('Vigente Desde')
@@ -118,31 +112,23 @@ class ComisionesConfigRelationManager extends RelationManager
                 Tables\Columns\TextColumn::make('tipo_comision')
                     ->label('Tipo')
                     ->badge()
-                    ->formatStateUsing(fn (string $state) => match($state) {
+                    ->formatStateUsing(fn (string $state) => match ($state) {
                         ChoferComisionConfig::TIPO_PORCENTAJE => '%',
                         default => 'L',
                     })
-                    ->color(fn (string $state) => match($state) {
+                    ->color(fn (string $state) => match ($state) {
                         ChoferComisionConfig::TIPO_PORCENTAJE => 'info',
                         default => 'gray',
                     }),
 
                 Tables\Columns\TextColumn::make('comision_normal')
-                    ->label('Normal')
-                    ->formatStateUsing(fn ($state, $record) => $record->esPorcentaje() 
-                        ? number_format($state, 2) . '%' 
-                        : 'L ' . number_format($state, 2))
+                    ->label('Comisión')
+                    ->formatStateUsing(fn ($state, $record) => $record->esPorcentaje()
+                        ? number_format($state, 2).'%'
+                        : 'L '.number_format($state, 2))
                     ->sortable()
                     ->color('success')
                     ->weight('bold'),
-
-                Tables\Columns\TextColumn::make('comision_reducida')
-                    ->label('Reducida')
-                    ->formatStateUsing(fn ($state, $record) => $record->esPorcentaje() 
-                        ? number_format($state, 2) . '%' 
-                        : 'L ' . number_format($state, 2))
-                    ->sortable()
-                    ->color('warning'),
 
                 Tables\Columns\TextColumn::make('vigente_desde')
                     ->label('Desde')
@@ -179,6 +165,10 @@ class ComisionesConfigRelationManager extends RelationManager
                     ->mutateFormDataUsing(function (array $data): array {
                         $data['created_by'] = Auth::id();
                         $data['unidad_id'] = null;
+                        // Ya no hay tarifa reducida: la columna queda en espejo
+                        // para que la tabla no contradiga lo que se paga.
+                        $data['comision_reducida'] = $data['comision_normal'];
+
                         return $data;
                     }),
 
@@ -190,7 +180,7 @@ class ComisionesConfigRelationManager extends RelationManager
                         Forms\Components\Select::make('chofer_origen')
                             ->label('Copiar comisiones de')
                             ->options(function () {
-                                return \App\Models\User::whereHas('roles', fn($q) => $q->where('name', 'Chofer'))
+                                return \App\Models\User::whereHas('roles', fn ($q) => $q->where('name', 'Chofer'))
                                     ->where('id', '!=', $this->getOwnerRecord()->id)
                                     ->whereHas('comisionesConfig')
                                     ->pluck('name', 'id');
@@ -209,14 +199,14 @@ class ComisionesConfigRelationManager extends RelationManager
                                 ->where('categoria_id', $comision->categoria_id)
                                 ->exists();
 
-                            if (!$existe) {
+                            if (! $existe) {
                                 ChoferComisionConfig::create([
                                     'user_id' => $this->getOwnerRecord()->id,
                                     'categoria_id' => $comision->categoria_id,
                                     'unidad_id' => null,
                                     'tipo_comision' => $comision->tipo_comision,
                                     'comision_normal' => $comision->comision_normal,
-                                    'comision_reducida' => $comision->comision_reducida,
+                                    'comision_reducida' => $comision->comision_normal,
                                     'vigente_desde' => now(),
                                     'activo' => true,
                                     'created_by' => Auth::id(),
@@ -232,13 +222,18 @@ class ComisionesConfigRelationManager extends RelationManager
                     }),
             ])
             ->actions([
-                Tables\Actions\EditAction::make(),
-                
+                Tables\Actions\EditAction::make()
+                    ->mutateFormDataUsing(function (array $data): array {
+                        $data['comision_reducida'] = $data['comision_normal'];
+
+                        return $data;
+                    }),
+
                 Tables\Actions\Action::make('toggle_activo')
                     ->label(fn ($record) => $record->activo ? 'Desactivar' : 'Activar')
                     ->icon(fn ($record) => $record->activo ? 'heroicon-o-x-circle' : 'heroicon-o-check-circle')
                     ->color(fn ($record) => $record->activo ? 'danger' : 'success')
-                    ->action(fn ($record) => $record->update(['activo' => !$record->activo])),
+                    ->action(fn ($record) => $record->update(['activo' => ! $record->activo])),
 
                 Tables\Actions\DeleteAction::make(),
             ])
