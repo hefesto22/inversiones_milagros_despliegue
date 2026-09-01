@@ -14,6 +14,7 @@ class ChoferComisionConfig extends Model
 
     // Constantes para tipos de comisión
     public const TIPO_FIJO = 'fijo';
+
     public const TIPO_PORCENTAJE = 'porcentaje';
 
     protected $fillable = [
@@ -74,7 +75,7 @@ class ChoferComisionConfig extends Model
     {
         return $query->where(function ($q) {
             $q->whereNull('vigente_hasta')
-              ->orWhere('vigente_hasta', '>=', now());
+                ->orWhere('vigente_hasta', '>=', now());
         });
     }
 
@@ -113,7 +114,7 @@ class ChoferComisionConfig extends Model
      */
     public function estaVigente(): bool
     {
-        if (!$this->activo) {
+        if (! $this->activo) {
             return false;
         }
 
@@ -125,23 +126,25 @@ class ChoferComisionConfig extends Model
     }
 
     /**
-     * Obtener comisión según precio de venta
-     * 
-     * @param float $precioVenta - Precio al que vendió el chofer
-     * @param float $precioSugerido - Precio sugerido/mínimo
-     * @param float $cantidad - Cantidad vendida (para comisión fija)
-     * @return float
+     * Obtener comisión según precio de venta.
+     *
+     * Regla de negocio (2026-09-01): NO existe comisión reducida. Se paga la
+     * misma tarifa venda al precio sugerido o por debajo, por lo que
+     * $precioSugerido ya no altera el resultado. Se conserva en la firma para
+     * no romper llamadores existentes.
+     *
+     * @param  float  $precioVenta  - Precio al que vendió el chofer
+     * @param  float  $precioSugerido  - Precio sugerido/mínimo (sin efecto)
+     * @param  float  $cantidad  - Cantidad vendida (para comisión fija)
      */
     public function calcularComision(float $precioVenta, float $precioSugerido, float $cantidad = 1): float
     {
-        // Determinar qué tasa usar (normal o reducida)
-        $tasaComision = $precioVenta >= $precioSugerido 
-            ? $this->comision_normal 
-            : $this->comision_reducida;
+        $tasaComision = $this->comision_normal;
 
         if ($this->esPorcentaje()) {
             // Porcentaje sobre el total vendido
             $totalVenta = $precioVenta * $cantidad;
+
             return round($totalVenta * ($tasaComision / 100), 2);
         }
 
@@ -150,15 +153,13 @@ class ChoferComisionConfig extends Model
     }
 
     /**
-     * Obtener comisión base (sin cantidad) - retrocompatibilidad
+     * Obtener comisión base (sin cantidad) - retrocompatibilidad.
+     *
+     * Ver calcularComision(): ya no existe tarifa reducida.
      */
     public function getComision(float $precioVenta, float $precioSugerido): float
     {
-        if ($precioVenta >= $precioSugerido) {
-            return $this->comision_normal;
-        }
-
-        return $this->comision_reducida;
+        return (float) $this->comision_normal;
     }
 
     /**
@@ -167,9 +168,9 @@ class ChoferComisionConfig extends Model
     public function getDescripcion(): string
     {
         $desc = $this->categoria?->nombre ?? 'Sin categoría';
-        
+
         if ($this->unidad) {
-            $desc .= ' (' . $this->unidad->nombre . ')';
+            $desc .= ' ('.$this->unidad->nombre.')';
         }
 
         return $desc;
@@ -180,7 +181,7 @@ class ChoferComisionConfig extends Model
      */
     public function getTipoComisionLabel(): string
     {
-        return match($this->tipo_comision) {
+        return match ($this->tipo_comision) {
             self::TIPO_FIJO => 'Fijo (L)',
             self::TIPO_PORCENTAJE => 'Porcentaje (%)',
             default => 'Fijo (L)',
@@ -193,10 +194,10 @@ class ChoferComisionConfig extends Model
     public function formatearComision(float $valor): string
     {
         if ($this->esPorcentaje()) {
-            return number_format($valor, 2) . '%';
+            return number_format($valor, 2).'%';
         }
 
-        return 'L ' . number_format($valor, 2);
+        return 'L '.number_format($valor, 2);
     }
 
     /**

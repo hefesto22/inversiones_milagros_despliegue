@@ -666,13 +666,16 @@ class Viaje extends Model
         $precioSugerido = $carga?->precio_venta_sugerido ?? $detalle->precio_base;
         $precioVendido = $detalle->precio_base;
 
+        // Se conserva SOLO como marca informativa de que la venta salio por
+        // debajo del precio sugerido. Ya no cambia lo que se le paga al chofer.
         $tipoComision = $precioVendido >= $precioSugerido
             ? ViajeComisionDetalle::TIPO_NORMAL
             : ViajeComisionDetalle::TIPO_REDUCIDA;
 
-        $tasaComision = $tipoComision === ViajeComisionDetalle::TIPO_NORMAL
-            ? $comisionConfig['normal']
-            : ($comisionConfig['reducida'] ?? $comisionConfig['normal']);
+        // Regla de negocio (2026-09-01): NO existe comision reducida. Se paga la
+        // misma tarifa venda al precio sugerido o por debajo. El campo
+        // chofer_comision_config.comision_reducida quedo sin efecto.
+        $tasaComision = $comisionConfig['normal'];
 
         $unidad = $carga?->unidad;
         $factorUnidad = 1;
@@ -728,10 +731,10 @@ class Viaje extends Model
         $carga = $this->cargas()->where('producto_id', $producto->id)->first();
         $precioSugerido = $carga?->precio_venta_sugerido ?? $detalle->precio_unitario;
 
+        // Marca informativa unicamente; ver calcularComisionDetalleRuta():
+        // ya no existe tarifa reducida, se paga siempre la normal.
         $tipoComision = $detalle->precio_unitario >= $precioSugerido ? 'normal' : 'reducida';
-        $comisionUnitaria = $tipoComision === 'normal'
-            ? $comisionConfig['normal']
-            : $comisionConfig['reducida'];
+        $comisionUnitaria = $comisionConfig['normal'];
 
         $comisionTotal = $detalle->cantidad * $comisionUnitaria;
 
