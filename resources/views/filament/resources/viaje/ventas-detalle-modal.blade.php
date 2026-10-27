@@ -1,3 +1,5 @@
+@inject('descuentos', 'App\Services\Viaje\DescuentoLineaRuta')
+@php($totales = $descuentos->totales($venta))
 <div class="space-y-6">
     {{-- Encabezado con datos del cliente y fecha --}}
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -56,7 +58,9 @@
                     <tr class="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
                         <th class="px-4 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">Descripción</th>
                         <th class="px-4 py-3 text-center text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">Cant.</th>
-                        <th class="px-4 py-3 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">P. Unit.</th>
+                        <th class="px-4 py-3 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">Precio lista</th>
+                        <th class="px-4 py-3 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">Descuento</th>
+                        <th class="px-4 py-3 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">Precio venta</th>
                         <th class="px-4 py-3 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">ISV</th>
                         <th class="px-4 py-3 text-right text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase">Importe</th>
                     </tr>
@@ -66,11 +70,20 @@
                         <tr>
                             <td class="px-4 py-3 text-sm text-gray-900 dark:text-white">
                                 {{ $detalle->producto?->nombre ?? 'Producto eliminado' }}
+                                @if($descuentos->esEntregaPorCambio($detalle))
+                                    <span class="block text-xs text-gray-500 dark:text-gray-400">Entrega por cambio</span>
+                                @endif
                             </td>
                             <td class="px-4 py-3 text-sm text-center text-gray-700 dark:text-gray-300">
                                 {{ number_format($detalle->cantidad, 2) }}
                             </td>
                             <td class="px-4 py-3 text-sm text-right text-gray-700 dark:text-gray-300">
+                                {{ $descuentos->esEntregaPorCambio($detalle) ? '—' : number_format($descuentos->precioLista($detalle), 2) }}
+                            </td>
+                            <td class="px-4 py-3 text-sm text-right {{ $descuentos->descuentoUnitario($detalle) > 0 ? 'text-red-600 dark:text-red-400' : 'text-gray-400 dark:text-gray-500' }}">
+                                {{ $descuentos->descuentoUnitario($detalle) > 0 ? '- ' . number_format($descuentos->descuentoUnitario($detalle), 2) : '—' }}
+                            </td>
+                            <td class="px-4 py-3 text-sm text-right font-medium text-gray-900 dark:text-white">
                                 {{ number_format($detalle->precio_base, 2) }}
                             </td>
                             <td class="px-4 py-3 text-sm text-right text-gray-700 dark:text-gray-300">
@@ -90,6 +103,16 @@
     <div class="flex justify-end">
         <div class="w-full max-w-sm border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
             <div class="bg-white dark:bg-gray-900 divide-y divide-gray-100 dark:divide-gray-800">
+                @if($totales['descuento'] > 0)
+                    <div class="flex justify-between px-4 py-2 text-sm">
+                        <span class="text-gray-600 dark:text-gray-400">Subtotal a precio de lista</span>
+                        <span class="text-gray-900 dark:text-white">L {{ number_format($totales['subtotal_lista'], 2) }}</span>
+                    </div>
+                    <div class="flex justify-between px-4 py-2 text-sm">
+                        <span class="text-gray-600 dark:text-gray-400">Descuento</span>
+                        <span class="text-red-600 dark:text-red-400">- L {{ number_format($totales['descuento'], 2) }}</span>
+                    </div>
+                @endif
                 <div class="flex justify-between px-4 py-2 text-sm">
                     <span class="text-gray-600 dark:text-gray-400">Subtotal</span>
                     <span class="text-gray-900 dark:text-white">L {{ number_format($venta->subtotal, 2) }}</span>
@@ -100,7 +123,7 @@
                 </div>
                 @if($venta->descuento > 0)
                     <div class="flex justify-between px-4 py-2 text-sm">
-                        <span class="text-gray-600 dark:text-gray-400">Descuento</span>
+                        <span class="text-gray-600 dark:text-gray-400">Descuento adicional</span>
                         <span class="text-red-600 dark:text-red-400">- L {{ number_format($venta->descuento, 2) }}</span>
                     </div>
                 @endif
