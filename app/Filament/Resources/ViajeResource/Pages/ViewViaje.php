@@ -3,20 +3,25 @@
 namespace App\Filament\Resources\ViajeResource\Pages;
 
 use App\Filament\Resources\ViajeResource;
-use App\Models\Viaje;
 use App\Models\CamionGasto;
-use Filament\Resources\Pages\ViewRecord;
-use Filament\Infolists\Infolist;
+use App\Models\Viaje;
+use Filament\Actions\Action;
+use Filament\Infolists\Components\Fieldset;
+use Filament\Infolists\Components\Grid;
 use Filament\Infolists\Components\Section;
 use Filament\Infolists\Components\TextEntry;
-use Filament\Infolists\Components\Grid;
-use Filament\Infolists\Components\Fieldset;
+use Filament\Infolists\Infolist;
+use Filament\Resources\Pages\ViewRecord;
 use Filament\Support\Enums\FontWeight;
-use Filament\Actions\Action;
 
 class ViewViaje extends ViewRecord
 {
     protected static string $resource = ViajeResource::class;
+
+    /**
+     * Suma de mermas del viaje, memoizada por request (la usan 5 entradas).
+     */
+    private ?float $mermasEnVivo = null;
 
     protected function getHeaderActions(): array
     {
@@ -68,7 +73,7 @@ class ViewViaje extends ViewRecord
                                 TextEntry::make('estado')
                                     ->label('Estado')
                                     ->badge()
-                                    ->formatStateUsing(fn($state) => match ($state) {
+                                    ->formatStateUsing(fn ($state) => match ($state) {
                                         Viaje::ESTADO_PLANIFICADO => 'Planificado',
                                         Viaje::ESTADO_CARGANDO => 'Cargando',
                                         Viaje::ESTADO_EN_RUTA => 'En Ruta',
@@ -79,7 +84,7 @@ class ViewViaje extends ViewRecord
                                         Viaje::ESTADO_CANCELADO => 'Cancelado',
                                         default => $state,
                                     })
-                                    ->color(fn($state) => match ($state) {
+                                    ->color(fn ($state) => match ($state) {
                                         Viaje::ESTADO_PLANIFICADO => 'gray',
                                         Viaje::ESTADO_CARGANDO => 'info',
                                         Viaje::ESTADO_EN_RUTA => 'warning',
@@ -121,8 +126,8 @@ class ViewViaje extends ViewRecord
 
                                 TextEntry::make('km_recorridos')
                                     ->label('Km Recorridos')
-                                    ->state(fn($record) => $record->getKilometrosRecorridos() 
-                                        ? number_format($record->getKilometrosRecorridos()) . ' km'
+                                    ->state(fn ($record) => $record->getKilometrosRecorridos()
+                                        ? number_format($record->getKilometrosRecorridos()).' km'
                                         : '-'),
                             ]),
                     ])
@@ -139,7 +144,7 @@ class ViewViaje extends ViewRecord
                             ->schema([
                                 TextEntry::make('total_cargado_costo')
                                     ->label('Costo de la Carga')
-                                    ->state(fn($record) => $record->cargas()->sum('subtotal_costo') ?: 0)
+                                    ->state(fn ($record) => $record->cargas()->sum('subtotal_costo') ?: 0)
                                     ->money('HNL')
                                     ->size(TextEntry\TextEntrySize::Large)
                                     ->weight(FontWeight::Bold)
@@ -148,7 +153,7 @@ class ViewViaje extends ViewRecord
 
                                 TextEntry::make('total_cargado_venta')
                                     ->label('Venta Esperada')
-                                    ->state(fn($record) => $record->cargas()->sum('subtotal_venta') ?: 0)
+                                    ->state(fn ($record) => $record->cargas()->sum('subtotal_venta') ?: 0)
                                     ->money('HNL')
                                     ->size(TextEntry\TextEntrySize::Large)
                                     ->weight(FontWeight::Bold)
@@ -157,9 +162,10 @@ class ViewViaje extends ViewRecord
 
                                 TextEntry::make('ganancia_esperada')
                                     ->label('Ganancia Esperada')
-                                    ->state(function($record) {
+                                    ->state(function ($record) {
                                         $costo = $record->cargas()->sum('subtotal_costo') ?: 0;
                                         $venta = $record->cargas()->sum('subtotal_venta') ?: 0;
+
                                         return $venta - $costo;
                                     })
                                     ->money('HNL')
@@ -170,7 +176,7 @@ class ViewViaje extends ViewRecord
                             ]),
                     ])
                     ->collapsible()
-                    ->visible(fn($record) => $record->cargas()->count() > 0),
+                    ->visible(fn ($record) => $record->cargas()->count() > 0),
 
                 // ==========================================
                 // RESULTADO DE VENTAS
@@ -182,7 +188,7 @@ class ViewViaje extends ViewRecord
                             ->schema([
                                 TextEntry::make('venta_realizada')
                                     ->label('Total Vendido')
-                                    ->state(fn($record) => $this->calcularVentaRealizada($record))
+                                    ->state(fn ($record) => $this->calcularVentaRealizada($record))
                                     ->money('HNL')
                                     ->size(TextEntry\TextEntrySize::Large)
                                     ->weight(FontWeight::Bold)
@@ -197,13 +203,14 @@ class ViewViaje extends ViewRecord
 
                                 TextEntry::make('descuentos_dados')
                                     ->label('Descuentos Otorgados')
-                                    ->state(fn($record) => $this->calcularDescuentosOtorgados($record))
+                                    ->state(fn ($record) => $this->calcularDescuentosOtorgados($record))
                                     ->money('HNL')
                                     ->color('danger')
                                     ->helperText('Vendió más barato del precio sugerido'),
 
                                 TextEntry::make('total_merma_costo')
                                     ->label('Mermas')
+                                    ->state(fn ($record) => $this->calcularMermas($record))
                                     ->money('HNL')
                                     ->color('danger')
                                     ->helperText('Producto dañado/perdido'),
@@ -216,7 +223,7 @@ class ViewViaje extends ViewRecord
                                     ->schema([
                                         TextEntry::make('ventas_contado')
                                             ->label('Ventas de Contado')
-                                            ->state(fn($record) => $this->calcularVentasContado($record))
+                                            ->state(fn ($record) => $this->calcularVentasContado($record))
                                             ->money('HNL')
                                             ->weight(FontWeight::Bold)
                                             ->color('success')
@@ -224,7 +231,7 @@ class ViewViaje extends ViewRecord
 
                                         TextEntry::make('ventas_credito')
                                             ->label('Ventas a Crédito')
-                                            ->state(fn($record) => $this->calcularVentasCredito($record))
+                                            ->state(fn ($record) => $this->calcularVentasCredito($record))
                                             ->money('HNL')
                                             ->weight(FontWeight::Bold)
                                             ->color('info')
@@ -232,12 +239,12 @@ class ViewViaje extends ViewRecord
 
                                         TextEntry::make('efectividad_precio')
                                             ->label('Efectividad de Precio')
-                                            ->state(fn($record) => $this->calcularEfectividadPrecio($record))
+                                            ->state(fn ($record) => $this->calcularEfectividadPrecio($record))
                                             ->helperText('100% = vendió al precio sugerido'),
 
                                         TextEntry::make('porcentaje_vendido')
                                             ->label('% de Carga Vendida')
-                                            ->state(fn($record) => $this->calcularPorcentajeVendido($record))
+                                            ->state(fn ($record) => $this->calcularPorcentajeVendido($record))
                                             ->helperText('Del total cargado'),
                                     ]),
                             ]),
@@ -254,7 +261,7 @@ class ViewViaje extends ViewRecord
                             ->schema([
                                 TextEntry::make('efectivo_debe_entregar')
                                     ->label('Debe Entregar')
-                                    ->state(fn($record) => $this->calcularVentasContado($record))
+                                    ->state(fn ($record) => $this->calcularVentasContado($record))
                                     ->money('HNL')
                                     ->size(TextEntry\TextEntrySize::Large)
                                     ->weight(FontWeight::Bold)
@@ -273,12 +280,12 @@ class ViewViaje extends ViewRecord
                                     ->money('HNL')
                                     ->size(TextEntry\TextEntrySize::Large)
                                     ->weight(FontWeight::Bold)
-                                    ->color(fn($state) => match(true) {
+                                    ->color(fn ($state) => match (true) {
                                         $state > 0 => 'success',
                                         $state < 0 => 'danger',
                                         default => 'success',
                                     })
-                                    ->helperText(fn($record) => match(true) {
+                                    ->helperText(fn ($record) => match (true) {
                                         ($record->diferencia_efectivo ?? 0) > 0 => 'Sobrante',
                                         ($record->diferencia_efectivo ?? 0) < 0 => 'Faltante',
                                         default => 'Cuadrado',
@@ -286,13 +293,13 @@ class ViewViaje extends ViewRecord
 
                                 TextEntry::make('estado_efectivo')
                                     ->label('Estado')
-                                    ->state(fn($record) => $this->getEstadoEfectivo($record))
+                                    ->state(fn ($record) => $this->getEstadoEfectivo($record))
                                     ->size(TextEntry\TextEntrySize::Large)
-                                    ->color(fn($record) => $this->getColorEstadoEfectivo($record)),
+                                    ->color(fn ($record) => $this->getColorEstadoEfectivo($record)),
                             ]),
                     ])
                     ->collapsible()
-                    ->visible(fn($record) => in_array($record->estado, [
+                    ->visible(fn ($record) => in_array($record->estado, [
                         Viaje::ESTADO_LIQUIDANDO,
                         Viaje::ESTADO_CERRADO,
                     ])),
@@ -307,34 +314,34 @@ class ViewViaje extends ViewRecord
                             ->schema([
                                 TextEntry::make('margen_bruto')
                                     ->label('Margen Bruto')
-                                    ->state(fn($record) => $this->calcularMargenBruto($record))
+                                    ->state(fn ($record) => $this->calcularMargenBruto($record))
                                     ->money('HNL')
                                     ->size(TextEntry\TextEntrySize::Large)
                                     ->weight(FontWeight::Bold)
-                                    ->color(fn($record) => $this->calcularMargenBruto($record) >= 0 ? 'success' : 'danger')
+                                    ->color(fn ($record) => $this->calcularMargenBruto($record) >= 0 ? 'success' : 'danger')
                                     ->helperText('Venta - Costo de lo vendido'),
 
                                 TextEntry::make('gastos_operativos')
                                     ->label('(-) Gastos y Mermas')
-                                    ->state(fn($record) => $this->calcularGastosViaje($record) + ($record->total_merma_costo ?? 0))
+                                    ->state(fn ($record) => $this->calcularGastosViaje($record) + $this->calcularMermas($record))
                                     ->money('HNL')
                                     ->color('warning')
                                     ->helperText('Gastos aprobados + Mermas'),
 
                                 TextEntry::make('comision_viaje')
                                     ->label('(-) Comisión Chofer')
-                                    ->state(fn($record) => $record->comision_ganada ?? 0)
+                                    ->state(fn ($record) => $record->comision_ganada ?? 0)
                                     ->money('HNL')
                                     ->color('warning')
                                     ->helperText('Pago por comisiones'),
 
                                 TextEntry::make('utilidad_neta')
                                     ->label('= Utilidad Neta')
-                                    ->state(fn($record) => $this->calcularUtilidadNeta($record))
+                                    ->state(fn ($record) => $this->calcularUtilidadNeta($record))
                                     ->money('HNL')
                                     ->size(TextEntry\TextEntrySize::Large)
                                     ->weight(FontWeight::Bold)
-                                    ->color(fn($record) => $this->calcularUtilidadNeta($record) >= 0 ? 'success' : 'danger')
+                                    ->color(fn ($record) => $this->calcularUtilidadNeta($record) >= 0 ? 'success' : 'danger')
                                     ->helperText('Ganancia final del viaje'),
                             ]),
                     ])
@@ -350,7 +357,7 @@ class ViewViaje extends ViewRecord
                             ->schema([
                                 TextEntry::make('gastos_aprobados')
                                     ->label('Gastos Aprobados')
-                                    ->state(fn($record) => $this->calcularGastosViaje($record))
+                                    ->state(fn ($record) => $this->calcularGastosViaje($record))
                                     ->money('HNL')
                                     ->color('warning')
                                     ->weight(FontWeight::Bold)
@@ -358,13 +365,14 @@ class ViewViaje extends ViewRecord
 
                                 TextEntry::make('total_merma_costo')
                                     ->label('Mermas')
+                                    ->state(fn ($record) => $this->calcularMermas($record))
                                     ->money('HNL')
                                     ->color('danger')
                                     ->helperText('Producto perdido/dañado'),
 
                                 TextEntry::make('total_costos')
                                     ->label('Total Costos')
-                                    ->state(fn($record) => $this->calcularGastosViaje($record) + ($record->total_merma_costo ?? 0))
+                                    ->state(fn ($record) => $this->calcularGastosViaje($record) + $this->calcularMermas($record))
                                     ->money('HNL')
                                     ->color('danger')
                                     ->weight(FontWeight::Bold),
@@ -385,7 +393,7 @@ class ViewViaje extends ViewRecord
                     ])
                     ->collapsible()
                     ->collapsed()
-                    ->visible(fn($record) => !empty($record->observaciones)),
+                    ->visible(fn ($record) => ! empty($record->observaciones)),
             ]);
     }
 
@@ -474,7 +482,7 @@ class ViewViaje extends ViewRecord
     protected function calcularMargenBruto(Viaje $viaje): float
     {
         $ventaRealizada = $this->calcularVentaRealizada($viaje);
-        
+
         $costoVendido = 0;
         $ventas = $viaje->ventasRuta()
             ->whereIn('estado', ['confirmada', 'completada'])
@@ -498,9 +506,22 @@ class ViewViaje extends ViewRecord
         $margenBruto = $this->calcularMargenBruto($viaje);
         $gastos = $this->calcularGastosViaje($viaje);
         $comisiones = (float) ($viaje->comision_ganada ?? 0);
-        $mermas = (float) ($viaje->total_merma_costo ?? 0);
+        $mermas = $this->calcularMermas($viaje);
 
         return $margenBruto - $gastos - $comisiones - $mermas;
+    }
+
+    /**
+     * Mermas del viaje sumadas en vivo desde viaje_mermas.
+     *
+     * viajes.total_merma_costo solo se refresca en recalcularTotales()
+     * (Continuar Ruta y cierre), asi que durante la ruta la pantalla
+     * mostraba 0 aunque ya hubiera mermas registradas. Es la misma suma
+     * que hace el cierre, por eso en un viaje cerrado da el mismo valor.
+     */
+    protected function calcularMermas(Viaje $viaje): float
+    {
+        return $this->mermasEnVivo ??= (float) $viaje->mermas()->sum('subtotal_costo');
     }
 
     /**
@@ -516,7 +537,8 @@ class ViewViaje extends ViewRecord
         }
 
         $porcentaje = ($totalVendido / $totalCargado) * 100;
-        return number_format($porcentaje, 1) . '%';
+
+        return number_format($porcentaje, 1).'%';
     }
 
     /**
@@ -552,7 +574,8 @@ class ViewViaje extends ViewRecord
         }
 
         $efectividad = ($totalRealizado / $totalEsperado) * 100;
-        return number_format($efectividad, 1) . '%';
+
+        return number_format($efectividad, 1).'%';
     }
 
     /**
@@ -562,13 +585,13 @@ class ViewViaje extends ViewRecord
     {
         $debeEntregar = $this->calcularVentasContado($viaje);
         $entregado = (float) ($viaje->efectivo_entregado ?? 0);
-        
+
         if ($entregado == 0 && $debeEntregar > 0) {
             return 'Pendiente';
         }
-        
+
         $diferencia = $entregado - $debeEntregar;
-        
+
         if (abs($diferencia) < 0.01) {
             return 'Cuadrado';
         } elseif ($diferencia > 0) {
@@ -585,13 +608,13 @@ class ViewViaje extends ViewRecord
     {
         $debeEntregar = $this->calcularVentasContado($viaje);
         $entregado = (float) ($viaje->efectivo_entregado ?? 0);
-        
+
         if ($entregado == 0 && $debeEntregar > 0) {
             return 'warning';
         }
-        
+
         $diferencia = $entregado - $debeEntregar;
-        
+
         if (abs($diferencia) < 0.01) {
             return 'success';
         } elseif ($diferencia > 0) {
