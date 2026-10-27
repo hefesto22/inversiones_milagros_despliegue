@@ -5,6 +5,7 @@ namespace App\Filament\Resources\ViajeResource\Pages;
 use App\Filament\Resources\ViajeResource;
 use App\Models\CamionGasto;
 use App\Models\Viaje;
+use App\Services\Viaje\DescuentoLineaRuta;
 use Filament\Actions\Action;
 use Filament\Infolists\Components\Fieldset;
 use Filament\Infolists\Components\Grid;
@@ -438,7 +439,8 @@ class ViewViaje extends ViewRecord
      */
     protected function calcularDescuentosOtorgados(Viaje $viaje): float
     {
-        $descuentoTotal = 0;
+        $descuentos = app(DescuentoLineaRuta::class);
+        $descuentoTotal = 0.0;
 
         $ventas = $viaje->ventasRuta()
             ->whereIn('estado', ['confirmada', 'completada'])
@@ -447,19 +449,9 @@ class ViewViaje extends ViewRecord
 
         foreach ($ventas as $venta) {
             foreach ($venta->detalles as $detalle) {
-                // Líneas a precio 0 son entregas sin venta real (cambio/reposición),
-                // no descuentos: se excluyen del cálculo.
-                if ((float) $detalle->precio_base <= 0) {
-                    continue;
-                }
-
-                $precioSugerido = $detalle->viajeCarga?->precio_venta_sugerido ?? $detalle->precio_base;
-                $precioVendido = $detalle->precio_base;
-
-                if ($precioVendido < $precioSugerido) {
-                    $descuento = ($precioSugerido - $precioVendido) * $detalle->cantidad;
-                    $descuentoTotal += $descuento;
-                }
+                // Misma regla que el detalle de la venta: precio 0 = entrega
+                // por cambio, no descuento (ver DescuentoLineaRuta).
+                $descuentoTotal += $descuentos->descuentoLinea($detalle);
             }
         }
 

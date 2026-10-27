@@ -2,16 +2,10 @@
 
 namespace App\Filament\Resources\ViajeResource\RelationManagers;
 
-use App\Models\ViajeVenta;
-use Filament\Forms;
-use Filament\Forms\Form;
 use Filament\Resources\RelationManagers\RelationManager;
+use Filament\Support\Enums\FontWeight;
 use Filament\Tables;
 use Filament\Tables\Table;
-use Filament\Infolists;
-use Filament\Infolists\Infolist;
-use Filament\Support\Enums\FontWeight;
-use Illuminate\Database\Eloquent\Builder;
 
 class VentasRelationManager extends RelationManager
 {
@@ -52,12 +46,12 @@ class VentasRelationManager extends RelationManager
                 Tables\Columns\TextColumn::make('tipo_pago')
                     ->label('Pago')
                     ->badge()
-                    ->formatStateUsing(fn ($state) => match($state) {
+                    ->formatStateUsing(fn ($state) => match ($state) {
                         'contado' => 'Contado',
                         'credito' => 'Crédito',
                         default => $state,
                     })
-                    ->color(fn ($state) => match($state) {
+                    ->color(fn ($state) => match ($state) {
                         'contado' => 'success',
                         'credito' => 'warning',
                         default => 'gray',
@@ -90,14 +84,14 @@ class VentasRelationManager extends RelationManager
 
                 Tables\Columns\TextColumn::make('estado')
                     ->badge()
-                    ->formatStateUsing(fn ($state) => match($state) {
+                    ->formatStateUsing(fn ($state) => match ($state) {
                         'borrador' => 'Borrador',
                         'confirmada' => 'Confirmada',
                         'completada' => 'Completada',
                         'cancelada' => 'Cancelada',
                         default => $state,
                     })
-                    ->color(fn ($state) => match($state) {
+                    ->color(fn ($state) => match ($state) {
                         'borrador' => 'gray',
                         'confirmada' => 'info',
                         'completada' => 'success',
@@ -144,12 +138,12 @@ class VentasRelationManager extends RelationManager
                     ->label('Ver Detalle')
                     ->icon('heroicon-o-eye')
                     ->color('info')
-                    ->modalHeading(fn ($record) => 'Venta: ' . $record->numero_venta)
+                    ->modalHeading(fn ($record) => 'Venta: '.$record->numero_venta)
                     ->modalWidth('5xl')
                     ->modalSubmitAction(false)
                     ->modalCancelActionLabel('Cerrar')
                     ->modalContent(fn ($record) => view('filament.resources.viaje.ventas-detalle-modal', [
-                        'venta' => $record->load(['cliente', 'detalles.producto', 'userCreador']),
+                        'venta' => $record->load(['cliente', 'detalles.producto', 'detalles.viajeCarga', 'userCreador']),
                     ])),
 
                 Tables\Actions\Action::make('imprimir')
